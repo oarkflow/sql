@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,12 +43,12 @@ func (fl *FileLoader) Setup() error {
 		if fl.appendMode {
 			f, err := os.OpenFile(fl.fileName, os.O_RDWR|os.O_CREATE, 0644)
 			if err != nil {
-				return err
+				return fmt.Errorf("open file in append mode: %w", err)
 			}
 			fl.file = f
 			info, err := f.Stat()
 			if err != nil {
-				return err
+				return fmt.Errorf("stat file: %w", err)
 			}
 			if info.Size() == 0 {
 				if _, err := f.WriteString("[\n"); err != nil {
@@ -55,8 +56,7 @@ func (fl *FileLoader) Setup() error {
 				}
 				fl.jsonFirstRecord = true
 			} else {
-				_, err := f.Seek(-2, os.SEEK_END)
-				if err != nil {
+				if _, err := f.Seek(-2, io.SeekEnd); err != nil {
 					return fmt.Errorf("failed to seek in file: %w", err)
 				}
 				buf := make([]byte, 2)
@@ -69,14 +69,10 @@ func (fl *FileLoader) Setup() error {
 				if err := f.Truncate(info.Size() - 2); err != nil {
 					return fmt.Errorf("failed to truncate file: %w", err)
 				}
-				_, err = f.Seek(0, os.SEEK_END)
-				if err != nil {
+				if _, err := f.Seek(0, io.SeekEnd); err != nil {
 					return fmt.Errorf("failed to seek to end: %w", err)
 				}
-				if info.Size() > int64(len("[\n")) {
-					if _, err := f.WriteString(",\n"); err != nil {
-						return fmt.Errorf("failed to write comma: %w", err)
-					}
+				if info.Size()-2 > int64(len("[\n")) {
 					fl.jsonFirstRecord = false
 				} else {
 					fl.jsonFirstRecord = true
@@ -86,7 +82,7 @@ func (fl *FileLoader) Setup() error {
 		} else {
 			f, err := os.Create(fl.fileName)
 			if err != nil {
-				return err
+				return fmt.Errorf("create file: %w", err)
 			}
 			fl.file = f
 			fl.bufWriter = bufio.NewWriter(f)
@@ -101,11 +97,11 @@ func (fl *FileLoader) Setup() error {
 		if fl.appendMode {
 			f, err = os.OpenFile(fl.fileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
-				return err
+				return fmt.Errorf("open CSV file in append mode: %w", err)
 			}
 			info, err := f.Stat()
 			if err != nil {
-				return err
+				return fmt.Errorf("stat CSV file: %w", err)
 			}
 			if info.Size() > 0 {
 				fl.headerWritten = true
@@ -113,7 +109,7 @@ func (fl *FileLoader) Setup() error {
 		} else {
 			f, err = os.Create(fl.fileName)
 			if err != nil {
-				return err
+				return fmt.Errorf("create CSV file: %w", err)
 			}
 		}
 		fl.file = f
