@@ -2,6 +2,7 @@ package etl
 
 import (
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -9,7 +10,13 @@ import (
 	"github.com/oarkflow/sql/utils"
 )
 
-func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
+type Transactional interface {
+	Begin() error
+	Commit() error
+	Rollback() error
+}
+
+func robustRetry(retryCount int, retryDelay time.Duration, fn func() error) error {
 	var err error
 	for i := 0; i < retryCount; i++ {
 		err = fn()
@@ -17,29 +24,32 @@ func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
 			return nil
 		}
 		log.Printf("Retry attempt %d failed: %v", i+1, err)
-		time.Sleep(retryDelay)
+		jitter := 0.8 + rand.Float64()*0.4
+		time.Sleep(time.Duration(float64(retryDelay) * jitter))
 		retryDelay *= 2
 	}
 	return err
 }
 
 type ETL struct {
-	sources      []contracts.Source
-	mappers      []contracts.Mapper
-	transformers []contracts.Transformer
-	loaders      []contracts.Loader
-	workerCount  int
-	batchSize    int
-	retryCount   int
-	retryDelay   time.Duration
+	sources       []contracts.Source
+	mappers       []contracts.Mapper
+	transformers  []contracts.Transformer
+	loaders       []contracts.Loader
+	workerCount   int
+	batchSize     int
+	retryCount    int
+	retryDelay    time.Duration
+	loaderWorkers int
 }
 
 func defaultConfig() *ETL {
 	return &ETL{
-		workerCount: 4,
-		batchSize:   10,
-		retryCount:  3,
-		retryDelay:  100 * time.Millisecond,
+		workerCount:   4,
+		batchSize:     10,
+		retryCount:    3,
+		retryDelay:    100 * time.Millisecond,
+		loaderWorkers: 2,
 	}
 }
 
@@ -55,8 +65,7 @@ func (e *ETL) Run() error {
 	rawChan := make(chan utils.Record)
 	var srcWG sync.WaitGroup
 	for _, s := range e.sources {
-		err := s.Setup()
-		if err != nil {
+		if err := s.Setup(); err != nil {
 			return err
 		}
 		srcWG.Add(1)
@@ -115,49 +124,79 @@ func (e *ETL) Run() error {
 		procWG.Wait()
 		close(processedChan)
 	}()
-	batch := make([]utils.Record, 0, e.batchSize)
-	for rec := range processedChan {
-		batch = append(batch, rec)
-		if len(batch) >= e.batchSize {
-			for _, loader := range e.loaders {
-				err := loader.Setup()
-				if err == nil {
-					err = retry(e.retryCount, e.retryDelay, func() error {
-						return loader.LoadBatch(batch)
-					})
-					if err != nil {
-						log.Printf("Error loading batch: %v", err)
+	batchChan := make(chan []utils.Record, e.loaderWorkers)
+	var batchWG sync.WaitGroup
+	batchWG.Add(1)
+	go func() {
+		defer batchWG.Done()
+		batch := make([]utils.Record, 0, e.batchSize)
+		for rec := range processedChan {
+			batch = append(batch, rec)
+			if len(batch) >= e.batchSize {
+				batchChan <- batch
+				batch = make([]utils.Record, 0, e.batchSize)
+			}
+		}
+		if len(batch) > 0 {
+			batchChan <- batch
+		}
+		close(batchChan)
+	}()
+	var loaderWG sync.WaitGroup
+	for i := 0; i < e.loaderWorkers; i++ {
+		loaderWG.Add(1)
+		go func(workerID int) {
+			defer loaderWG.Done()
+			for batch := range batchChan {
+				for _, loader := range e.loaders {
+					if err := loader.Setup(); err != nil {
+						log.Printf("[Loader Worker %d] Error setting up loader: %v", workerID, err)
+						continue
 					}
-				} else {
-					log.Printf("Error setting up loader: %v", err)
+					if txnLoader, ok := loader.(Transactional); ok {
+						if err := txnLoader.Begin(); err != nil {
+							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
+							continue
+						}
+						err := robustRetry(e.retryCount, e.retryDelay, func() error {
+							return loader.LoadBatch(batch)
+						})
+						if err != nil {
+							log.Printf("[Loader Worker %d] Error loading batch with transaction: %v", workerID, err)
+							if rbErr := txnLoader.Rollback(); rbErr != nil {
+								log.Printf("[Loader Worker %d] Rollback failed: %v", workerID, rbErr)
+							}
+							continue
+						}
+						if err := txnLoader.Commit(); err != nil {
+							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
+						}
+					} else {
+
+						err := robustRetry(e.retryCount, e.retryDelay, func() error {
+							return loader.LoadBatch(batch)
+						})
+						if err != nil {
+							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
+						}
+					}
 				}
 			}
-			batch = batch[:0]
-		}
+		}(i)
 	}
-	if len(batch) > 0 {
-		for _, loader := range e.loaders {
-			err := retry(e.retryCount, e.retryDelay, func() error {
-				return loader.LoadBatch(batch)
-			})
-			if err != nil {
-				log.Printf("Error loading final batch: %v", err)
-			}
-		}
-	}
+	batchWG.Wait()
+	loaderWG.Wait()
 	return nil
 }
 
 func (e *ETL) Close() error {
 	for _, src := range e.sources {
-		err := src.Close()
-		if err != nil {
+		if err := src.Close(); err != nil {
 			return err
 		}
 	}
-	for _, src := range e.loaders {
-		err := src.Close()
-		if err != nil {
+	for _, loader := range e.loaders {
+		if err := loader.Close(); err != nil {
 			return err
 		}
 	}
