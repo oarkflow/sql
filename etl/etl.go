@@ -101,6 +101,7 @@ func robustRetry(retryCount int, retryDelay time.Duration, fn func() error) erro
 type ETL struct {
 	sources         []contracts.Source
 	mappers         []contracts.Mapper
+	validators      []contracts.Validator
 	transformers    []contracts.Transformer
 	loaders         []contracts.Loader
 	workerCount     int
@@ -108,6 +109,7 @@ type ETL struct {
 	retryCount      int
 	retryDelay      time.Duration
 	loaderWorkers   int
+	rawChanBuffer   int
 	checkpointStore contracts.CheckpointStore
 	checkpointFunc  func(rec utils.Record) string
 	lastCheckpoint  string
@@ -120,6 +122,7 @@ func defaultConfig() *ETL {
 		retryCount:    3,
 		retryDelay:    100 * time.Millisecond,
 		loaderWorkers: 2,
+		rawChanBuffer: 100,
 	}
 }
 
@@ -140,7 +143,7 @@ func (e *ETL) Run() error {
 			log.Printf("Resuming from checkpoint: %s", e.lastCheckpoint)
 		}
 	}
-	rawChan := make(chan utils.Record)
+	rawChan := make(chan utils.Record, e.rawChanBuffer)
 	var srcWG sync.WaitGroup
 	for _, s := range e.sources {
 		if err := s.Setup(); err != nil {
@@ -155,6 +158,9 @@ func (e *ETL) Run() error {
 				return
 			}
 			for rec := range ch {
+				if (cap(rawChan) - len(rawChan)) < 10 {
+					log.Printf("Backpressure: rawChan nearly full: %d/%d", len(rawChan), cap(rawChan))
+				}
 				rawChan <- rec
 			}
 		}(s)
@@ -190,6 +196,18 @@ func (e *ETL) Run() error {
 						log.Printf("[Worker %d] Transformer error: %v", workerID, err)
 						rec = nil
 						break
+					}
+				}
+				if rec == nil {
+					continue
+				}
+				if e.validators != nil {
+					for _, validator := range e.validators {
+						if err := validator.Validate(rec); err != nil {
+							log.Printf("[Worker %d] Validation error: %v", workerID, err)
+							rec = nil
+							break
+						}
 					}
 				}
 				if rec != nil {

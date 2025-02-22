@@ -42,3 +42,7 @@ type Transactional interface {
 	Commit() error
 	Rollback() error
 }
+
+type Validator interface {
+	Validate(rec utils.Record) error
+}
