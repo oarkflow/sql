@@ -3,7 +3,7 @@ package source
 import (
 	"log"
 
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/utils"
 )
 
 type FileSource struct {

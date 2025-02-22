@@ -8,7 +8,7 @@ import (
 
 	"github.com/oarkflow/convert"
 
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/utils"
 )
 
 func Query(query string) ([]utils.Record, error) {

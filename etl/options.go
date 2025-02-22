@@ -3,7 +3,7 @@ package etl
 import (
 	"time"
 
-	"github.com/chand1012/sq/etl/contracts"
+	"github.com/oarkflow/sql/etl/contracts"
 )
 
 type Option func(*ETL)

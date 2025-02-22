@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/utils"
 )
 
 type Node interface {

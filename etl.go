@@ -3,11 +3,11 @@ package main
 import (
 	"log"
 
-	"github.com/chand1012/sq/etl"
-	"github.com/chand1012/sq/etl/loader"
-	"github.com/chand1012/sq/etl/mapper"
-	"github.com/chand1012/sq/etl/source"
-	"github.com/chand1012/sq/etl/transfomer"
+	"github.com/oarkflow/sql/etl"
+	"github.com/oarkflow/sql/etl/loader"
+	"github.com/oarkflow/sql/etl/mapper"
+	"github.com/oarkflow/sql/etl/source"
+	"github.com/oarkflow/sql/etl/transfomer"
 )
 
 func main() {

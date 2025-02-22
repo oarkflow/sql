@@ -1,4 +1,4 @@
-module github.com/chand1012/sq
+module github.com/oarkflow/sql
 
 go 1.23.4
 

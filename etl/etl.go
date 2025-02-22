@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chand1012/sq/etl/contracts"
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/etl/contracts"
+	"github.com/oarkflow/sql/utils"
 )
 
 func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
@@ -120,11 +120,16 @@ func (e *ETL) Run() error {
 		batch = append(batch, rec)
 		if len(batch) >= e.batchSize {
 			for _, loader := range e.loaders {
-				err := retry(e.retryCount, e.retryDelay, func() error {
-					return loader.LoadBatch(batch)
-				})
-				if err != nil {
-					log.Printf("Error loading batch: %v", err)
+				err := loader.Setup()
+				if err == nil {
+					err = retry(e.retryCount, e.retryDelay, func() error {
+						return loader.LoadBatch(batch)
+					})
+					if err != nil {
+						log.Printf("Error loading batch: %v", err)
+					}
+				} else {
+					log.Printf("Error setting up loader: %v", err)
 				}
 			}
 			batch = batch[:0]

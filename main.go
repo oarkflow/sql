@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/chand1012/sq/sql"
+	"github.com/oarkflow/sql/sql"
 )
 
 func main() {

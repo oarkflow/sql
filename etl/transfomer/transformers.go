@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/utils"
 )
 
 type DotNotationTransformer struct {

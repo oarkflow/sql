@@ -3,7 +3,7 @@ package mapper
 import (
 	"time"
 
-	"github.com/chand1012/sq/utils"
+	"github.com/oarkflow/sql/utils"
 )
 
 type AddTimestampMapper struct{}
