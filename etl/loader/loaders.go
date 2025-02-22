@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 
@@ -13,11 +14,11 @@ func (l *ConsoleLoader) Close() error {
 	return nil
 }
 
-func (l *ConsoleLoader) Setup() error {
+func (l *ConsoleLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *ConsoleLoader) LoadBatch(records []utils.Record) error {
+func (l *ConsoleLoader) LoadBatch(ctx context.Context, records []utils.Record) error {
 	log.Printf("ConsoleLoader: Loading batch of %d records", len(records))
 	for _, rec := range records {
 		log.Printf("utils.Record: %v", rec)
@@ -27,7 +28,7 @@ func (l *ConsoleLoader) LoadBatch(records []utils.Record) error {
 
 type VerboseConsoleLoader struct{}
 
-func (l *VerboseConsoleLoader) LoadBatch(records []utils.Record) error {
+func (l *VerboseConsoleLoader) LoadBatch(ctx context.Context, records []utils.Record) error {
 	log.Printf("VerboseConsoleLoader: Processing batch with %d records", len(records))
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
@@ -41,6 +42,6 @@ func (l *VerboseConsoleLoader) Close() error {
 	return nil
 }
 
-func (l *VerboseConsoleLoader) Setup() error {
+func (l *VerboseConsoleLoader) Setup(ctx context.Context) error {
 	return nil
 }

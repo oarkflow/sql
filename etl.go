@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -18,7 +19,11 @@ import (
 
 type LowercaseMapper struct{}
 
-func (m *LowercaseMapper) Map(rec utils.Record) (utils.Record, error) {
+func (m *LowercaseMapper) Name() string {
+	return "Lower"
+}
+
+func (m *LowercaseMapper) Map(_ context.Context, rec utils.Record) (utils.Record, error) {
 	newRec := make(utils.Record)
 	for k, v := range rec {
 		newRec[strings.ToLower(k)] = v
@@ -28,8 +33,7 @@ func (m *LowercaseMapper) Map(rec utils.Record) (utils.Record, error) {
 
 type VotingTransformer struct{}
 
-func (t *VotingTransformer) Transform(rec utils.Record) (utils.Record, error) {
-	fmt.Println(rec)
+func (t *VotingTransformer) Transform(_ context.Context, rec utils.Record) (utils.Record, error) {
 	if ageStr, ok := rec["age"].(string); ok {
 		age, err := strconv.Atoi(ageStr)
 		if err != nil {
@@ -44,7 +48,7 @@ type RequiredFieldValidator struct {
 	Field string
 }
 
-func (v *RequiredFieldValidator) Validate(rec utils.Record) error {
+func (v *RequiredFieldValidator) Validate(_ context.Context, rec utils.Record) error {
 	if val, ok := rec[v.Field]; !ok || fmt.Sprintf("%v", val) == "" {
 		return fmt.Errorf("required field '%s' is missing or empty", v.Field)
 	}
@@ -56,13 +60,13 @@ type FileCheckpointStore struct {
 	mu       sync.Mutex
 }
 
-func (cs *FileCheckpointStore) SaveCheckpoint(cp string) error {
+func (cs *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return os.WriteFile(cs.fileName, []byte(cp), 0644)
 }
 
-func (cs *FileCheckpointStore) GetCheckpoint() (string, error) {
+func (cs *FileCheckpointStore) GetCheckpoint(context.Context) (string, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	data, err := os.ReadFile(cs.fileName)
@@ -108,7 +112,7 @@ func main() {
 		etl.WithWorkerCount(2),
 		etl.WithBatchSize(5),
 	)
-	if err := etlInstance.Run(); err != nil {
+	if err := etlInstance.Run(context.Background()); err != nil {
 		log.Fatalf("ETL run failed: %v", err)
 	}
 	if err := etlInstance.Close(); err != nil {

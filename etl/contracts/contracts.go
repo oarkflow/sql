@@ -1,46 +1,48 @@
 package contracts
 
 import (
+	"context"
 	"io"
 
 	"github.com/oarkflow/sql/utils"
 )
 
 type Connector interface {
-	Setup() error
+	Setup(context.Context) error
 }
 
 type Source interface {
-	Extract() (<-chan utils.Record, error)
+	Extract(context.Context) (<-chan utils.Record, error)
 	io.Closer
 	Connector
 }
 
 type Mapper interface {
-	Map(utils.Record) (utils.Record, error)
+	Map(context.Context, utils.Record) (utils.Record, error)
+	Name() string
 }
 
 type Transformer interface {
-	Transform(utils.Record) (utils.Record, error)
+	Transform(context.Context, utils.Record) (utils.Record, error)
 }
 
 type Loader interface {
-	LoadBatch([]utils.Record) error
+	LoadBatch(context.Context, []utils.Record) error
 	Connector
 	io.Closer
 }
 
 type CheckpointStore interface {
-	SaveCheckpoint(checkpoint string) error
-	GetCheckpoint() (string, error)
+	SaveCheckpoint(ctx context.Context, checkpoint string) error
+	GetCheckpoint(context.Context) (string, error)
 }
 
 type Transactional interface {
-	Begin() error
-	Commit() error
-	Rollback() error
+	Begin(context.Context) error
+	Commit(context.Context) error
+	Rollback(context.Context) error
 }
 
 type Validator interface {
-	Validate(rec utils.Record) error
+	Validate(ctx context.Context, rec utils.Record) error
 }

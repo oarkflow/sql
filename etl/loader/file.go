@@ -2,6 +2,7 @@ package loader
 
 import (
 	"bufio"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -37,7 +38,7 @@ func NewFileLoader(fileName string, appendMode bool) *FileLoader {
 	}
 }
 
-func (fl *FileLoader) Setup() error {
+func (fl *FileLoader) Setup(ctx context.Context) error {
 	switch fl.extension {
 	case "json":
 		if fl.appendMode {
@@ -63,16 +64,17 @@ func (fl *FileLoader) Setup() error {
 				if _, err := f.Read(buf); err != nil {
 					return fmt.Errorf("failed to read trailing bytes: %w", err)
 				}
-				if string(buf) != "]\n" {
-					return fmt.Errorf("unexpected file ending; expected JSON array to end with \"]\\n\"")
+				trimSize := int64(2)
+				if buf[1] == '\n' {
+					trimSize = 3
 				}
-				if err := f.Truncate(info.Size() - 2); err != nil {
+				if err := f.Truncate(info.Size() - trimSize); err != nil {
 					return fmt.Errorf("failed to truncate file: %w", err)
 				}
 				if _, err := f.Seek(0, io.SeekEnd); err != nil {
 					return fmt.Errorf("failed to seek to end: %w", err)
 				}
-				if info.Size()-2 > int64(len("[\n")) {
+				if info.Size()-trimSize > int64(len("[\n")) {
 					fl.jsonFirstRecord = false
 				} else {
 					fl.jsonFirstRecord = true
@@ -121,7 +123,7 @@ func (fl *FileLoader) Setup() error {
 	return nil
 }
 
-func (fl *FileLoader) LoadBatch(records []utils.Record) error {
+func (fl *FileLoader) LoadBatch(ctx context.Context, records []utils.Record) error {
 	switch fl.extension {
 	case "json":
 		for _, rec := range records {

@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"log"
 
 	"github.com/oarkflow/sql/utils"
@@ -14,7 +15,7 @@ func (fs *FileSource) Close() error {
 	return nil
 }
 
-func (fs *FileSource) Setup() error {
+func (fs *FileSource) Setup(_ context.Context) error {
 	return nil
 }
 
@@ -22,7 +23,7 @@ func NewFileSource(filename string) *FileSource {
 	return &FileSource{Filename: filename}
 }
 
-func (fs *FileSource) Extract() (<-chan utils.Record, error) {
+func (fs *FileSource) Extract(_ context.Context) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)

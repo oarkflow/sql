@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -17,7 +18,7 @@ func (hs *HTTPSource) Close() error {
 	return nil
 }
 
-func (hs *HTTPSource) Setup() error {
+func (hs *HTTPSource) Setup(_ context.Context) error {
 	return nil
 }
 
@@ -25,7 +26,7 @@ func NewHTTPSource(url string) *HTTPSource {
 	return &HTTPSource{URL: url}
 }
 
-func (hs *HTTPSource) Extract() (<-chan utils.Record, error) {
+func (hs *HTTPSource) Extract(_ context.Context) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)

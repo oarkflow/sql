@@ -1,6 +1,8 @@
 package mapper
 
 import (
+	"context"
+
 	"github.com/oarkflow/sql/utils"
 )
 
@@ -18,7 +20,11 @@ func NewFieldMapper(mapping map[string]string, additionalFields map[string]any, 
 	}
 }
 
-func (gm *FieldMapper) Map(rec utils.Record) (utils.Record, error) {
+func (gm *FieldMapper) Name() string {
+	return "FieldMapper"
+}
+
+func (gm *FieldMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
 	out := make(utils.Record)
 	if gm.mapping == nil || len(gm.mapping) == 0 {
 		out = rec
