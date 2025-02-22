@@ -1,6 +1,8 @@
 package contracts
 
 import (
+	"io"
+
 	"github.com/oarkflow/sql/utils"
 )
 
@@ -8,13 +10,9 @@ type Connector interface {
 	Setup() error
 }
 
-type Closer interface {
-	Close() error
-}
-
 type Source interface {
 	Extract() (<-chan utils.Record, error)
-	Closer
+	io.Closer
 	Connector
 }
 
@@ -28,8 +26,8 @@ type Transformer interface {
 
 type Loader interface {
 	LoadBatch([]utils.Record) error
-	Closer
 	Connector
+	io.Closer
 }
 
 type CheckpointStore interface {

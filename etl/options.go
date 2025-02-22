@@ -51,6 +51,18 @@ func WithTransformers(transformers ...contracts.Transformer) Option {
 	}
 }
 
+func WithValidators(validators ...contracts.Validator) Option {
+	return func(e *ETL) {
+		e.validators = validators
+	}
+}
+
+func WithRawChanBuffer(size int) Option {
+	return func(e *ETL) {
+		e.rawChanBuffer = size
+	}
+}
+
 func WithLoaders(loaders ...contracts.Loader) Option {
 	return func(e *ETL) {
 		e.loaders = loaders
