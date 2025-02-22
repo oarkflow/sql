@@ -31,3 +31,14 @@ type Loader interface {
 	Closer
 	Connector
 }
+
+type CheckpointStore interface {
+	SaveCheckpoint(checkpoint string) error
+	GetCheckpoint() (string, error)
+}
+
+type Transactional interface {
+	Begin() error
+	Commit() error
+	Rollback() error
+}

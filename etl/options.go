@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/sql/etl/contracts"
+	"github.com/oarkflow/sql/utils"
 )
 
 type Option func(*ETL)
@@ -53,5 +54,12 @@ func WithTransformers(transformers ...contracts.Transformer) Option {
 func WithLoaders(loaders ...contracts.Loader) Option {
 	return func(e *ETL) {
 		e.loaders = loaders
+	}
+}
+
+func WithCheckpointStore(store contracts.CheckpointStore, cpFunc func(rec utils.Record) string) Option {
+	return func(e *ETL) {
+		e.checkpointStore = store
+		e.checkpointFunc = cpFunc
 	}
 }

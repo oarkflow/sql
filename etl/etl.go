@@ -51,7 +51,6 @@ func (t *Transaction) Rollback() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var err error
-
 	for i := len(t.rollbackActions) - 1; i >= 0; i-- {
 		if e := t.rollbackActions[i](); e != nil && err == nil {
 			err = e
@@ -84,12 +83,6 @@ func RunInTransaction(fn func(tx *Transaction) error) error {
 	return tx.Commit()
 }
 
-type Transactional interface {
-	Begin() error
-	Commit() error
-	Rollback() error
-}
-
 func robustRetry(retryCount int, retryDelay time.Duration, fn func() error) error {
 	var err error
 	for i := 0; i < retryCount; i++ {
@@ -106,15 +99,18 @@ func robustRetry(retryCount int, retryDelay time.Duration, fn func() error) erro
 }
 
 type ETL struct {
-	sources       []contracts.Source
-	mappers       []contracts.Mapper
-	transformers  []contracts.Transformer
-	loaders       []contracts.Loader
-	workerCount   int
-	batchSize     int
-	retryCount    int
-	retryDelay    time.Duration
-	loaderWorkers int
+	sources         []contracts.Source
+	mappers         []contracts.Mapper
+	transformers    []contracts.Transformer
+	loaders         []contracts.Loader
+	workerCount     int
+	batchSize       int
+	retryCount      int
+	retryDelay      time.Duration
+	loaderWorkers   int
+	checkpointStore contracts.CheckpointStore
+	checkpointFunc  func(rec utils.Record) string
+	lastCheckpoint  string
 }
 
 func defaultConfig() *ETL {
@@ -136,6 +132,14 @@ func NewETL(opts ...Option) *ETL {
 }
 
 func (e *ETL) Run() error {
+	if e.checkpointStore != nil {
+		if cp, err := e.checkpointStore.GetCheckpoint(); err != nil {
+			log.Printf("Error retrieving checkpoint: %v", err)
+		} else {
+			e.lastCheckpoint = cp
+			log.Printf("Resuming from checkpoint: %s", e.lastCheckpoint)
+		}
+	}
 	rawChan := make(chan utils.Record)
 	var srcWG sync.WaitGroup
 	for _, s := range e.sources {
@@ -227,7 +231,7 @@ func (e *ETL) Run() error {
 						log.Printf("[Loader Worker %d] Error setting up loader: %v", workerID, err)
 						continue
 					}
-					if txnLoader, ok := loader.(Transactional); ok {
+					if txnLoader, ok := loader.(contracts.Transactional); ok {
 						if err := txnLoader.Begin(); err != nil {
 							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
 							continue
@@ -244,6 +248,15 @@ func (e *ETL) Run() error {
 						}
 						if err := txnLoader.Commit(); err != nil {
 							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
+							continue
+						}
+						if e.checkpointStore != nil && e.checkpointFunc != nil {
+							cp := e.checkpointFunc(batch[len(batch)-1])
+							if err := e.checkpointStore.SaveCheckpoint(cp); err != nil {
+								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
+							} else {
+								e.lastCheckpoint = cp
+							}
 						}
 					} else {
 						err := RunInTransaction(func(tx *Transaction) error {
@@ -253,6 +266,15 @@ func (e *ETL) Run() error {
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
+							continue
+						}
+						if e.checkpointStore != nil && e.checkpointFunc != nil {
+							cp := e.checkpointFunc(batch[len(batch)-1])
+							if err := e.checkpointStore.SaveCheckpoint(cp); err != nil {
+								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
+							} else {
+								e.lastCheckpoint = cp
+							}
 						}
 					}
 				}
