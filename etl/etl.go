@@ -1,6 +1,7 @@
 package etl
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -9,6 +10,79 @@ import (
 	"github.com/oarkflow/sql/etl/contracts"
 	"github.com/oarkflow/sql/utils"
 )
+
+type Transaction struct {
+	mu              sync.Mutex
+	rollbackActions []func() error
+	committed       bool
+}
+
+func NewTransaction() *Transaction {
+	return &Transaction{
+		rollbackActions: make([]func() error, 0),
+	}
+}
+
+func (t *Transaction) Begin() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.committed = false
+	t.rollbackActions = make([]func() error, 0)
+	return nil
+}
+
+func (t *Transaction) RegisterRollback(fn func() error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.committed {
+		t.rollbackActions = append(t.rollbackActions, fn)
+	}
+}
+
+func (t *Transaction) Commit() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.committed = true
+	t.rollbackActions = nil
+	return nil
+}
+
+func (t *Transaction) Rollback() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var err error
+
+	for i := len(t.rollbackActions) - 1; i >= 0; i-- {
+		if e := t.rollbackActions[i](); e != nil && err == nil {
+			err = e
+		}
+	}
+	t.rollbackActions = nil
+	return err
+}
+
+func (t *Transaction) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.committed && len(t.rollbackActions) > 0 {
+		return t.Rollback()
+	}
+	return nil
+}
+
+func RunInTransaction(fn func(tx *Transaction) error) error {
+	tx := NewTransaction()
+	if err := tx.Begin(); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil {
+			return fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err)
+		}
+		return err
+	}
+	return tx.Commit()
+}
 
 type Transactional interface {
 	Begin() error
@@ -172,9 +246,10 @@ func (e *ETL) Run() error {
 							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
 						}
 					} else {
-
-						err := robustRetry(e.retryCount, e.retryDelay, func() error {
-							return loader.LoadBatch(batch)
+						err := RunInTransaction(func(tx *Transaction) error {
+							return robustRetry(e.retryCount, e.retryDelay, func() error {
+								return loader.LoadBatch(batch)
+							})
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
