@@ -30,8 +30,12 @@ func (gm *FieldMapper) Map(ctx context.Context, rec utils.Record) (utils.Record,
 		out = rec
 	} else {
 		for outKey, inKey := range gm.mapping {
-			if val, exists := rec[inKey]; exists {
+			_, v := utils.GetValue(ctx, inKey, rec)
+			if v != nil {
+				out[outKey] = v
+			} else if val, exists := rec[inKey]; exists {
 				out[outKey] = val
+				panic(1)
 			} else if gm.keepUnmatchedFields {
 				out[inKey] = rec[inKey]
 			}
