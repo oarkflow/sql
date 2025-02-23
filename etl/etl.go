@@ -11,7 +11,7 @@ import (
 	"github.com/oarkflow/sql/utils"
 )
 
-func robustRetry(retryCount int, retryDelay time.Duration, fn func() error) error {
+func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
 	var err error
 	for i := 0; i < retryCount; i++ {
 		err = fn()
@@ -182,7 +182,7 @@ func (e *ETL) Run(ctx context.Context) error {
 							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
 							continue
 						}
-						err := robustRetry(e.retryCount, e.retryDelay, func() error {
+						err := retry(e.retryCount, e.retryDelay, func() error {
 							return loader.LoadBatch(ctx, batch)
 						})
 						if err != nil {
@@ -206,7 +206,7 @@ func (e *ETL) Run(ctx context.Context) error {
 						}
 					} else {
 						err := RunInTransaction(ctx, func(tx *Transaction) error {
-							return robustRetry(e.retryCount, e.retryDelay, func() error {
+							return retry(e.retryCount, e.retryDelay, func() error {
 								return loader.LoadBatch(ctx, batch)
 							})
 						})
