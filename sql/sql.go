@@ -18,31 +18,41 @@ func Query(query string) ([]utils.Record, error) {
 	if len(parser.errors) != 0 {
 		return nil, errors.New(strings.Join(parser.errors, "\t"))
 	}
-	mainRows, err := program.Query.From.loadData()
+	return program.parseAndExecute()
+}
+
+type QueryStatement struct {
+	With     *WithClause
+	Query    *SQL
+	Compound *CompoundQuery
+}
+
+func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
+	mainRows, err := qs.Query.From.loadData()
 	if err != nil {
 		return nil, err
 	}
 
-	if program.Query.From.Alias != "" {
-		alias := program.Query.From.Alias
+	if qs.Query.From.Alias != "" {
+		alias := qs.Query.From.Alias
 		for i, row := range mainRows {
 			mainRows[i] = utils.ApplyAliasToRecord(row, alias)
 		}
 	}
-	if len(program.Query.Joins) > 0 {
-		mainRows, err = program.Query.executeJoins(mainRows)
+	if len(qs.Query.Joins) > 0 {
+		mainRows, err = qs.Query.executeJoins(mainRows)
 		if err != nil {
 			return nil, err
 		}
 	}
-	result, err := program.Query.executeQuery(mainRows)
+	result, err := qs.Query.executeQuery(mainRows)
 	if err != nil {
 		return nil, err
 	}
-	if program.Compound != nil {
-		leftRes, _ := program.Compound.Left.executeQuery(mainRows)
-		rightRes, _ := program.Compound.Right.executeQuery(mainRows)
-		switch program.Compound.Operator {
+	if qs.Compound != nil {
+		leftRes, _ := qs.Compound.Left.executeQuery(mainRows)
+		rightRes, _ := qs.Compound.Right.executeQuery(mainRows)
+		switch qs.Compound.Operator {
 		case UNION:
 			result = utils.Union(leftRes, rightRes)
 		case INTERSECT:
@@ -52,12 +62,6 @@ func Query(query string) ([]utils.Record, error) {
 		}
 	}
 	return result, nil
-}
-
-type QueryStatement struct {
-	With     *WithClause
-	Query    *SQL
-	Compound *CompoundQuery
 }
 
 func (qs *QueryStatement) statementNode()       {}

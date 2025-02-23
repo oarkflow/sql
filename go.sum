@@ -1,5 +1,3 @@
-github.com/buger/jsonparser v1.1.1 h1:2PnMjfWD7wBILjqQbt530v576A/cAbQvEW9gGIpYMUs=
-github.com/buger/jsonparser v1.1.1/go.mod h1:6RYKKt7H4d4+iWqouImQ9R2FZql3VbhNgx27UK13J/0=
 github.com/oarkflow/convert v0.0.4 h1:1Axqi7d0dY9wOPhMs3kt9VLCS4jcQbgQZbfn/jI80SU=
 github.com/oarkflow/convert v0.0.4/go.mod h1:N74VVimer11ZLahm8FpnQ+wpO78XBP9y3IRvRB29fAA=
 github.com/oarkflow/date v0.0.4 h1:EwY/wiS3CqZNBx7b2x+3kkJwVNuGk+G0dls76kL/fhU=
