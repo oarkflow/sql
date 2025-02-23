@@ -9,13 +9,13 @@ import (
 
 type Transaction struct {
 	mu              sync.Mutex
-	rollbackActions []func() error
+	rollbackActions []func(ctx context.Context) error
 	committed       bool
 }
 
 func NewTransaction() *Transaction {
 	return &Transaction{
-		rollbackActions: make([]func() error, 0),
+		rollbackActions: make([]func(ctx context.Context) error, 0),
 	}
 }
 
@@ -25,12 +25,12 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	if t.committed {
 		return fmt.Errorf("transaction already committed")
 	}
-	t.rollbackActions = make([]func() error, 0)
+	t.rollbackActions = make([]func(ctx context.Context) error, 0)
 	log.Println("Transaction begun")
 	return nil
 }
 
-func (t *Transaction) RegisterRollback(fn func() error) error {
+func (t *Transaction) RegisterRollback(fn func(ctx context.Context) error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.committed {
@@ -41,7 +41,7 @@ func (t *Transaction) RegisterRollback(fn func() error) error {
 	return nil
 }
 
-func (t *Transaction) Commit(_ context.Context) error {
+func (t *Transaction) Commit(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.committed {
@@ -53,7 +53,7 @@ func (t *Transaction) Commit(_ context.Context) error {
 	return nil
 }
 
-func (t *Transaction) Rollback(_ context.Context) error {
+func (t *Transaction) Rollback(ctx context.Context) error {
 	t.mu.Lock()
 	if t.committed || len(t.rollbackActions) == 0 {
 		t.mu.Unlock()
@@ -65,7 +65,7 @@ func (t *Transaction) Rollback(_ context.Context) error {
 	var errs []error
 	log.Println("Rolling back transaction")
 	for i := len(actions) - 1; i >= 0; i-- {
-		if err := actions[i](); err != nil {
+		if err := actions[i](ctx); err != nil {
 			errs = append(errs, err)
 			log.Printf("Error during rollback action %d: %v", i, err)
 		}
@@ -88,7 +88,7 @@ func (t *Transaction) Close() error {
 	var errs []error
 	log.Println("Closing transaction: performing rollback")
 	for i := len(actions) - 1; i >= 0; i-- {
-		if err := actions[i](); err != nil {
+		if err := actions[i](context.Background()); err != nil {
 			errs = append(errs, err)
 			log.Printf("Error during rollback action %d in Close: %v", i, err)
 		}
@@ -110,7 +110,7 @@ func (t *Transaction) CreateSavepoint() (int, error) {
 	return sp, nil
 }
 
-func (t *Transaction) RollbackToSavepoint(sp int) error {
+func (t *Transaction) RollbackToSavepoint(ctx context.Context, sp int) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.committed {
@@ -122,7 +122,7 @@ func (t *Transaction) RollbackToSavepoint(sp int) error {
 	var errs []error
 	log.Printf("Rolling back to savepoint at index %d", sp)
 	for i := len(t.rollbackActions) - 1; i >= sp; i-- {
-		if err := t.rollbackActions[i](); err != nil {
+		if err := t.rollbackActions[i](ctx); err != nil {
 			errs = append(errs, err)
 			log.Printf("Error during rollback action %d at savepoint: %v", i, err)
 		}
