@@ -9,8 +9,8 @@ import (
 	"github.com/oarkflow/sql/v1/contracts"
 )
 
-// ETLJob encapsulates the ETL pipeline components.
-type ETLJob struct {
+// ETL encapsulates the ETL pipeline components.
+type ETL struct {
 	source        contracts.Source
 	loader        contracts.Loader
 	mappers       []contracts.Mapper
@@ -20,10 +20,10 @@ type ETLJob struct {
 	rawChanBuffer int
 }
 
-// NewETLJob creates an ETLJob with default settings and applies all provided options.
-func NewETLJob(opts ...Option) (*ETLJob, error) {
+// NewETL creates an ETL with default settings and applies all provided options.
+func NewETL(opts ...Option) (*ETL, error) {
 	// Set default values.
-	job := &ETLJob{
+	job := &ETL{
 		workerCount:   2,
 		batchSize:     100, // default batch size if not provided
 		rawChanBuffer: 50,
@@ -44,7 +44,7 @@ func NewETLJob(opts ...Option) (*ETLJob, error) {
 }
 
 // Run executes the ETL pipeline.
-func (e *ETLJob) Run(ctx context.Context) error {
+func (e *ETL) Run(ctx context.Context) error {
 	rawChan := make(chan contracts.Record, e.rawChanBuffer)
 	var srcWG sync.WaitGroup
 
@@ -147,7 +147,7 @@ func (e *ETLJob) Run(ctx context.Context) error {
 }
 
 // Close releases resources used by the ETL job.
-func (e *ETLJob) Close() error {
+func (e *ETL) Close() error {
 	if err := e.source.Close(); err != nil {
 		return err
 	}

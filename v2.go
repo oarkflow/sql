@@ -52,7 +52,7 @@ func main() {
 				log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
 			}
 		}
-		etlJob, err := v1.NewETLJob(
+		etlJob, err := v1.NewETL(
 			v1.WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			v1.WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
 			v1.WithMapping(tableCfg.Mapping),

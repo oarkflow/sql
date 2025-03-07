@@ -12,12 +12,12 @@ import (
 	"github.com/oarkflow/sql/v1/transformers"
 )
 
-// Option is a function that configures an ETLJob.
-type Option func(*ETLJob) error
+// Option is a function that configures an ETL.
+type Option func(*ETL) error
 
 // WithSource configures the source based on the provided parameters.
 func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		var src contracts.Source
 		switch sourceType {
 		case "mysql", "postgresql":
@@ -47,7 +47,7 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 
 // WithDestination configures the loader based on the provided parameters.
 func WithDestination(destType string, destDB *sql.DB, destFile string, cfg config.TableMapping) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		var loader contracts.Loader
 		switch destType {
 		case "mysql", "postgresql":
@@ -81,7 +81,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 
 // WithMapping configures the field mappers.
 func WithMapping(mapping map[string]string) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		mappersList := []contracts.Mapper{}
 		if len(mapping) > 0 {
 			mappersList = append(mappersList, mappers.NewFieldMapper(mapping))
@@ -95,7 +95,7 @@ func WithMapping(mapping map[string]string) Option {
 
 // WithTransformers configures the transformers.
 func WithTransformers() Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		transformersList := []contracts.Transformer{
 			&transformers.LookupTransformer{
 				LookupData:  map[string]string{"key1": "value1"},
@@ -110,7 +110,7 @@ func WithTransformers() Option {
 
 // WithWorkerCount sets the number of concurrent workers.
 func WithWorkerCount(count int) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		e.workerCount = count
 		return nil
 	}
@@ -118,7 +118,7 @@ func WithWorkerCount(count int) Option {
 
 // WithBatchSize sets the batch size for loading.
 func WithBatchSize(size int) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		e.batchSize = size
 		return nil
 	}
@@ -126,7 +126,7 @@ func WithBatchSize(size int) Option {
 
 // WithRawChanBuffer sets the buffer size for the raw channel.
 func WithRawChanBuffer(buffer int) Option {
-	return func(e *ETLJob) error {
+	return func(e *ETL) error {
 		e.rawChanBuffer = buffer
 		return nil
 	}
