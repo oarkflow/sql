@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/oarkflow/sql/utils"
-	"github.com/oarkflow/sql/v1/contracts"
 )
 
 type FieldMapper struct {
@@ -20,8 +19,8 @@ func (fm *FieldMapper) Name() string {
 	return "FieldMapper"
 }
 
-func (fm *FieldMapper) Map(ctx context.Context, rec contracts.Record) (contracts.Record, error) {
-	newRec := make(contracts.Record)
+func (fm *FieldMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
+	newRec := make(utils.Record)
 	for destField, expr := range fm.mapping {
 		_, val := utils.GetValue(ctx, expr, rec)
 		newRec[destField] = val
@@ -35,8 +34,8 @@ func (lm *LowercaseMapper) Name() string {
 	return "LowercaseMapper"
 }
 
-func (lm *LowercaseMapper) Map(ctx context.Context, rec contracts.Record) (contracts.Record, error) {
-	newRec := make(contracts.Record)
+func (lm *LowercaseMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
+	newRec := make(utils.Record)
 	for k, v := range rec {
 		newRec[strings.ToLower(k)] = v
 	}

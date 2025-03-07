@@ -11,7 +11,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/oarkflow/sql/v1/contracts"
+	"github.com/oarkflow/sql/utils"
 )
 
 type SQLSource struct {
@@ -28,8 +28,8 @@ func (s *SQLSource) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (s *SQLSource) Extract(ctx context.Context) (<-chan contracts.Record, error) {
-	out := make(chan contracts.Record, 100)
+func (s *SQLSource) Extract(ctx context.Context) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, 100)
 	go func() {
 		defer close(out)
 		var q string
@@ -59,7 +59,7 @@ func (s *SQLSource) Extract(ctx context.Context) (<-chan contracts.Record, error
 				log.Printf("Scan error: %v", err)
 				continue
 			}
-			rec := make(contracts.Record)
+			rec := make(utils.Record)
 			for i, colName := range cols {
 				rec[colName] = columns[i]
 			}
@@ -85,8 +85,8 @@ func (s *CSVSource) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (s *CSVSource) Extract(ctx context.Context) (<-chan contracts.Record, error) {
-	out := make(chan contracts.Record, 100)
+func (s *CSVSource) Extract(ctx context.Context) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, 100)
 	go func() {
 		defer close(out)
 		file, err := os.Open(s.fileName)
@@ -110,7 +110,7 @@ func (s *CSVSource) Extract(ctx context.Context) (<-chan contracts.Record, error
 				log.Printf("CSV read error: %v", err)
 				continue
 			}
-			rec := make(contracts.Record)
+			rec := make(utils.Record)
 			for i, header := range headers {
 				rec[header] = row[i]
 			}
@@ -136,8 +136,8 @@ func (s *JSONSource) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (s *JSONSource) Extract(ctx context.Context) (<-chan contracts.Record, error) {
-	out := make(chan contracts.Record, 100)
+func (s *JSONSource) Extract(ctx context.Context) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, 100)
 	go func() {
 		defer close(out)
 		file, err := os.Open(s.fileName)
@@ -149,7 +149,7 @@ func (s *JSONSource) Extract(ctx context.Context) (<-chan contracts.Record, erro
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			line := scanner.Text()
-			var rec contracts.Record
+			var rec utils.Record
 			if err := json.Unmarshal([]byte(line), &rec); err != nil {
 				log.Printf("JSON unmarshal error: %v", err)
 				continue

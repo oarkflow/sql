@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/oarkflow/sql/v1/contracts"
+	"github.com/oarkflow/sql/utils"
 )
 
 type LookupTransformer struct {
@@ -14,7 +14,7 @@ type LookupTransformer struct {
 	TargetField string
 }
 
-func (lt *LookupTransformer) Transform(ctx context.Context, rec contracts.Record) (contracts.Record, error) {
+func (lt *LookupTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
 	if key, ok := rec[lt.Field]; ok {
 		keyStr := fmt.Sprintf("%v", key)
 		if val, exists := lt.LookupData[keyStr]; exists {

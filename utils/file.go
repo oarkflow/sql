@@ -12,7 +12,7 @@ import (
 	"github.com/oarkflow/convert"
 )
 
-type Record map[string]any
+type Record = map[string]any
 
 func ProcessFile(filename string, callbacks ...func(Record)) ([]Record, error) {
 	var callback func(Record)

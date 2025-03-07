@@ -40,7 +40,7 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 		default:
 			return fmt.Errorf("unsupported source type: %s", sourceType)
 		}
-		e.source = src
+		e.sources = append(e.sources, src)
 		return nil
 	}
 }
@@ -74,7 +74,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 		default:
 			return fmt.Errorf("unsupported destination type: %s", destType)
 		}
-		e.loader = loader
+		e.loaders = append(e.loaders, loader)
 		return nil
 	}
 }
@@ -82,13 +82,13 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 // WithMapping configures the field mappers.
 func WithMapping(mapping map[string]string) Option {
 	return func(e *ETL) error {
-		mappersList := []contracts.Mapper{}
+		var mappersList []contracts.Mapper
 		if len(mapping) > 0 {
 			mappersList = append(mappersList, mappers.NewFieldMapper(mapping))
 		}
 		// Always add a default mapper to convert field names to lowercase.
 		mappersList = append(mappersList, &mappers.LowercaseMapper{})
-		e.mappers = mappersList
+		e.mappers = append(e.mappers, mappersList...)
 		return nil
 	}
 }

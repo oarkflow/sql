@@ -52,7 +52,7 @@ func main() {
 				log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
 			}
 		}
-		etlJob, err := v1.NewETL(
+		etlJob := v1.NewETL(
 			v1.WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			v1.WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
 			v1.WithMapping(tableCfg.Mapping),
@@ -61,9 +61,6 @@ func main() {
 			v1.WithBatchSize(tableCfg.BatchSize),
 			v1.WithRawChanBuffer(50),
 		)
-		if err != nil {
-			log.Fatalf("Error creating ETL job: %v", err)
-		}
 
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {

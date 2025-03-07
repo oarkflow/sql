@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/oarkflow/sql/utils"
 	"github.com/oarkflow/sql/v1/config"
-	"github.com/oarkflow/sql/v1/contracts"
 )
 
 type SQLLoader struct {
@@ -44,7 +44,7 @@ func (l *SQLLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *SQLLoader) LoadBatch(ctx context.Context, batch []contracts.Record) error {
+func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -130,7 +130,7 @@ func (l *KeyValueLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *KeyValueLoader) LoadBatch(ctx context.Context, batch []contracts.Record) error {
+func (l *KeyValueLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	for _, rec := range batch {
 		kv := make(map[string]any)
 		for k, v := range l.extraValues {
@@ -210,7 +210,7 @@ func (l *JSONLoader) Setup(ctx context.Context) error {
 	return err
 }
 
-func (l *JSONLoader) LoadBatch(ctx context.Context, batch []contracts.Record) error {
+func (l *JSONLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, rec := range batch {
@@ -271,7 +271,7 @@ func (l *CSVLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *CSVLoader) LoadBatch(ctx context.Context, batch []contracts.Record) error {
+func (l *CSVLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if len(batch) == 0 {
