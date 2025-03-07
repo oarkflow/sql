@@ -40,17 +40,54 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 }
 
 func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
-	var filteredRows []utils.Record
 	ctx := NewEvalContext()
-	for _, row := range rows {
-		if query.Where != nil {
-			result := ctx.evalExpression(query.Where, row)
-			if b, ok := result.(bool); !ok || !b {
-				continue
+	var filteredRows []utils.Record
+
+	// Flag to mark if we applied an indexed lookup.
+	indexApplied := false
+
+	// Attempt to apply O(1) filtering when WHERE is a simple equality (e.g. col = value).
+	if query.Where != nil {
+		if be, ok := query.Where.(*BinaryExpression); ok && be.Operator == "=" {
+			if ident, ok := be.Left.(*Identifier); ok {
+				if lit, ok := be.Right.(*Literal); ok {
+					indexApplied = true
+					keyName := ident.Value
+					filterValue := fmt.Sprintf("%v", lit.Value)
+					// Build an index for the keyName.
+					index := make(map[string][]utils.Record)
+					for _, row := range rows {
+						if val, exists := row[keyName]; exists {
+							keyStr := fmt.Sprintf("%v", val)
+							index[keyStr] = append(index[keyStr], row)
+						}
+					}
+					// O(1) lookup in the index.
+					if recs, found := index[filterValue]; found {
+						filteredRows = recs
+					} else {
+						// No matching records found.
+						filteredRows = []utils.Record{}
+					}
+				}
 			}
 		}
-		filteredRows = append(filteredRows, row)
 	}
+
+	// If no index was applied (or WHERE is not simple), fall back to iterative filtering.
+	if !indexApplied {
+		for _, row := range rows {
+			if query.Where != nil {
+				result := ctx.evalExpression(query.Where, row)
+				if b, ok := result.(bool); !ok || !b {
+					continue
+				}
+			}
+			filteredRows = append(filteredRows, row)
+		}
+	}
+
+	// Continue with processing aggregates, GROUP BY, HAVING, etc.
 	ctx.CurrentResultSet = filteredRows
 
 	hasAggregate := false
