@@ -1,0 +1,55 @@
+# Example for CSV to PostgreSQL ETL with auto table creation:
+source:
+    type: "csv"
+    file: "input.csv"
+
+destination:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    driver: "postgres"
+    username: "postgres"
+    password: "postgres"
+    database: "mydb"
+
+tables:
+    - old_name: "input.csv"
+      new_name: "my_table"
+      migrate: true
+      batch_size: 100
+      truncate_destination: true
+      auto_create_table: true
+      mapping:
+          name: "eval.{{Name + ' (migrated)'}}"
+          age: Age
+          country: Country
+
+# Example for database-to-database ETL (uncomment to use):
+# source:
+#   type: "mysql"
+#   host: "127.0.0.1"
+#   port: 3306
+#   driver: "mysql"
+#   username: "root"
+#   password: "root"
+#   database: "sourcedb"
+#
+# destination:
+#   type: "postgresql"
+#   host: "localhost"
+#   port: 5432
+#   driver: "postgresql"
+#   username: "postgres"
+#   password: "postgres"
+#   database: "destdb"
+#
+# tables:
+#   - old_name: "tbl_user"
+#     new_name: "users"
+#     migrate: true
+#     batch_size: 1000
+#     truncate_destination: true
+#     mapping:
+#       user_id: "id"
+#       username: "name"
+#       created_at: "{{created_at ? created_at : now()}}"
