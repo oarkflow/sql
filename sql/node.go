@@ -1,13 +1,8 @@
 package sql
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-
-	"github.com/oarkflow/sql/utils"
 )
 
 type Node interface {
@@ -219,32 +214,6 @@ func (tr *TableReference) String() string {
 		return fmt.Sprintf("(%s)", tr.Subquery.String())
 	}
 	return fmt.Sprintf("%s('%s')", tr.Source, tr.Name)
-}
-
-func (tr *TableReference) loadData() ([]utils.Record, error) {
-	switch strings.ToLower(tr.Source) {
-	case "read_file":
-		return utils.ProcessFile(tr.Name)
-	case "read_db":
-		return utils.ProcessFile(tr.Name)
-	case "read_api":
-		resp, err := http.Get(tr.Name)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		var rows []utils.Record
-		if err := json.Unmarshal(body, &rows); err != nil {
-			return nil, err
-		}
-		return rows, nil
-	default:
-		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
-	}
 }
 
 type JoinClause struct {
