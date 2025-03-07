@@ -2,7 +2,6 @@ package mappers
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/oarkflow/sql/utils"
@@ -25,7 +24,6 @@ func (fm *FieldMapper) Map(ctx context.Context, rec contracts.Record) (contracts
 	newRec := make(contracts.Record)
 	for destField, expr := range fm.mapping {
 		_, val := utils.GetValue(ctx, expr, rec)
-		fmt.Println(destField, expr, val, rec)
 		newRec[destField] = val
 	}
 	return newRec, nil

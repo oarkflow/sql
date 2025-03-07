@@ -12,17 +12,26 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/oarkflow/sql/v1/config"
 	"github.com/oarkflow/sql/v1/contracts"
 )
 
 type SQLLoader struct {
-	db       *sql.DB
-	table    string
-	truncate bool
+	db             *sql.DB
+	table          string
+	truncate       bool
+	updateSequence bool
+	destType       string
 }
 
-func NewSQLLoader(db *sql.DB, table string, truncate bool) *SQLLoader {
-	return &SQLLoader{db: db, table: table, truncate: truncate}
+func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoader {
+	return &SQLLoader{
+		db:             db,
+		destType:       destType,
+		table:          cfg.NewName,
+		truncate:       cfg.TruncateDestination,
+		updateSequence: cfg.UpdateSequence,
+	}
 }
 
 func (l *SQLLoader) Setup(ctx context.Context) error {
@@ -39,15 +48,15 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []contracts.Record) err
 	if len(batch) == 0 {
 		return nil
 	}
-	keys := []string{}
+	var keys []string
 	for k := range batch[0] {
 		keys = append(keys, k)
 	}
-	placeholders := []string{}
-	args := []any{}
+	var placeholders []string
+	var args []any
 	argCounter := 1
 	for _, rec := range batch {
-		valPlaceholders := []string{}
+		var valPlaceholders []string
 		for _, k := range keys {
 			valPlaceholders = append(valPlaceholders, fmt.Sprintf("$%d", argCounter))
 			args = append(args, rec[k])
@@ -64,32 +73,50 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []contracts.Record) err
 	return err
 }
 
+func updateSequence(db *sql.DB, table string) error {
+	seqName := fmt.Sprintf("%s_seq", table)
+	q := fmt.Sprintf("SELECT setval('%s', (SELECT MAX(id) FROM %s))", seqName, table)
+	if _, err := db.ExecContext(context.Background(), q); err != nil {
+		log.Printf("Error updating sequence %s: %v", seqName, err)
+		return err
+	} else {
+		log.Printf("Sequence %s updated", seqName)
+	}
+	return nil
+}
+
 func (l *SQLLoader) Close() error {
+	if l.destType == "postgresql" && l.updateSequence {
+		return updateSequence(l.db, l.table)
+	}
 	return nil
 }
 
 type KeyValueLoader struct {
-	db            *sql.DB
-	table         string
-	keyField      string
-	valueField    string
-	extraValues   map[string]any
-	includeFields []string
-	excludeFields []string
-	truncate      bool
+	db             *sql.DB
+	table          string
+	keyField       string
+	valueField     string
+	extraValues    map[string]any
+	includeFields  []string
+	excludeFields  []string
+	truncate       bool
+	updateSequence bool
+	destType       string
 }
 
-func NewKeyValueLoader(db *sql.DB, table, keyField, valueField string, extraValues map[string]any,
-	includeFields, excludeFields []string, truncate bool) *KeyValueLoader {
+func NewKeyValueLoader(db *sql.DB, destType string, cfg config.TableMapping) *KeyValueLoader {
 	return &KeyValueLoader{
-		db:            db,
-		table:         table,
-		keyField:      keyField,
-		valueField:    valueField,
-		extraValues:   extraValues,
-		includeFields: includeFields,
-		excludeFields: excludeFields,
-		truncate:      truncate,
+		db:             db,
+		destType:       destType,
+		table:          cfg.NewName,
+		keyField:       cfg.KeyField,
+		valueField:     cfg.ValueField,
+		extraValues:    cfg.ExtraValues,
+		includeFields:  cfg.IncludeFields,
+		excludeFields:  cfg.ExcludeFields,
+		truncate:       cfg.TruncateDestination,
+		updateSequence: cfg.UpdateSequence,
 	}
 }
 
@@ -148,6 +175,9 @@ func (l *KeyValueLoader) LoadBatch(ctx context.Context, batch []contracts.Record
 }
 
 func (l *KeyValueLoader) Close() error {
+	if l.destType == "postgresql" && l.updateSequence {
+		return updateSequence(l.db, l.table)
+	}
 	return nil
 }
 
