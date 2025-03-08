@@ -27,9 +27,12 @@ import (
 	"github.com/oarkflow/sql/utils"
 )
 
-// MultiTransformer allows a transformer to produce multiple output records.
 type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
+}
+
+func isSQLType(typ string) bool {
+	return typ != "csv" && typ != "json"
 }
 
 func main() {
@@ -41,42 +44,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
-
 	var sourceDB *sql.DB
 	var destDB *sql.DB
-	// Open source DB if source type is SQL.
-	if cfg.Source.Type == "mysql" || cfg.Source.Type == "postgresql" {
+	if isSQLType(cfg.Source.Type) {
 		sourceDB, err = etl.OpenDB(cfg.Source)
 		if err != nil {
 			log.Fatalf("Error connecting to source DB: %v", err)
 		}
 		defer sourceDB.Close()
 	}
-	// Open destination DB if destination type is SQL.
-	if cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql" {
+	if isSQLType(cfg.Destination.Type) {
 		destDB, err = etl.OpenDB(cfg.Destination)
 		if err != nil {
 			log.Fatalf("Error connecting to destination DB: %v", err)
 		}
 		defer destDB.Close()
 	}
-
-	// Process each table configuration.
 	for _, tableCfg := range cfg.Tables {
-		// For SQL destinations, respect the migrate flag.
-		if (cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql") && !tableCfg.Migrate {
+		if isSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		// If auto_create_table is requested and destination is SQL, create the table.
-		if (cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql") && tableCfg.AutoCreateTable {
+		if isSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable {
 			if tableCfg.KeyValueTable {
-				// Create the key-value table with output columns.
 				if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
 					log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
 				}
 			} else {
-				// Fallback: create table based on source CSV.
 				csvFileName := tableCfg.OldName
 				if csvFileName == "" {
 					csvFileName = cfg.Source.File
@@ -86,8 +80,6 @@ func main() {
 				}
 			}
 		}
-
-		// Build the ETL job.
 		etlJob := NewETL(
 			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
@@ -99,7 +91,6 @@ func main() {
 			}),
 			WithMapping(tableCfg.Mapping),
 			WithTransformers(),
-			// If key_value_table is true, add the key–value transformer.
 			func(e *ETL) error {
 				if tableCfg.KeyValueTable {
 					return WithKeyValueTransformer(
@@ -116,7 +107,6 @@ func main() {
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(50),
 		)
-
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {
 			log.Printf("ETL job failed: %v", err)
@@ -129,28 +119,19 @@ func main() {
 	log.Println("All migrations complete.")
 }
 
-// CreateKeyValueTable creates an SQL table based on key–value output schema.
-// It creates columns: <key_field>, extra columns (from extra_values),
-// <value_field> and "value_type" (all as TEXT).
 func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) error {
 	columns := []string{}
-	// Add the key column.
 	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.KeyField))
-	// Add extra columns (the keys from extra_values).
 	for extraField := range cfg.ExtraValues {
 		columns = append(columns, fmt.Sprintf("%s TEXT", extraField))
 	}
-	// Add the value column.
 	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.ValueField))
-	// Add the value_type column.
 	columns = append(columns, "value_type TEXT")
-
 	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", tableName, strings.Join(columns, ", "))
 	_, err := db.Exec(createStmt)
 	if err != nil {
 		return err
 	}
-	// Optionally, if truncation is requested, clear the table.
 	if cfg.TruncateDestination {
 		_, err = db.Exec(fmt.Sprintf("TRUNCATE TABLE %s;", tableName))
 		if err != nil {
@@ -175,28 +156,23 @@ func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
 	return err
 }
 
-//
-// ETL Options and Pipeline Setup
-//
-
 type Option func(*ETL) error
 
 func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
 	return func(e *ETL) error {
 		var src contract.Source
-		switch sourceType {
-		case "mysql", "postgresql":
+		if isSQLType(sourceType) {
 			if sourceDB == nil {
 				return fmt.Errorf("source database is nil")
 			}
 			src = NewSQLSource(sourceDB, sourceTable, sourceQuery)
-		case "csv", "json":
+		} else if sourceType == "csv" || sourceType == "json" {
 			file := sourceTable
 			if file == "" {
 				file = sourceFile
 			}
 			src = NewFileSource(file)
-		default:
+		} else {
 			return fmt.Errorf("unsupported source type: %s", sourceType)
 		}
 		e.sources = append(e.sources, src)
@@ -207,14 +183,12 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 func WithDestination(destType string, destDB *sql.DB, destFile string, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contract.Loader
-		switch destType {
-		case "mysql", "postgresql":
+		if isSQLType(destType) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			// Always use the standard SQL loader.
 			destination = NewSQLLoader(destDB, destType, cfg)
-		case "csv", "json":
+		} else if destType == "csv" || destType == "json" {
 			file := cfg.NewName
 			if file == "" {
 				file = destFile
@@ -224,7 +198,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 				appendMode = false
 			}
 			destination = NewFileLoader(file, appendMode)
-		default:
+		} else {
 			return fmt.Errorf("unsupported destination type: %s", destType)
 		}
 		e.loaders = append(e.loaders, destination)
@@ -258,16 +232,6 @@ func WithTransformers() Option {
 	}
 }
 
-// WithKeyValueTransformer adds a multi-transformer that converts an input record
-// into multiple output records based on candidate fields. It uses these rules:
-// 1. Build a base record using extra_values (mapping extra field names to source field names).
-// 2. Exclude fields that appear in extra_values, include_fields, or exclude_fields.
-// 3. For every remaining candidate field, output a new record with:
-//   - key_field: the candidate field name,
-//   - value_field: the candidate field's value,
-//   - value_type: a string representing the type of the value.
-//
-// The extra base fields are merged into every output record.
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
 		kt := &KeyValueTransformer{
@@ -310,10 +274,6 @@ func WithCheckpoint(store contract.CheckpointStore, cpFunc func(rec utils.Record
 		return nil
 	}
 }
-
-//
-// ETL Structure and Pipeline Run
-//
 
 type ETL struct {
 	sources         []contract.Source
@@ -482,7 +442,6 @@ func (e *ETL) Close() error {
 	return nil
 }
 
-// applyMappers applies all mappers sequentially.
 func applyMappers(ctx context.Context, mappers []contract.Mapper, rec utils.Record, workerID int) (utils.Record, error) {
 	for _, mapper := range mappers {
 		var err error
@@ -495,7 +454,6 @@ func applyMappers(ctx context.Context, mappers []contract.Mapper, rec utils.Reco
 	return rec, nil
 }
 
-// applyTransformers applies all transformers and supports multi-output.
 func applyTransformers(ctx context.Context, transformers []contract.Transformer, rec utils.Record, workerID int) ([]utils.Record, error) {
 	records := []utils.Record{rec}
 	for _, transformer := range transformers {
@@ -522,19 +480,13 @@ func applyTransformers(ctx context.Context, transformers []contract.Transformer,
 	return records, nil
 }
 
-//
-// Checkpoint Store Implementation
-//
-
 type FileCheckpointStore struct {
 	fileName string
 	mu       sync.Mutex
 }
 
 func NewFileCheckpointStore(fileName string) *FileCheckpointStore {
-	return &FileCheckpointStore{
-		fileName: fileName,
-	}
+	return &FileCheckpointStore{fileName: fileName}
 }
 
 func (cs *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error {
@@ -555,10 +507,6 @@ func (cs *FileCheckpointStore) GetCheckpoint(context.Context) (string, error) {
 	}
 	return string(data), nil
 }
-
-//
-// File Loader (for CSV/JSON destinations)
-//
 
 type FileLoader struct {
 	fileName        string
@@ -764,16 +712,15 @@ func buildCSVRow(header []string, rec utils.Record) ([]string, error) {
 	return row, nil
 }
 
-//
-// SQL Loader (for SQL destinations)
-//
-
 type SQLLoader struct {
 	db             *sql.DB
 	table          string
 	truncate       bool
 	updateSequence bool
 	destType       string
+	update         bool
+	delete         bool
+	query          string
 }
 
 func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoader {
@@ -783,6 +730,9 @@ func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoad
 		table:          cfg.NewName,
 		truncate:       cfg.TruncateDestination,
 		updateSequence: cfg.UpdateSequence,
+		update:         cfg.Update,
+		delete:         cfg.Delete,
+		query:          cfg.Query,
 	}
 }
 
@@ -797,6 +747,37 @@ func (l *SQLLoader) Setup(ctx context.Context) error {
 }
 
 func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
+	if l.update {
+		for _, rec := range batch {
+			var q string
+			var args []any
+			if l.query != "" {
+				q = l.query
+
+			} else {
+				q, args = buildUpdateStatement(l.table, rec)
+			}
+			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if l.delete {
+		for _, rec := range batch {
+			var q string
+			var args []any
+			if l.query != "" {
+				q = l.query
+			} else {
+				q, args = buildDeleteStatement(l.table, rec)
+			}
+			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if len(batch) == 0 {
 		return nil
 	}
@@ -825,15 +806,43 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	return err
 }
 
+func buildUpdateStatement(table string, rec utils.Record) (string, []any) {
+	var setParts []string
+	var args []any
+	var id any
+	for k, v := range rec {
+		if strings.ToLower(k) == "id" {
+			id = v
+			continue
+		}
+		args = append(args, v)
+		setParts = append(setParts, fmt.Sprintf("%s = $%d", k, len(args)))
+	}
+	if id == nil {
+		return "", nil
+	}
+	args = append(args, id)
+	q := fmt.Sprintf("UPDATE %s SET %s WHERE id = $%d", table, strings.Join(setParts, ", "), len(args))
+	return q, args
+}
+
+func buildDeleteStatement(table string, rec utils.Record) (string, []any) {
+	id, ok := rec["id"]
+	if !ok {
+		return "", nil
+	}
+	q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", table)
+	return q, []any{id}
+}
+
 func updateSequence(db *sql.DB, table string) error {
 	seqName := fmt.Sprintf("%s_seq", table)
 	q := fmt.Sprintf("SELECT setval('%s', (SELECT MAX(id) FROM %s))", seqName, table)
 	if _, err := db.ExecContext(context.Background(), q); err != nil {
 		log.Printf("Error updating sequence %s: %v", seqName, err)
 		return err
-	} else {
-		log.Printf("Sequence %s updated", seqName)
 	}
+	log.Printf("Sequence %s updated", seqName)
 	return nil
 }
 
@@ -843,10 +852,6 @@ func (l *SQLLoader) Close() error {
 	}
 	return nil
 }
-
-//
-// Mappers
-//
 
 type FieldMapper struct {
 	mapping map[string]string
@@ -883,21 +888,12 @@ func (lm *LowercaseMapper) Map(ctx context.Context, rec utils.Record) (utils.Rec
 	return newRec, nil
 }
 
-// KeyValue Transformer (MultiTransformer)
-// Converts an input record into one record per candidate field.
-// It builds a base record from extra_values, then for each field in the input record
-// that is not used in extra_values, include_fields, or exclude_fields, it creates a new record.
-// Each output record will include:
-//   - The extra fields (e.g. user_id),
-//   - A key field (the candidate field name),
-//   - A value field (the candidate field’s value),
-//   - A "value_type" field indicating the type of the value.
 type KeyValueTransformer struct {
-	ExtraValues   map[string]interface{} // mapping: new field name -> source field name
-	IncludeFields []string               // fields to include (base fields)
-	ExcludeFields []string               // fields to exclude from conversion
-	KeyField      string                 // name of key column to create
-	ValueField    string                 // name of value column to create
+	ExtraValues   map[string]interface{}
+	IncludeFields []string
+	ExcludeFields []string
+	KeyField      string
+	ValueField    string
 }
 
 func (kt *KeyValueTransformer) Name() string {
@@ -916,7 +912,6 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) 
 }
 
 func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
-	// Build base record from extra_values.
 	base := make(map[string]interface{})
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
@@ -924,7 +919,6 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 			base[newField] = val
 		}
 	}
-	// Build ignore set from extra_values, include_fields, and exclude_fields.
 	ignore := make(map[string]struct{})
 	for _, v := range kt.ExtraValues {
 		ignore[strings.ToLower(fmt.Sprintf("%v", v))] = struct{}{}
@@ -935,7 +929,6 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 	for _, f := range kt.ExcludeFields {
 		ignore[strings.ToLower(f)] = struct{}{}
 	}
-	// Determine candidate fields.
 	var candidates []string
 	for k := range rec {
 		kl := strings.ToLower(k)
@@ -976,10 +969,6 @@ func typeName(v interface{}) string {
 		return "unknown"
 	}
 }
-
-//
-// Sources
-//
 
 type FileSource struct {
 	Filename string
@@ -1069,10 +1058,6 @@ func (s *SQLSource) Extract(ctx context.Context) (<-chan utils.Record, error) {
 func (s *SQLSource) Close() error {
 	return nil
 }
-
-//
-// Lookup Transformer (unchanged)
-//
 
 type LookupTransformer struct {
 	LookupData  map[string]string

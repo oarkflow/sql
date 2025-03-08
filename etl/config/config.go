@@ -36,6 +36,8 @@ type TableMapping struct {
 	IncludeFields       []string          `yaml:"include_fields,omitempty"`
 	ExcludeFields       []string          `yaml:"exclude_fields,omitempty"`
 	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty"`
+	Update              bool              `json:"update" yaml:"update"`
+	Delete              bool              `json:"delete" yaml:"delete"`
 }
 
 type Config struct {
