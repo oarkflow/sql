@@ -27,7 +27,7 @@ import (
 	"github.com/oarkflow/sql/utils"
 )
 
-// MultiTransformer allows a transformer to produce multiple output records
+// MultiTransformer allows a transformer to produce multiple output records.
 type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
 }
@@ -44,7 +44,7 @@ func main() {
 
 	var sourceDB *sql.DB
 	var destDB *sql.DB
-	// Open source DB if needed.
+	// Open source DB if source type is SQL.
 	if cfg.Source.Type == "mysql" || cfg.Source.Type == "postgresql" {
 		sourceDB, err = etl.OpenDB(cfg.Source)
 		if err != nil {
@@ -52,7 +52,7 @@ func main() {
 		}
 		defer sourceDB.Close()
 	}
-	// Open destination DB if needed.
+	// Open destination DB if destination type is SQL.
 	if cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql" {
 		destDB, err = etl.OpenDB(cfg.Destination)
 		if err != nil {
@@ -68,14 +68,22 @@ func main() {
 			continue
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		// For SQL destinations only, auto-create table if requested.
+		// If auto_create_table is requested and destination is SQL, create the table.
 		if (cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql") && tableCfg.AutoCreateTable {
-			csvFileName := tableCfg.OldName
-			if csvFileName == "" {
-				csvFileName = cfg.Source.File
-			}
-			if err := etl.CreateTableFromCSV(destDB, csvFileName, tableCfg.NewName); err != nil {
-				log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
+			if tableCfg.KeyValueTable {
+				// Create the key-value table with output columns.
+				if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
+					log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
+				}
+			} else {
+				// Fallback: create table based on source CSV.
+				csvFileName := tableCfg.OldName
+				if csvFileName == "" {
+					csvFileName = cfg.Source.File
+				}
+				if err := etl.CreateTableFromCSV(destDB, csvFileName, tableCfg.NewName); err != nil {
+					log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
+				}
 			}
 		}
 
@@ -90,9 +98,8 @@ func main() {
 				return ""
 			}),
 			WithMapping(tableCfg.Mapping),
-			// Add any additional transformers.
 			WithTransformers(),
-			// If key_value_table is true, add the key-value transformer.
+			// If key_value_table is true, add the key–value transformer.
 			func(e *ETL) error {
 				if tableCfg.KeyValueTable {
 					return WithKeyValueTransformer(
@@ -120,6 +127,37 @@ func main() {
 		log.Printf("Migration for %s complete", tableCfg.OldName)
 	}
 	log.Println("All migrations complete.")
+}
+
+// CreateKeyValueTable creates an SQL table based on key–value output schema.
+// It creates columns: <key_field>, extra columns (from extra_values),
+// <value_field> and "value_type" (all as TEXT).
+func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) error {
+	columns := []string{}
+	// Add the key column.
+	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.KeyField))
+	// Add extra columns (the keys from extra_values).
+	for extraField := range cfg.ExtraValues {
+		columns = append(columns, fmt.Sprintf("%s TEXT", extraField))
+	}
+	// Add the value column.
+	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.ValueField))
+	// Add the value_type column.
+	columns = append(columns, "value_type TEXT")
+
+	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", tableName, strings.Join(columns, ", "))
+	_, err := db.Exec(createStmt)
+	if err != nil {
+		return err
+	}
+	// Optionally, if truncation is requested, clear the table.
+	if cfg.TruncateDestination {
+		_, err = db.Exec(fmt.Sprintf("TRUNCATE TABLE %s;", tableName))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
@@ -174,6 +212,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
+			// Always use the standard SQL loader.
 			destination = NewSQLLoader(destDB, destType, cfg)
 		case "csv", "json":
 			file := cfg.NewName
@@ -219,19 +258,16 @@ func WithTransformers() Option {
 	}
 }
 
-// WithKeyValueTransformer adds a multi-transformer that converts a record into one or more key-value rows.
-// It uses the following rules:
-//  1. Build a base row from extra_values – for each mapping (e.g. user_id: "id"), copy the value from the source field.
-//  2. Candidate fields for conversion are those in the original record that are NOT part of the extra values,
-//     AND not in the include_fields list, AND not in the exclude_fields list.
-//  3. For each candidate field, produce a new record that contains the base extra fields plus:
-//     - key_field: set to the candidate field name,
-//     - value_field: set to the candidate’s value,
-//     - "value_type": a string indicating the type (e.g. "string", "int").
+// WithKeyValueTransformer adds a multi-transformer that converts an input record
+// into multiple output records based on candidate fields. It uses these rules:
+// 1. Build a base record using extra_values (mapping extra field names to source field names).
+// 2. Exclude fields that appear in extra_values, include_fields, or exclude_fields.
+// 3. For every remaining candidate field, output a new record with:
+//   - key_field: the candidate field name,
+//   - value_field: the candidate field's value,
+//   - value_type: a string representing the type of the value.
 //
-// In our sample, this will produce rows such as:
-//
-//	user_id: 1, key: "status", value: "banned", value_type: "string"
+// The extra base fields are merged into every output record.
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
 		kt := &KeyValueTransformer{
@@ -357,12 +393,10 @@ func (e *ETL) Run(ctx context.Context) error {
 		go func(workerID int) {
 			defer procWG.Done()
 			for raw := range rawChan {
-				// Apply mappers (which return one record each)
 				rec, err := applyMappers(ctx, e.mappers, raw, workerID)
 				if err != nil || rec == nil {
 					continue
 				}
-				// Apply transformers – supporting multi-record output.
 				outRecords, err := applyTransformers(ctx, e.transformers, rec, workerID)
 				if err != nil {
 					continue
@@ -467,7 +501,6 @@ func applyTransformers(ctx context.Context, transformers []contract.Transformer,
 	for _, transformer := range transformers {
 		var nextRecords []utils.Record
 		for _, r := range records {
-			// Check if transformer supports multiple outputs.
 			if mt, ok := transformer.(MultiTransformer); ok {
 				recs, err := mt.TransformMany(ctx, r)
 				if err != nil {
@@ -850,13 +883,18 @@ func (lm *LowercaseMapper) Map(ctx context.Context, rec utils.Record) (utils.Rec
 	return newRec, nil
 }
 
-//
 // KeyValue Transformer (MultiTransformer)
-//
-
+// Converts an input record into one record per candidate field.
+// It builds a base record from extra_values, then for each field in the input record
+// that is not used in extra_values, include_fields, or exclude_fields, it creates a new record.
+// Each output record will include:
+//   - The extra fields (e.g. user_id),
+//   - A key field (the candidate field name),
+//   - A value field (the candidate field’s value),
+//   - A "value_type" field indicating the type of the value.
 type KeyValueTransformer struct {
 	ExtraValues   map[string]interface{} // mapping: new field name -> source field name
-	IncludeFields []string               // fields to include (will be used as base fields)
+	IncludeFields []string               // fields to include (base fields)
 	ExcludeFields []string               // fields to exclude from conversion
 	KeyField      string                 // name of key column to create
 	ValueField    string                 // name of value column to create
@@ -867,7 +905,6 @@ func (kt *KeyValueTransformer) Name() string {
 }
 
 func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	// Fallback to single-record output if needed.
 	recs, err := kt.TransformMany(ctx, rec)
 	if err != nil {
 		return nil, err
@@ -878,12 +915,8 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) 
 	return nil, fmt.Errorf("no output from KeyValueTransformer")
 }
 
-// TransformMany splits the input record into one record per candidate field.
-// It builds a base record from extra values (by copying the value from the specified source field)
-// and then for each field in the input record that is not used in extra values, include_fields, or exclude_fields,
-// it creates a new record with the key/value pair.
 func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
-	// Build base extra values.
+	// Build base record from extra_values.
 	base := make(map[string]interface{})
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
@@ -891,7 +924,7 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 			base[newField] = val
 		}
 	}
-	// Build a set of fields to ignore: fields used in extra values, include_fields, and exclude_fields.
+	// Build ignore set from extra_values, include_fields, and exclude_fields.
 	ignore := make(map[string]struct{})
 	for _, v := range kt.ExtraValues {
 		ignore[strings.ToLower(fmt.Sprintf("%v", v))] = struct{}{}
@@ -902,7 +935,6 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 	for _, f := range kt.ExcludeFields {
 		ignore[strings.ToLower(f)] = struct{}{}
 	}
-
 	// Determine candidate fields.
 	var candidates []string
 	for k := range rec {
@@ -911,15 +943,12 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 			candidates = append(candidates, kl)
 		}
 	}
-	// If no candidate fields, return an error or empty slice.
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no candidate fields found for key-value conversion")
 	}
-	// For each candidate field, create a new record.
 	var out []utils.Record
 	for _, cand := range candidates {
 		newRec := make(utils.Record)
-		// Copy base extra values.
 		for k, v := range base {
 			newRec[k] = v
 		}
