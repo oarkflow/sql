@@ -14,6 +14,10 @@ type LookupTransformer struct {
 	TargetField string
 }
 
+func (lt *LookupTransformer) Name() string {
+	return "lookup"
+}
+
 func (lt *LookupTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
 	if key, ok := rec[lt.Field]; ok {
 		keyStr := fmt.Sprintf("%v", key)

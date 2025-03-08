@@ -42,6 +42,7 @@ type ETL struct {
 	checkpointStore contracts.CheckpointStore
 	checkpointFunc  func(rec utils.Record) string
 	lastCheckpoint  string
+	cpMutex         sync.Mutex
 }
 
 func defaultConfig() *ETL {
@@ -89,7 +90,6 @@ func (e *ETL) Run(ctx context.Context) error {
 				return
 			}
 			for rec := range ch {
-
 				rawChan <- rec
 			}
 		}(s)
@@ -208,11 +208,15 @@ func (e *ETL) Run(ctx context.Context) error {
 					}
 					if e.checkpointStore != nil && e.checkpointFunc != nil {
 						cp := e.checkpointFunc(batch[len(batch)-1])
-						if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
-							log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
-						} else {
-							e.lastCheckpoint = cp
+						e.cpMutex.Lock()
+						if cp > e.lastCheckpoint {
+							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
+								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
+							} else {
+								e.lastCheckpoint = cp
+							}
 						}
+						e.cpMutex.Unlock()
 					}
 				}
 			}

@@ -24,6 +24,7 @@ type Mapper interface {
 }
 
 type Transformer interface {
+	Name() string
 	Transform(ctx context.Context, rec utils.Record) (utils.Record, error)
 }
 

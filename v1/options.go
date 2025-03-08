@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/oarkflow/sql/utils"
 	"github.com/oarkflow/sql/v1/config"
 	"github.com/oarkflow/sql/v1/contracts"
 	"github.com/oarkflow/sql/v1/loaders"
@@ -128,6 +129,14 @@ func WithBatchSize(size int) Option {
 func WithRawChanBuffer(buffer int) Option {
 	return func(e *ETL) error {
 		e.rawChanBuffer = buffer
+		return nil
+	}
+}
+
+func WithCheckpoint(store contracts.CheckpointStore, cpFunc func(rec utils.Record) string) Option {
+	return func(e *ETL) error {
+		e.checkpointStore = store
+		e.checkpointFunc = cpFunc
 		return nil
 	}
 }
