@@ -31,10 +31,6 @@ type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
 }
 
-func isSQLType(typ string) bool {
-	return typ != "csv" && typ != "json"
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("Usage: %s <config.yaml>", os.Args[0])
@@ -46,14 +42,14 @@ func main() {
 	}
 	var sourceDB *sql.DB
 	var destDB *sql.DB
-	if isSQLType(cfg.Source.Type) {
+	if utils.IsSQLType(cfg.Source.Type) {
 		sourceDB, err = etl.OpenDB(cfg.Source)
 		if err != nil {
 			log.Fatalf("Error connecting to source DB: %v", err)
 		}
 		defer sourceDB.Close()
 	}
-	if isSQLType(cfg.Destination.Type) {
+	if utils.IsSQLType(cfg.Destination.Type) {
 		destDB, err = etl.OpenDB(cfg.Destination)
 		if err != nil {
 			log.Fatalf("Error connecting to destination DB: %v", err)
@@ -61,11 +57,11 @@ func main() {
 		defer destDB.Close()
 	}
 	for _, tableCfg := range cfg.Tables {
-		if isSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if isSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
 			if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
 				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
 			}
@@ -181,7 +177,7 @@ type Option func(*ETL) error
 func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
 	return func(e *ETL) error {
 		var src contract.Source
-		if isSQLType(sourceType) {
+		if utils.IsSQLType(sourceType) {
 			if sourceDB == nil {
 				return fmt.Errorf("source database is nil")
 			}
@@ -203,7 +199,7 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 func WithDestination(destType string, destDB *sql.DB, destFile string, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contract.Loader
-		if isSQLType(destType) {
+		if utils.IsSQLType(destType) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
