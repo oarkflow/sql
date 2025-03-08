@@ -1,4 +1,3 @@
-# Example for CSV to PostgreSQL ETL with auto table creation:
 source:
     type: "csv"
     file: "input.csv"
@@ -13,43 +12,20 @@ destination:
     database: "mydb"
 
 tables:
-    - old_name: "input.csv"
-      new_name: "my_table"
-      migrate: true
+    - old_name: "input.csv"           # For file sources, this name is not critical.
+      new_name: "my_table"          # For file destinations, this is the target file.
+      migrate: true                   # Ignored for file loaders.
       batch_size: 100
-      truncate_destination: true
-      auto_create_table: true
-      mapping:
-          name: "eval.{{Name + ' (migrated)'}}"
-          age: Age
-          country: Country
-
-# Example for database-to-database ETL (uncomment to use):
-# source:
-#   type: "mysql"
-#   host: "127.0.0.1"
-#   port: 3306
-#   driver: "mysql"
-#   username: "root"
-#   password: "root"
-#   database: "sourcedb"
-#
-# destination:
-#   type: "postgresql"
-#   host: "localhost"
-#   port: 5432
-#   driver: "postgresql"
-#   username: "postgres"
-#   password: "postgres"
-#   database: "destdb"
-#
-# tables:
-#   - old_name: "tbl_user"
-#     new_name: "users"
-#     migrate: true
-#     batch_size: 1000
-#     truncate_destination: true
-#     mapping:
-#       user_id: "id"
-#       username: "name"
-#       created_at: "{{created_at ? created_at : now()}}"
+      truncate_destination: true      # If true, clears the file before writing.
+      auto_create_table: true        # Not used for file loaders.
+      key_value_table: true
+      key_field: "key"
+      value_field: "value"
+      extra_values:
+          user_id: "id"
+      include_fields:
+          - "id"
+      exclude_fields:
+          - "Name"
+          - "Age"
+          - "Country"

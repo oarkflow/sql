@@ -29,40 +29,56 @@ import (
 	"github.com/oarkflow/sql/etl/config"
 )
 
+// -------------------------
+// Basic Types & Interfaces
+// -------------------------
+
+// Record represents a generic data record.
 type Record map[string]interface{}
 
+// Source defines the interface for data extraction.
 type Source interface {
 	Setup(ctx context.Context) error
 	Extract(ctx context.Context) (<-chan Record, error)
 	Close() error
 }
 
+// Loader defines the interface for loading data batches.
 type Loader interface {
 	Setup(ctx context.Context) error
 	LoadBatch(ctx context.Context, batch []Record) error
 	Close() error
 }
 
+// Mapper converts one record to another.
 type Mapper interface {
 	Name() string
 	Map(ctx context.Context, rec Record) (Record, error)
 }
 
+// Transformer converts a record, possibly outputting one or more records.
 type Transformer interface {
 	Name() string
 	Transform(ctx context.Context, rec Record) (Record, error)
 }
 
+// MultiTransformer can output multiple records from one input.
 type MultiTransformer interface {
 	Transformer
 	TransformMany(ctx context.Context, rec Record) ([]Record, error)
 }
 
+// CheckpointStore persists checkpoints.
 type CheckpointStore interface {
 	SaveCheckpoint(ctx context.Context, cp string) error
 	GetCheckpoint(ctx context.Context) (string, error)
 }
 
+// -------------------------
+// Helper: writeFull
+// -------------------------
+
+// writeFull writes the entire byte slice to the provided bufio.Writer.
 func writeFull(w *bufio.Writer, data []byte) error {
 	total := 0
 	for total < len(data) {
@@ -74,6 +90,10 @@ func writeFull(w *bufio.Writer, data []byte) error {
 	}
 	return nil
 }
+
+// -------------------------
+// Circuit Breaker Implementation
+// -------------------------
 
 type CircuitBreaker struct {
 	threshold    int
@@ -123,6 +143,10 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.open = false
 }
 
+// -------------------------
+// ETL Struct & Options
+// -------------------------
+
 type ETL struct {
 	sources         []Source
 	mappers         []Mapper
@@ -137,6 +161,7 @@ type ETL struct {
 	checkpointStore CheckpointStore
 	checkpointFunc  func(rec Record) string
 
+	// Error handling and cancellation.
 	maxErrorCount  int
 	errorCount     int
 	errorLock      sync.Mutex
@@ -226,6 +251,7 @@ func WithRawChanBuffer(buffer int) Option {
 	}
 }
 
+// incrementError increases the error count and cancels the context if too many errors occur.
 func (e *ETL) incrementError() {
 	e.errorLock.Lock()
 	defer e.errorLock.Unlock()
@@ -238,11 +264,17 @@ func (e *ETL) incrementError() {
 	}
 }
 
+// -------------------------
+// ETL Run Implementation
+// -------------------------
+
+// Run launches extraction, processing, batching, and loading concurrently.
 func (e *ETL) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	e.cancelFunc = cancel
 	defer cancel()
 
+	// Load checkpoint if available.
 	if e.checkpointStore != nil && e.checkpointFunc != nil {
 		if cp, err := e.checkpointStore.GetCheckpoint(ctx); err == nil && cp != "" {
 			logrus.Infof("Resuming from checkpoint: %s", cp)
@@ -257,6 +289,7 @@ func (e *ETL) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 
+	// Extraction stage.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -289,6 +322,7 @@ func (e *ETL) Run(ctx context.Context) error {
 		close(rawChan)
 	}()
 
+	// Processing stage.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -298,19 +332,42 @@ func (e *ETL) Run(ctx context.Context) error {
 			go func(workerID int) {
 				defer processWG.Done()
 				for rec := range rawChan {
-					mapped, err := applyMappers(ctx, e.mappers, rec, workerID)
-					if err != nil {
-						logrus.Warnf("[Worker %d] Mapper error: %v", workerID, err)
-						e.incrementError()
-						continue
+					// Apply mappers.
+					for _, mapper := range e.mappers {
+						var err error
+						rec, err = mapper.Map(ctx, rec)
+						if err != nil {
+							logrus.Warnf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
+							e.incrementError()
+							continue
+						}
 					}
-					outRecords, err := applyTransformers(ctx, e.transformers, mapped, workerID)
-					if err != nil {
-						logrus.Warnf("[Worker %d] Transformer error: %v", workerID, err)
-						e.incrementError()
-						continue
+					// Apply transformers (including multi-output ones).
+					records := []Record{rec}
+					for _, transformer := range e.transformers {
+						var nextRecords []Record
+						if mt, ok := transformer.(MultiTransformer); ok {
+							for _, r := range records {
+								recs, err := mt.TransformMany(ctx, r)
+								if err != nil {
+									logrus.Warnf("[Worker %d] MultiTransformer (%s) error: %v", workerID, transformer.Name(), err)
+									continue
+								}
+								nextRecords = append(nextRecords, recs...)
+							}
+						} else {
+							for _, r := range records {
+								r2, err := transformer.Transform(ctx, r)
+								if err != nil {
+									logrus.Warnf("[Worker %d] Transformer (%s) error: %v", workerID, transformer.Name(), err)
+									continue
+								}
+								nextRecords = append(nextRecords, r2)
+							}
+						}
+						records = nextRecords
 					}
-					for _, r := range outRecords {
+					for _, r := range records {
 						select {
 						case processedChan <- r:
 						case <-ctx.Done():
@@ -324,6 +381,7 @@ func (e *ETL) Run(ctx context.Context) error {
 		close(processedChan)
 	}()
 
+	// Batching stage.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -341,6 +399,7 @@ func (e *ETL) Run(ctx context.Context) error {
 		close(batchChan)
 	}()
 
+	// Preinitialize loaders.
 	for _, loader := range e.loaders {
 		if err := loader.Setup(ctx); err != nil {
 			logrus.Errorf("Loader setup error: %v", err)
@@ -349,6 +408,7 @@ func (e *ETL) Run(ctx context.Context) error {
 		}
 	}
 
+	// Loading stage.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -403,6 +463,10 @@ func (e *ETL) Close() error {
 	return nil
 }
 
+// -------------------------
+// Retry with Circuit Breaker
+// -------------------------
+
 func retryWithCircuit(ctx context.Context, retryCount int, retryDelay time.Duration, cb *CircuitBreaker, fn func() error) error {
 	var err error
 	for i := 0; i < retryCount; i++ {
@@ -427,48 +491,9 @@ func retryWithCircuit(ctx context.Context, retryCount int, retryDelay time.Durat
 	return err
 }
 
-func applyMappers(ctx context.Context, mappers []Mapper, rec Record, workerID int) (Record, error) {
-	var err error
-	for _, mapper := range mappers {
-		rec, err = mapper.Map(ctx, rec)
-		if err != nil {
-			logrus.Warnf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
-			return nil, err
-		}
-	}
-	return rec, nil
-}
-
-func applyTransformers(ctx context.Context, transformers []Transformer, rec Record, workerID int) ([]Record, error) {
-	records := []Record{rec}
-	for _, transformer := range transformers {
-		var nextRecords []Record
-		if mt, ok := transformer.(MultiTransformer); ok {
-			for _, r := range records {
-				recs, err := mt.TransformMany(ctx, r)
-				if err != nil {
-					logrus.Warnf("[Worker %d] MultiTransformer (%s) error: %v", workerID, transformer.Name(), err)
-					continue
-				}
-				nextRecords = append(nextRecords, recs...)
-			}
-		} else {
-			for _, r := range records {
-				r2, err := transformer.Transform(ctx, r)
-				if err != nil {
-					logrus.Warnf("[Worker %d] Transformer (%s) error: %v", workerID, transformer.Name(), err)
-					continue
-				}
-				nextRecords = append(nextRecords, r2)
-			}
-		}
-		records = nextRecords
-	}
-	if len(records) == 0 {
-		return nil, errors.New("no records after transformation")
-	}
-	return records, nil
-}
+// -------------------------
+// Checkpoint Store: File Implementation
+// -------------------------
 
 type FileCheckpointStore struct {
 	fileName string
@@ -498,9 +523,14 @@ func (cs *FileCheckpointStore) GetCheckpoint(ctx context.Context) (string, error
 	return string(data), nil
 }
 
+// -------------------------
+// File and SQL Sources
+// -------------------------
+
+// FileSource reads CSV or JSON files.
 type FileSource struct {
 	Filename string
-	fileType string
+	fileType string // "csv" or "json"
 }
 
 func NewFileSource(filename, fileType string) *FileSource {
@@ -563,6 +593,7 @@ func (fs *FileSource) Extract(ctx context.Context) (<-chan Record, error) {
 	return out, nil
 }
 
+// SQLSource extracts records from a SQL database.
 type SQLSource struct {
 	db    *sql.DB
 	table string
@@ -622,23 +653,31 @@ func (s *SQLSource) Extract(ctx context.Context) (<-chan Record, error) {
 	return out, nil
 }
 
+// -------------------------
+// Loader Implementations
+// -------------------------
+
+// FileLoader writes data to CSV or JSON files.
 type FileLoader struct {
 	fileName   string
-	extension  string
+	extension  string // "csv" or "json"
 	appendMode bool
 
 	file      *os.File
 	bufWriter *bufio.Writer
 	csvWriter *csv.Writer
 
+	// For JSON files:
 	jsonFirstRecord bool
 
+	// For CSV files:
 	headerWritten bool
 	csvHeader     []string
 
 	initOnce sync.Once
 	setupErr error
 
+	// Lock for concurrency safety.
 	lock sync.Mutex
 }
 
@@ -758,7 +797,7 @@ func (fl *FileLoader) Close() error {
 	fl.lock.Lock()
 	defer fl.lock.Unlock()
 	if fl.extension == "json" {
-
+		// Flush before writing the closing bracket.
 		if err := fl.bufWriter.Flush(); err != nil {
 			return fmt.Errorf("failed to flush before writing JSON closing: %w", err)
 		}
@@ -812,6 +851,7 @@ func buildCSVRow(header []string, rec Record) ([]string, error) {
 	return row, nil
 }
 
+// SQLLoader writes data into a SQL table.
 type SQLLoader struct {
 	db             *sql.DB
 	table          string
@@ -825,7 +865,7 @@ type SQLLoader struct {
 	created        bool
 }
 
-func NewSQLLoader(db *sql.DB, destType, table string, cfg *config.Config) *SQLLoader {
+func NewSQLLoader(db *sql.DB, destType, table string, cfg map[string]interface{}) *SQLLoader {
 	return &SQLLoader{
 		db:         db,
 		destType:   destType,
@@ -883,6 +923,8 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []Record) error {
 	if len(batch) == 0 {
 		return nil
 	}
+	// If auto_create_table is true and table is not yet created,
+	// use the first record in the batch to create the table.
 	if l.autoCreate && !l.created {
 		if err := CreateTableFromRecord(l.db, l.table, batch[0]); err != nil {
 			return err
@@ -962,6 +1004,7 @@ func updateSequence(db *sql.DB, table string) error {
 	return nil
 }
 
+// CreateTableFromRecord creates a table based on the schema of a record.
 func CreateTableFromRecord(db *sql.DB, tableName string, rec Record) error {
 	var columns []string
 	var keys []string
@@ -995,6 +1038,11 @@ func inferSQLType(val interface{}) string {
 	}
 }
 
+// -------------------------
+// Mapper and Transformer Implementations
+// -------------------------
+
+// FieldMapper maps fields using a provided mapping.
 type FieldMapper struct {
 	mapping map[string]string
 }
@@ -1019,6 +1067,7 @@ func (fm *FieldMapper) Map(ctx context.Context, rec Record) (Record, error) {
 	return newRec, nil
 }
 
+// LowercaseMapper converts all keys to lowercase.
 type LowercaseMapper struct{}
 
 func (lm *LowercaseMapper) Name() string {
@@ -1033,6 +1082,8 @@ func (lm *LowercaseMapper) Map(ctx context.Context, rec Record) (Record, error) 
 	return newRec, nil
 }
 
+// ConfigurableMapper supports dynamic mapping based on a config map.
+// If a mapping value starts with "eval.{{" and ends with "}}", the inner expression is evaluated.
 type ConfigurableMapper struct {
 	mapping         map[string]string
 	expressionCache map[string]*govaluate.EvaluableExpression
@@ -1053,10 +1104,10 @@ func (cm *ConfigurableMapper) Name() string {
 func (cm *ConfigurableMapper) Map(ctx context.Context, rec Record) (Record, error) {
 	newRec := make(Record)
 	for destField, rule := range cm.mapping {
-
+		// Check if the rule is an expression.
 		if strings.HasPrefix(rule, "eval.{{") && strings.HasSuffix(rule, "}}") {
 			exprStr := strings.TrimSuffix(strings.TrimPrefix(rule, "eval.{{"), "}}")
-
+			// Cache the expression.
 			cm.cacheLock.Lock()
 			expr, ok := cm.expressionCache[exprStr]
 			if !ok {
@@ -1069,14 +1120,14 @@ func (cm *ConfigurableMapper) Map(ctx context.Context, rec Record) (Record, erro
 				cm.expressionCache[exprStr] = expr
 			}
 			cm.cacheLock.Unlock()
-
+			// Evaluate using the record as parameters.
 			result, err := expr.Evaluate(rec)
 			if err != nil {
 				return nil, fmt.Errorf("expression evaluation failed for '%s': %w", exprStr, err)
 			}
 			newRec[destField] = result
 		} else {
-
+			// Otherwise, treat the rule as the source field name.
 			if val, ok := rec[rule]; ok {
 				newRec[destField] = val
 			} else {
@@ -1087,6 +1138,7 @@ func (cm *ConfigurableMapper) Map(ctx context.Context, rec Record) (Record, erro
 	return newRec, nil
 }
 
+// LookupTransformer adds a looked-up value based on a field.
 type LookupTransformer struct {
 	LookupData  map[string]string
 	Field       string
@@ -1107,6 +1159,7 @@ func (lt *LookupTransformer) Transform(ctx context.Context, rec Record) (Record,
 	return rec, nil
 }
 
+// FilterTransformer filters out records; here it drops records with even "id".
 type FilterTransformer struct{}
 
 func (ft *FilterTransformer) Name() string {
@@ -1128,6 +1181,7 @@ func (ft *FilterTransformer) Transform(ctx context.Context, rec Record) (Record,
 	return rec, nil
 }
 
+// ConditionalTransformer conditionally adds a greeting if name is "Alice".
 type ConditionalTransformer struct{}
 
 func (ct *ConditionalTransformer) Name() string {
@@ -1143,6 +1197,67 @@ func (ct *ConditionalTransformer) Transform(ctx context.Context, rec Record) (Re
 	return rec, nil
 }
 
+// KeyValueTransformer is a MultiTransformer that splits a record into multiple key-value pairs.
+// It uses configuration for the key and value field names, extra values, and optional field filtering.
+type KeyValueTransformer struct {
+	keyField      string
+	valueField    string
+	extraValues   map[string]interface{}
+	includeFields []string
+	excludeFields []string
+}
+
+func (kt *KeyValueTransformer) Name() string {
+	return "KeyValueTransformer"
+}
+
+// Transform is not used since we implement TransformMany.
+func (kt *KeyValueTransformer) Transform(ctx context.Context, rec Record) (Record, error) {
+	return nil, nil
+}
+
+func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec Record) ([]Record, error) {
+	var out []Record
+	var keys []string
+	if len(kt.includeFields) > 0 {
+		keys = kt.includeFields
+	} else {
+		for k := range rec {
+			skip := false
+			for _, ex := range kt.excludeFields {
+				if k == ex {
+					skip = true
+					break
+				}
+			}
+			if !skip {
+				keys = append(keys, k)
+			}
+		}
+	}
+	// For each key, create a key-value record.
+	for _, k := range keys {
+		newRec := make(Record)
+		newRec[kt.keyField] = k
+		newRec[kt.valueField] = rec[k]
+		// Add extra values.
+		for extraKey, extraMapping := range kt.extraValues {
+			if extraStr, ok := extraMapping.(string); ok {
+				if val, exists := rec[extraStr]; exists {
+					newRec[extraKey] = val
+				} else {
+					newRec[extraKey] = extraStr
+				}
+			} else {
+				newRec[extraKey] = extraMapping
+			}
+		}
+		out = append(out, newRec)
+	}
+	return out, nil
+}
+
+// LoadConfig reads a YAML or JSON configuration file.
 func LoadConfig(filename string) (*config.Config, error) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -1165,6 +1280,7 @@ func LoadConfig(filename string) (*config.Config, error) {
 	return cfg, nil
 }
 
+// buildDestConnStr constructs a connection string for the destination database.
 func buildDestConnStr(dest config.DataConfig) string {
 	if dest.Type == "postgresql" {
 		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -1176,6 +1292,7 @@ func buildDestConnStr(dest config.DataConfig) string {
 	return ""
 }
 
+// buildSourceConnStr constructs a connection string for the source database.
 func buildSourceConnStr(src config.DataConfig) string {
 	if src.Type == "postgresql" {
 		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
@@ -1187,42 +1304,69 @@ func buildSourceConnStr(src config.DataConfig) string {
 	return ""
 }
 
+// -------------------------
+// Main Function: Config Driven ETL
+// -------------------------
+
 func main() {
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
 
+	// Load configuration from a file (e.g. config.yaml or config.json)
 	cfg, err := LoadConfig("config.yaml")
 	if err != nil {
 		logrus.Fatalf("Failed to load config: %v", err)
 	}
 
-	if cfg.Source.Type == "csv" || cfg.Source.Type == "json" {
+	// Optionally disable logging.
+	if cfg.Source.DisableLogger || cfg.Destination.DisableLogger {
+		logrus.SetLevel(logrus.ErrorLevel)
+	}
 
+	// Branch based on source type.
+	if cfg.Source.Type == "csv" || cfg.Source.Type == "json" {
+		// File source.
 		src := NewFileSource(cfg.Source.File, cfg.Source.Type)
 		for _, tableCfg := range cfg.Tables {
 			if !tableCfg.Migrate {
 				continue
 			}
-
 			destConnStr := buildDestConnStr(cfg.Destination)
 			db, err := sql.Open(cfg.Destination.Driver, destConnStr)
 			if err != nil {
 				logrus.Fatalf("Failed to open destination DB: %v", err)
 			}
-
 			loader := NewSQLLoader(db, cfg.Destination.Type, tableCfg.NewName, nil)
 			loader.truncate = tableCfg.TruncateDestination
+			loader.updateSequence = tableCfg.UpdateSequence
 			loader.autoCreate = tableCfg.AutoCreateTable
 
-			mapper := NewConfigurableMapper(tableCfg.Mapping)
-
-			etlJob := NewETL(
-				WithSource(src),
-				WithLoader(loader),
-				WithMapper(mapper),
-				WithBatchSize(tableCfg.BatchSize),
-			)
+			var etlJob *ETL
+			// For key-value table, use the KeyValueTransformer.
+			if tableCfg.KeyValueTable {
+				kvTransformer := &KeyValueTransformer{
+					keyField:      tableCfg.KeyField,
+					valueField:    tableCfg.ValueField,
+					extraValues:   tableCfg.ExtraValues,
+					includeFields: tableCfg.IncludeFields,
+					excludeFields: tableCfg.ExcludeFields,
+				}
+				etlJob = NewETL(
+					WithSource(src),
+					WithLoader(loader),
+					WithTransformer(kvTransformer),
+					WithBatchSize(tableCfg.BatchSize),
+				)
+			} else {
+				mapper := NewConfigurableMapper(tableCfg.Mapping)
+				etlJob = NewETL(
+					WithSource(src),
+					WithLoader(loader),
+					WithMapper(mapper),
+					WithBatchSize(tableCfg.BatchSize),
+				)
+			}
 			ctx := context.Background()
 			logrus.Infof("Starting migration for table %s", tableCfg.NewName)
 			if err := etlJob.Run(ctx); err != nil {
@@ -1235,7 +1379,7 @@ func main() {
 			db.Close()
 		}
 	} else if cfg.Source.Type == "mysql" || cfg.Source.Type == "postgresql" {
-
+		// Database-to-database.
 		sourceConnStr := buildSourceConnStr(cfg.Source)
 		srcDB, err := sql.Open(cfg.Source.Driver, sourceConnStr)
 		if err != nil {
@@ -1246,22 +1390,41 @@ func main() {
 			if !tableCfg.Migrate {
 				continue
 			}
-			src := NewSQLSource(srcDB, tableCfg.OldName, "")
+			src := NewSQLSource(srcDB, tableCfg.OldName, tableCfg.Query)
 			destConnStr := buildDestConnStr(cfg.Destination)
 			destDB, err := sql.Open(cfg.Destination.Driver, destConnStr)
 			if err != nil {
 				logrus.Fatalf("Failed to open destination DB: %v", err)
 			}
-			loader := NewSQLLoader(destDB, cfg.Destination.Type, tableCfg.NewName, cfg)
+			loader := NewSQLLoader(destDB, cfg.Destination.Type, tableCfg.NewName, nil)
 			loader.truncate = tableCfg.TruncateDestination
+			loader.updateSequence = tableCfg.UpdateSequence
 			loader.autoCreate = tableCfg.AutoCreateTable
-			mapper := NewConfigurableMapper(tableCfg.Mapping)
-			etlJob := NewETL(
-				WithSource(src),
-				WithLoader(loader),
-				WithMapper(mapper),
-				WithBatchSize(tableCfg.BatchSize),
-			)
+
+			var etlJob *ETL
+			if tableCfg.KeyValueTable {
+				kvTransformer := &KeyValueTransformer{
+					keyField:      tableCfg.KeyField,
+					valueField:    tableCfg.ValueField,
+					extraValues:   tableCfg.ExtraValues,
+					includeFields: tableCfg.IncludeFields,
+					excludeFields: tableCfg.ExcludeFields,
+				}
+				etlJob = NewETL(
+					WithSource(src),
+					WithLoader(loader),
+					WithTransformer(kvTransformer),
+					WithBatchSize(tableCfg.BatchSize),
+				)
+			} else {
+				mapper := NewConfigurableMapper(tableCfg.Mapping)
+				etlJob = NewETL(
+					WithSource(src),
+					WithLoader(loader),
+					WithMapper(mapper),
+					WithBatchSize(tableCfg.BatchSize),
+				)
+			}
 			ctx := context.Background()
 			logrus.Infof("Starting migration for table %s", tableCfg.NewName)
 			if err := etlJob.Run(ctx); err != nil {
