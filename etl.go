@@ -65,22 +65,12 @@ func main() {
 			continue
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if isSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable {
-			if tableCfg.KeyValueTable {
-				if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
-					log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
-				}
-			} else {
-				csvFileName := tableCfg.OldName
-				if csvFileName == "" {
-					csvFileName = cfg.Source.File
-				}
-				if err := etl.CreateTableFromCSV(destDB, csvFileName, tableCfg.NewName); err != nil {
-					log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
-				}
+		if isSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+			if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
+				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
 			}
 		}
-		etlJob := NewETL(
+		opts := []Option{
 			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
 			WithCheckpoint(NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
@@ -91,22 +81,20 @@ func main() {
 			}),
 			WithMapping(tableCfg.Mapping),
 			WithTransformers(),
-			func(e *ETL) error {
-				if tableCfg.KeyValueTable {
-					return WithKeyValueTransformer(
-						tableCfg.ExtraValues,
-						tableCfg.IncludeFields,
-						tableCfg.ExcludeFields,
-						tableCfg.KeyField,
-						tableCfg.ValueField,
-					)(e)
-				}
-				return nil
-			},
 			WithWorkerCount(2),
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(50),
-		)
+		}
+		if tableCfg.KeyValueTable {
+			opts = append(opts, WithKeyValueTransformer(
+				tableCfg.ExtraValues,
+				tableCfg.IncludeFields,
+				tableCfg.ExcludeFields,
+				tableCfg.KeyField,
+				tableCfg.ValueField,
+			))
+		}
+		etlJob := NewETL(opts...)
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {
 			log.Printf("ETL job failed: %v", err)
@@ -120,8 +108,9 @@ func main() {
 }
 
 func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) error {
-	columns := []string{}
-	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.KeyField))
+	columns := []string{
+		fmt.Sprintf("%s TEXT", cfg.KeyField),
+	}
 	for extraField := range cfg.ExtraValues {
 		columns = append(columns, fmt.Sprintf("%s TEXT", extraField))
 	}
@@ -139,6 +128,37 @@ func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) 
 		}
 	}
 	return nil
+}
+
+func CreateTableFromRecord(db *sql.DB, tableName string, rec utils.Record) error {
+	var columns []string
+	var keys []string
+	for k := range rec {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		sqlType := inferSQLType(rec[k])
+		columns = append(columns, fmt.Sprintf("%s %s", k, sqlType))
+	}
+	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", tableName, strings.Join(columns, ", "))
+	_, err := db.Exec(createStmt)
+	return err
+}
+
+func inferSQLType(val interface{}) string {
+	switch val.(type) {
+	case int, int32, int64:
+		return "INTEGER"
+	case float32, float64:
+		return "REAL"
+	case bool:
+		return "BOOLEAN"
+	case string:
+		return "TEXT"
+	default:
+		return "TEXT"
+	}
 }
 
 func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
@@ -399,6 +419,13 @@ func (e *ETL) Run(ctx context.Context) error {
 					if err := loader.Setup(ctx); err != nil {
 						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
 						continue
+					}
+					if sqlLoader, ok := loader.(*SQLLoader); ok && sqlLoader.autoCreate && !sqlLoader.created {
+						if err := CreateTableFromRecord(sqlLoader.db, sqlLoader.table, batch[0]); err != nil {
+							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
+							continue
+						}
+						sqlLoader.created = true
 					}
 					err := retry(e.retryCount, e.retryDelay, func() error {
 						return loader.LoadBatch(ctx, batch)
@@ -721,9 +748,15 @@ type SQLLoader struct {
 	update         bool
 	delete         bool
 	query          string
+	autoCreate     bool
+	created        bool
 }
 
 func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoader {
+	autoCreate := false
+	if !cfg.KeyValueTable && cfg.AutoCreateTable {
+		autoCreate = true
+	}
 	return &SQLLoader{
 		db:             db,
 		destType:       destType,
@@ -733,6 +766,8 @@ func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoad
 		update:         cfg.Update,
 		delete:         cfg.Delete,
 		query:          cfg.Query,
+		autoCreate:     autoCreate,
+		created:        false,
 	}
 }
 
@@ -753,7 +788,6 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 			var args []any
 			if l.query != "" {
 				q = l.query
-
 			} else {
 				q, args = buildUpdateStatement(l.table, rec)
 			}
@@ -780,6 +814,12 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	}
 	if len(batch) == 0 {
 		return nil
+	}
+	if l.autoCreate && !l.created {
+		if err := CreateTableFromRecord(l.db, l.table, batch[0]); err != nil {
+			return err
+		}
+		l.created = true
 	}
 	var keys []string
 	for k := range batch[0] {
