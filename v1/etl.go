@@ -236,16 +236,9 @@ func WithMapping(mapping map[string]string) Option {
 	}
 }
 
-func WithTransformers() Option {
+func WithTransformers(list ...contract.Transformer) Option {
 	return func(e *ETL) error {
-		transformersList := []contract.Transformer{
-			&LookupTransformer{
-				LookupData:  map[string]string{"key1": "value1"},
-				Field:       "some_field",
-				TargetField: "lookup_result",
-			},
-		}
-		e.transformers = append(e.transformers, transformersList...)
+		e.transformers = append(e.transformers, list...)
 		return nil
 	}
 }
@@ -1130,27 +1123,6 @@ func (s *SQLSource) Close() error {
 	return nil
 }
 
-type LookupTransformer struct {
-	LookupData  map[string]string
-	Field       string
-	lookupField string
-	TargetField string
-}
-
-func (lt *LookupTransformer) Name() string {
-	return "Lookup"
-}
-
-func (lt *LookupTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	if key, ok := rec[lt.Field]; ok {
-		keyStr := fmt.Sprintf("%v", key)
-		if val, exists := lt.LookupData[keyStr]; exists {
-			rec[lt.TargetField] = val
-		}
-	}
-	return rec, nil
-}
-
 func RunETLWithConfig(cfg *config.Config) {
 	var sourceDB *sql.DB
 	var destDB *sql.DB
@@ -1213,6 +1185,41 @@ func RunETLWithConfig(cfg *config.Config) {
 				tableCfg.KeyField,
 				tableCfg.ValueField,
 			))
+		}
+		if len(cfg.Lookups) > 0 {
+			for _, lkup := range cfg.Lookups {
+				var data []map[string]string
+				fmt.Println(lkup)
+				switch strings.ToLower(lkup.Type) {
+				case "postgresql", "mysql":
+					var dsn string
+					if lkup.Driver == "postgres" {
+						dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+							lkup.Host, lkup.Port, lkup.Username, lkup.Password, lkup.Database)
+					} else if lkup.Driver == "mysql" {
+						dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+							lkup.Username, lkup.Password, lkup.Host, lkup.Port, lkup.Database)
+					}
+					ldb, err := sql.Open(lkup.Driver, dsn)
+					if err != nil {
+						log.Fatalf("Failed to open lookup DB for %s: %v", lkup.Key, err)
+					}
+					data, err = loadLookupDataFromSQLGeneric(ldb, lkup.Source)
+					if err != nil {
+						log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
+					}
+					ldb.Close()
+				case "csv":
+					data, err = loadLookupDataFromCSVGeneric(lkup.File)
+					if err != nil {
+						log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
+					}
+				default:
+					log.Fatalf("Unsupported lookup type: %s", lkup.Type)
+				}
+				// Store the dataset using the lookup key from configuration.
+				GlobalLookupStore[lkup.Key] = data
+			}
 		}
 		etlJob := NewETL(opts...)
 		ctx := context.Background()

@@ -7,6 +7,7 @@ import (
 )
 
 type DataConfig struct {
+	Key           string `yaml:"key"`
 	Type          string `yaml:"type" json:"type"`
 	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
 	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
@@ -16,6 +17,20 @@ type DataConfig struct {
 	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
 	File          string `yaml:"file,omitempty" json:"file,omitempty"`
 	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
+}
+
+type LookupConfig struct {
+	Key           string `yaml:"key"`
+	Type          string `yaml:"type" json:"type"`
+	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Driver        string `yaml:"driver,omitempty" json:"driver,omitempty"`
+	Username      string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password      string `yaml:"password,omitempty" json:"password,omitempty"`
+	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
+	File          string `yaml:"file,omitempty" json:"file,omitempty"`
+	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
+	Source        string `yaml:"source"`
 }
 
 type TableMapping struct {
@@ -43,6 +58,7 @@ type TableMapping struct {
 type Config struct {
 	Source      DataConfig     `yaml:"source" json:"source"`
 	Destination DataConfig     `yaml:"destination" json:"destination"`
+	Lookups     []LookupConfig `yaml:"lookups" json:"lookups"`
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
 	Buffer      int            `json:"buffer" yaml:"buffer"`

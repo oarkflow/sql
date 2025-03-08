@@ -10,6 +10,20 @@ destination:
     username: "postgres"
     password: "postgres"
     database: "mydb"
+    
+lookups: # can be file, sql dbms, rest etc
+    -   type: "postgresql"
+        host: "localhost"
+        port: 5432
+        driver: "postgres"
+        username: "postgres"
+        password: "postgres"
+        database: "mydb"
+        source: "SELECT * FROM my_table"
+        key: "facilities"
+    -   type: "csv"
+        file: "users.csv"
+        key: "users"
 
 tables:
     - old_name: "input.csv"           # For file sources, this name is not critical.
@@ -18,14 +32,6 @@ tables:
       batch_size: 100
       truncate_destination: true      # If true, clears the file before writing.
       auto_create_table: true        # Not used for file loaders.
-      key_value_table: true
-      key_field: "key"
-      value_field: "value"
-      extra_values:
-          user_id: "id"
-      include_fields:
-          - "id"
-      exclude_fields:
-          - "Name"
-          - "Age"
-          - "Country"
+      mapping:
+          facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility_name, 'facility_id')}}"
+          user_id: "eval.{{lookupIn('users', 'email', email, 'user_id')}}"
