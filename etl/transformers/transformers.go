@@ -15,7 +15,7 @@ type LookupTransformer struct {
 }
 
 func (lt *LookupTransformer) Name() string {
-	return "lookup"
+	return "Lookup"
 }
 
 func (lt *LookupTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {

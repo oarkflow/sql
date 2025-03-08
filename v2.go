@@ -9,10 +9,10 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 
+	"github.com/oarkflow/sql/etl"
+	"github.com/oarkflow/sql/etl/checkpoints"
+	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/utils"
-	v1 "github.com/oarkflow/sql/v1"
-	"github.com/oarkflow/sql/v1/checkpoints"
-	"github.com/oarkflow/sql/v1/config"
 )
 
 func main() {
@@ -27,14 +27,14 @@ func main() {
 	var sourceDB *sql.DB
 	var destDB *sql.DB
 	if cfg.Source.Type == "mysql" || cfg.Source.Type == "postgresql" {
-		sourceDB, err = v1.OpenDB(cfg.Source)
+		sourceDB, err = etl.OpenDB(cfg.Source)
 		if err != nil {
 			log.Fatalf("Error connecting to source DB: %v", err)
 		}
 		defer sourceDB.Close()
 	}
 	if cfg.Destination.Type == "mysql" || cfg.Destination.Type == "postgresql" {
-		destDB, err = v1.OpenDB(cfg.Destination)
+		destDB, err = etl.OpenDB(cfg.Destination)
 		if err != nil {
 			log.Fatalf("Error connecting to destination DB: %v", err)
 		}
@@ -50,24 +50,24 @@ func main() {
 			if csvFileName == "" {
 				csvFileName = cfg.Source.File
 			}
-			if err := v1.CreateTableFromCSV(destDB, csvFileName, tableCfg.NewName); err != nil {
+			if err := etl.CreateTableFromCSV(destDB, csvFileName, tableCfg.NewName); err != nil {
 				log.Fatalf("Error creating table %s: %v", tableCfg.NewName, err)
 			}
 		}
-		etlJob := v1.NewETL(
-			v1.WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
-			v1.WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
-			v1.WithCheckpoint(checkpoints.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+		etlJob := etl.NewETL(
+			etl.WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
+			etl.WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
+			etl.WithCheckpoint(checkpoints.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
 				if name, ok := rec["name"].(string); ok {
 					return name
 				}
 				return ""
 			}),
-			v1.WithMapping(tableCfg.Mapping),
-			v1.WithTransformers(),
-			v1.WithWorkerCount(2),
-			v1.WithBatchSize(tableCfg.BatchSize),
-			v1.WithRawChanBuffer(50),
+			etl.WithMapping(tableCfg.Mapping),
+			etl.WithTransformers(),
+			etl.WithWorkerCount(2),
+			etl.WithBatchSize(tableCfg.BatchSize),
+			etl.WithRawChanBuffer(50),
 		)
 
 		ctx := context.Background()

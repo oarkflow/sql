@@ -1,4 +1,4 @@
-package v1
+package etl
 
 import (
 	"database/sql"
@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oarkflow/sql/v1/config"
+	"github.com/oarkflow/sql/etl/config"
 )
 
 func OpenDB(cfg config.DataConfig) (*sql.DB, error) {

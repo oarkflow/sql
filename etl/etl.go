@@ -2,12 +2,13 @@ package etl
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
 	"time"
 
-	"github.com/oarkflow/sql/etl/contracts"
+	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/utils"
 )
 
@@ -27,26 +28,27 @@ func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
 }
 
 type ETL struct {
-	sources         []contracts.Source
-	mappers         []contracts.Mapper
-	validators      []contracts.Validator
-	transformers    []contracts.Transformer
-	loaders         []contracts.Loader
+	sources         []contract.Source
+	mappers         []contract.Mapper
+	validators      []contract.Validator
+	transformers    []contract.Transformer
+	loaders         []contract.Loader
 	workerCount     int
 	batchSize       int
 	retryCount      int
 	retryDelay      time.Duration
 	loaderWorkers   int
 	rawChanBuffer   int
-	checkpointStore contracts.CheckpointStore
+	checkpointStore contract.CheckpointStore
 	checkpointFunc  func(rec utils.Record) string
 	lastCheckpoint  string
+	cpMutex         sync.Mutex
 }
 
 func defaultConfig() *ETL {
 	return &ETL{
 		workerCount:   4,
-		batchSize:     10,
+		batchSize:     100,
 		retryCount:    3,
 		retryDelay:    100 * time.Millisecond,
 		loaderWorkers: 2,
@@ -57,7 +59,9 @@ func defaultConfig() *ETL {
 func NewETL(opts ...Option) *ETL {
 	etl := defaultConfig()
 	for _, opt := range opts {
-		opt(etl)
+		if err := opt(etl); err != nil {
+			log.Printf("Error applying option: %v", err)
+		}
 	}
 	return etl
 }
@@ -75,10 +79,10 @@ func (e *ETL) Run(ctx context.Context) error {
 	var srcWG sync.WaitGroup
 	for _, s := range e.sources {
 		if err := s.Setup(ctx); err != nil {
-			return err
+			return fmt.Errorf("source setup error: %v", err)
 		}
 		srcWG.Add(1)
-		go func(src contracts.Source) {
+		go func(src contract.Source) {
 			defer srcWG.Done()
 			ch, err := src.Extract(ctx)
 			if err != nil {
@@ -86,9 +90,6 @@ func (e *ETL) Run(ctx context.Context) error {
 				return
 			}
 			for rec := range ch {
-				if (cap(rawChan) - len(rawChan)) < 10 {
-					log.Printf("Backpressure: rawChan nearly full: %d/%d", len(rawChan), cap(rawChan))
-				}
 				rawChan <- rec
 			}
 		}(s)
@@ -109,7 +110,7 @@ func (e *ETL) Run(ctx context.Context) error {
 					var err error
 					rec, err = mapper.Map(ctx, rec)
 					if err != nil {
-						log.Printf("[Worker %d] Mapper error: %v", workerID, err)
+						log.Printf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
 						rec = nil
 						break
 					}
@@ -129,13 +130,11 @@ func (e *ETL) Run(ctx context.Context) error {
 				if rec == nil {
 					continue
 				}
-				if e.validators != nil {
-					for _, validator := range e.validators {
-						if err := validator.Validate(ctx, rec); err != nil {
-							log.Printf("[Worker %d] Validation error: %v", workerID, err)
-							rec = nil
-							break
-						}
+				for _, validator := range e.validators {
+					if err := validator.Validate(ctx, rec); err != nil {
+						log.Printf("[Worker %d] Validation error: %v", workerID, err)
+						rec = nil
+						break
 					}
 				}
 				if rec != nil {
@@ -174,10 +173,10 @@ func (e *ETL) Run(ctx context.Context) error {
 			for batch := range batchChan {
 				for _, loader := range e.loaders {
 					if err := loader.Setup(ctx); err != nil {
-						log.Printf("[Loader Worker %d] Error setting up loader: %v", workerID, err)
+						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
 						continue
 					}
-					if txnLoader, ok := loader.(contracts.Transactional); ok {
+					if txnLoader, ok := loader.(contract.Transactional); ok {
 						if err := txnLoader.Begin(ctx); err != nil {
 							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
 							continue
@@ -196,14 +195,6 @@ func (e *ETL) Run(ctx context.Context) error {
 							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
 							continue
 						}
-						if e.checkpointStore != nil && e.checkpointFunc != nil {
-							cp := e.checkpointFunc(batch[len(batch)-1])
-							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
-								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
-							} else {
-								e.lastCheckpoint = cp
-							}
-						}
 					} else {
 						err := RunInTransaction(ctx, func(tx *Transaction) error {
 							return retry(e.retryCount, e.retryDelay, func() error {
@@ -214,14 +205,18 @@ func (e *ETL) Run(ctx context.Context) error {
 							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
 							continue
 						}
-						if e.checkpointStore != nil && e.checkpointFunc != nil {
-							cp := e.checkpointFunc(batch[len(batch)-1])
+					}
+					if e.checkpointStore != nil && e.checkpointFunc != nil {
+						cp := e.checkpointFunc(batch[len(batch)-1])
+						e.cpMutex.Lock()
+						if cp > e.lastCheckpoint {
 							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
 								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
 							} else {
 								e.lastCheckpoint = cp
 							}
 						}
+						e.cpMutex.Unlock()
 					}
 				}
 			}
@@ -235,12 +230,12 @@ func (e *ETL) Run(ctx context.Context) error {
 func (e *ETL) Close() error {
 	for _, src := range e.sources {
 		if err := src.Close(); err != nil {
-			return err
+			return fmt.Errorf("error closing source: %v", err)
 		}
 	}
 	for _, loader := range e.loaders {
 		if err := loader.Close(); err != nil {
-			return err
+			return fmt.Errorf("error closing loader: %v", err)
 		}
 	}
 	return nil
