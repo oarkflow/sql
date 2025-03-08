@@ -1,15 +1,11 @@
 package v1
 
 import (
-	"context"
 	"database/sql"
 	"encoding/csv"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
-
-	"github.com/oarkflow/sql/utils"
 )
 
 // GlobalLookupStore holds preloaded lookup datasets.
@@ -29,7 +25,7 @@ var lookupInCache sync.Map
 // It retrieves the lookup dataset from GlobalLookupStore, searches for a row where the value in the lookup field
 // equals the provided source value, and returns the corresponding value from the target field.
 // The result is cached to avoid repeated lookups.
-func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
+func lookupIn(args ...interface{}) (interface{}, error) {
 	if len(args) != 4 {
 		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")
 	}
@@ -53,7 +49,6 @@ func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if cached, found := lookupInCache.Load(cacheKey); found {
 		return cached, nil
 	}
-
 	// Retrieve the lookup dataset.
 	dataset, exists := GlobalLookupStore[datasetKey]
 	if !exists {
@@ -64,38 +59,13 @@ func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	for _, row := range dataset {
 		if row[lookupField] == sourceValStr {
 			result := row[targetField]
+			fmt.Println("Found", result, targetField, row)
 			lookupInCache.Store(cacheKey, result)
 			return result, nil
 		}
 	}
 
 	return nil, fmt.Errorf("lookupIn: no matching value for %s in dataset %s", sourceValStr, datasetKey)
-}
-
-type EvalFieldMapper struct {
-	mapping map[string]string
-}
-
-func NewEvalFieldMapper(mapping map[string]string) *EvalFieldMapper {
-	return &EvalFieldMapper{mapping: mapping}
-}
-
-func (efm *EvalFieldMapper) Name() string {
-	return "EvalFieldMapper"
-}
-
-func (efm *EvalFieldMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	newRec := make(utils.Record)
-	for destField, exprStr := range efm.mapping {
-		if strings.HasPrefix(exprStr, "eval.{{") && strings.HasSuffix(exprStr, "}}") {
-			_, result := utils.GetValue(ctx, exprStr, rec)
-			newRec[destField] = result
-		} else {
-			// Non-eval expressions are copied as is.
-			newRec[destField] = exprStr
-		}
-	}
-	return newRec, nil
 }
 
 // ---------------------------------------------------------------------

@@ -1,37 +1,26 @@
 source:
     type: "csv"
-    file: "input.csv"
+    file: "providers.csv"
 
 destination:
-    type: "postgresql"
-    host: "localhost"
-    port: 5432
-    driver: "postgres"
-    username: "postgres"
-    password: "postgres"
-    database: "mydb"
+    type: "csv"
+    file: "output.csv"
     
 lookups: # can be file, sql dbms, rest etc
-    -   type: "postgresql"
-        host: "localhost"
-        port: 5432
-        driver: "postgres"
-        username: "postgres"
-        password: "postgres"
-        database: "mydb"
-        source: "SELECT * FROM my_table"
-        key: "facilities"
     -   type: "csv"
         file: "users.csv"
         key: "users"
+    -   type: "csv"
+        file: "facilities.csv"
+        key: "facilities"
 
 tables:
-    - old_name: "input.csv"           # For file sources, this name is not critical.
-      new_name: "my_table"          # For file destinations, this is the target file.
+    - old_name: "providers.csv"           # For file sources, this name is not critical.
+      new_name: "output.csv"          # For file destinations, this is the target file.
       migrate: true                   # Ignored for file loaders.
       batch_size: 100
       truncate_destination: true      # If true, clears the file before writing.
       auto_create_table: true        # Not used for file loaders.
       mapping:
-          facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility_name, 'facility_id')}}"
-          user_id: "eval.{{lookupIn('users', 'email', email, 'user_id')}}"
+          facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
+          user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"

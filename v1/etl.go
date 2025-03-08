@@ -21,6 +21,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	"github.com/oarkflow/expr"
 
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
@@ -1124,6 +1125,7 @@ func (s *SQLSource) Close() error {
 }
 
 func RunETLWithConfig(cfg *config.Config) {
+	expr.AddFunction("lookupIn", lookupIn)
 	var sourceDB *sql.DB
 	var destDB *sql.DB
 	var err error
