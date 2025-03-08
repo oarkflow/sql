@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 
+	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/utils"
@@ -1041,4 +1043,80 @@ func (lt *LookupTransformer) Transform(ctx context.Context, rec utils.Record) (u
 		}
 	}
 	return rec, nil
+}
+
+func RunETLWithConfig(cfg *config.Config) {
+	var sourceDB *sql.DB
+	var destDB *sql.DB
+	var err error
+	if utils.IsSQLType(cfg.Source.Type) {
+		sourceDB, err = etl.OpenDB(cfg.Source)
+		if err != nil {
+			log.Fatalf("Error connecting to source DB: %v", err)
+		}
+		defer sourceDB.Close()
+	}
+	if utils.IsSQLType(cfg.Destination.Type) {
+		destDB, err = etl.OpenDB(cfg.Destination)
+		if err != nil {
+			log.Fatalf("Error connecting to destination DB: %v", err)
+		}
+		defer destDB.Close()
+	}
+	if cfg.Buffer == 0 {
+		cfg.Buffer = 50
+	}
+	if cfg.WorkerCount == 0 {
+		minCPU := runtime.NumCPU()
+		if minCPU <= 1 {
+			cfg.WorkerCount = 1
+		} else {
+			cfg.WorkerCount = minCPU - 1
+		}
+	}
+	for _, tableCfg := range cfg.Tables {
+		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+			continue
+		}
+		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
+		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+			if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
+				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
+			}
+		}
+		opts := []Option{
+			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
+			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
+			WithCheckpoint(NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+				if name, ok := rec["name"].(string); ok {
+					return name
+				}
+				return ""
+			}),
+			WithMapping(tableCfg.Mapping),
+			WithTransformers(),
+			WithWorkerCount(cfg.WorkerCount),
+			WithBatchSize(tableCfg.BatchSize),
+			WithRawChanBuffer(cfg.Buffer),
+		}
+		if tableCfg.KeyValueTable {
+			opts = append(opts, WithKeyValueTransformer(
+				tableCfg.ExtraValues,
+				tableCfg.IncludeFields,
+				tableCfg.ExcludeFields,
+				tableCfg.KeyField,
+				tableCfg.ValueField,
+			))
+		}
+		etlJob := NewETL(opts...)
+		ctx := context.Background()
+		if err := etlJob.Run(ctx); err != nil {
+			log.Printf("ETL job failed: %v", err)
+		}
+		if err := etlJob.Close(); err != nil {
+			log.Printf("Error closing ETL job: %v", err)
+		}
+		log.Printf("Migration for %s complete", tableCfg.OldName)
+	}
+	log.Println("All migrations complete.")
 }

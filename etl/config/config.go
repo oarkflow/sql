@@ -7,43 +7,45 @@ import (
 )
 
 type DataConfig struct {
-	Type          string `yaml:"type"`
-	Host          string `yaml:"host,omitempty"`
-	Port          int    `yaml:"port,omitempty"`
-	Driver        string `yaml:"driver,omitempty"`
-	Username      string `yaml:"username,omitempty"`
-	Password      string `yaml:"password,omitempty"`
-	Database      string `yaml:"database,omitempty"`
-	File          string `yaml:"file,omitempty"`
-	DisableLogger bool   `yaml:"disablelogger,omitempty"`
+	Type          string `yaml:"type" json:"type"`
+	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Driver        string `yaml:"driver,omitempty" json:"driver,omitempty"`
+	Username      string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password      string `yaml:"password,omitempty" json:"password,omitempty"`
+	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
+	File          string `yaml:"file,omitempty" json:"file,omitempty"`
+	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
 }
 
 type TableMapping struct {
-	OldName             string            `yaml:"old_name"`
-	NewName             string            `yaml:"new_name"`
-	Migrate             bool              `yaml:"migrate"`
-	CloneSource         bool              `yaml:"clone_source"`
-	BatchSize           int               `yaml:"batch_size"`
-	SkipStoreError      bool              `yaml:"skip_store_error"`
-	UpdateSequence      bool              `yaml:"update_sequence"`
-	TruncateDestination bool              `yaml:"truncate_destination"`
-	Mapping             map[string]string `yaml:"mapping"`
-	Query               string            `yaml:"query,omitempty"`
-	KeyValueTable       bool              `yaml:"key_value_table,omitempty"`
-	KeyField            string            `yaml:"key_field,omitempty"`
-	ValueField          string            `yaml:"value_field,omitempty"`
-	ExtraValues         map[string]any    `yaml:"extra_values,omitempty"`
-	IncludeFields       []string          `yaml:"include_fields,omitempty"`
-	ExcludeFields       []string          `yaml:"exclude_fields,omitempty"`
-	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty"`
-	Update              bool              `json:"update" yaml:"update"`
-	Delete              bool              `json:"delete" yaml:"delete"`
+	OldName             string            `yaml:"old_name" json:"old_name"`
+	NewName             string            `yaml:"new_name" json:"new_name"`
+	Migrate             bool              `yaml:"migrate" json:"migrate"`
+	CloneSource         bool              `yaml:"clone_source" json:"clone_source"`
+	BatchSize           int               `yaml:"batch_size" json:"batch_size"`
+	SkipStoreError      bool              `yaml:"skip_store_error" json:"skip_store_error"`
+	UpdateSequence      bool              `yaml:"update_sequence" json:"update_sequence"`
+	TruncateDestination bool              `yaml:"truncate_destination" json:"truncate_destination"`
+	Mapping             map[string]string `yaml:"mapping" json:"mapping"`
+	Query               string            `yaml:"query,omitempty" json:"query,omitempty"`
+	KeyValueTable       bool              `yaml:"key_value_table,omitempty" json:"key_value_table,omitempty"`
+	KeyField            string            `yaml:"key_field,omitempty" json:"key_field,omitempty"`
+	ValueField          string            `yaml:"value_field,omitempty" json:"value_field,omitempty"`
+	ExtraValues         map[string]any    `yaml:"extra_values,omitempty" json:"extra_values,omitempty"`
+	IncludeFields       []string          `yaml:"include_fields,omitempty" json:"include_fields,omitempty"`
+	ExcludeFields       []string          `yaml:"exclude_fields,omitempty" json:"exclude_fields,omitempty"`
+	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty" json:"auto_create_table,omitempty"`
+	Update              bool              `yaml:"update" json:"update"`
+	Delete              bool              `yaml:"delete" json:"delete"`
 }
 
 type Config struct {
-	Source      DataConfig     `yaml:"source"`
-	Destination DataConfig     `yaml:"destination"`
-	Tables      []TableMapping `yaml:"tables"`
+	Source      DataConfig     `yaml:"source" json:"source"`
+	Destination DataConfig     `yaml:"destination" json:"destination"`
+	Tables      []TableMapping `yaml:"tables" json:"tables"`
+	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
+	Buffer      int            `json:"buffer" yaml:"buffer"`
 }
 
 func Load(path string) (*Config, error) {
