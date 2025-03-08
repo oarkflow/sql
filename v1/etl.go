@@ -28,6 +28,79 @@ import (
 	"github.com/oarkflow/sql/utils"
 )
 
+type CircuitBreaker struct {
+	threshold    int
+	failureCount int
+	open         bool
+	openUntil    time.Time
+	resetTimeout time.Duration
+	mu           sync.Mutex
+}
+
+// NewCircuitBreaker creates a new CircuitBreaker.
+func NewCircuitBreaker(threshold int, resetTimeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		threshold:    threshold,
+		resetTimeout: resetTimeout,
+	}
+}
+
+// Allow returns true if the breaker allows execution.
+func (cb *CircuitBreaker) Allow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.open {
+		if time.Now().After(cb.openUntil) {
+			cb.open = false
+			cb.failureCount = 0
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+// RecordFailure increases the failure count and opens the breaker if threshold is reached.
+func (cb *CircuitBreaker) RecordFailure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failureCount++
+	if cb.failureCount >= cb.threshold {
+		cb.open = true
+		cb.openUntil = time.Now().Add(cb.resetTimeout)
+		log.Printf("Circuit breaker opened for %v after %d failures", cb.resetTimeout, cb.failureCount)
+	}
+}
+
+// RecordSuccess resets the breaker.
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failureCount = 0
+	cb.open = false
+}
+
+// retryWithCircuit retries a function using a CircuitBreaker.
+func retryWithCircuit(retryCount int, retryDelay time.Duration, cb *CircuitBreaker, fn func() error) error {
+	var err error
+	for i := 0; i < retryCount; i++ {
+		if !cb.Allow() {
+			return fmt.Errorf("circuit breaker is open")
+		}
+		err = fn()
+		if err == nil {
+			cb.RecordSuccess()
+			return nil
+		}
+		cb.RecordFailure()
+		log.Printf("Retry attempt %d failed: %v", i+1, err)
+		jitter := 0.8 + rand.Float64()*0.4
+		time.Sleep(time.Duration(float64(retryDelay) * jitter))
+		retryDelay *= 2
+	}
+	return err
+}
+
 type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
 }
@@ -236,16 +309,23 @@ type ETL struct {
 	checkpointFunc  func(rec utils.Record) string
 	lastCheckpoint  string
 	cpMutex         sync.Mutex
+	maxErrorCount   int
+	errorCount      int
+	errorLock       sync.Mutex
+	circuitBreaker  *CircuitBreaker
+	cancelFunc      context.CancelFunc
 }
 
 func defaultConfig() *ETL {
 	return &ETL{
-		workerCount:   4,
-		batchSize:     100,
-		retryCount:    3,
-		retryDelay:    100 * time.Millisecond,
-		loaderWorkers: 2,
-		rawChanBuffer: 100,
+		workerCount:    4,
+		batchSize:      100,
+		retryCount:     3,
+		retryDelay:     100 * time.Millisecond,
+		loaderWorkers:  2,
+		rawChanBuffer:  100,
+		maxErrorCount:  10,
+		circuitBreaker: NewCircuitBreaker(5, 5*time.Second),
 	}
 }
 
@@ -259,7 +339,23 @@ func NewETL(opts ...Option) *ETL {
 	return e
 }
 
+func (e *ETL) incrementError() {
+	e.errorLock.Lock()
+	defer e.errorLock.Unlock()
+	e.errorCount++
+	if e.errorCount >= e.maxErrorCount {
+		log.Println("Max error count reached, cancelling ETL process")
+		if e.cancelFunc != nil {
+			e.cancelFunc()
+		}
+	}
+}
+
 func (e *ETL) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	e.cancelFunc = cancel
+	defer cancel()
+
 	if e.checkpointStore != nil {
 		if cp, err := e.checkpointStore.GetCheckpoint(ctx); err != nil {
 			log.Printf("Error retrieving checkpoint: %v", err)
@@ -272,6 +368,7 @@ func (e *ETL) Run(ctx context.Context) error {
 	var srcWG sync.WaitGroup
 	for _, s := range e.sources {
 		if err := s.Setup(ctx); err != nil {
+			e.incrementError()
 			return fmt.Errorf("source setup error: %v", err)
 		}
 		srcWG.Add(1)
@@ -279,6 +376,7 @@ func (e *ETL) Run(ctx context.Context) error {
 			defer srcWG.Done()
 			ch, err := src.Extract(ctx)
 			if err != nil {
+				e.incrementError()
 				log.Printf("Source extraction error: %v", err)
 				return
 			}
@@ -299,11 +397,16 @@ func (e *ETL) Run(ctx context.Context) error {
 			defer procWG.Done()
 			for raw := range rawChan {
 				rec, err := applyMappers(ctx, e.mappers, raw, workerID)
-				if err != nil || rec == nil {
+				if err != nil {
+					e.incrementError()
+					continue
+				}
+				if rec == nil {
 					continue
 				}
 				outRecords, err := applyTransformers(ctx, e.transformers, rec, workerID)
 				if err != nil {
+					e.incrementError()
 					continue
 				}
 				for _, r := range outRecords {
@@ -342,20 +445,22 @@ func (e *ETL) Run(ctx context.Context) error {
 			for batch := range batchChan {
 				for _, loader := range e.loaders {
 					if err := loader.Setup(ctx); err != nil {
+						e.incrementError()
 						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
 						continue
 					}
 					if sqlLoader, ok := loader.(*SQLLoader); ok && sqlLoader.autoCreate && !sqlLoader.created {
 						if err := CreateTableFromRecord(sqlLoader.db, sqlLoader.table, batch[0]); err != nil {
+							e.incrementError()
 							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
 							continue
 						}
 						sqlLoader.created = true
 					}
-					err := retry(e.retryCount, e.retryDelay, func() error {
+					if err := retryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
 						return loader.LoadBatch(ctx, batch)
-					})
-					if err != nil {
+					}); err != nil {
+						e.incrementError()
 						log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
 						continue
 					}
@@ -364,6 +469,7 @@ func (e *ETL) Run(ctx context.Context) error {
 						e.cpMutex.Lock()
 						if cp > e.lastCheckpoint {
 							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
+								e.incrementError()
 								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
 							} else {
 								e.lastCheckpoint = cp
