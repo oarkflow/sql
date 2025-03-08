@@ -1,4 +1,4 @@
-package main
+package v1
 
 import (
 	"bufio"
@@ -21,7 +21,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 
-	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/utils"
@@ -29,78 +28,6 @@ import (
 
 type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
-}
-
-func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Usage: %s <config.yaml>", os.Args[0])
-	}
-	configPath := os.Args[1]
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		log.Fatalf("Error loading config: %v", err)
-	}
-	var sourceDB *sql.DB
-	var destDB *sql.DB
-	if utils.IsSQLType(cfg.Source.Type) {
-		sourceDB, err = etl.OpenDB(cfg.Source)
-		if err != nil {
-			log.Fatalf("Error connecting to source DB: %v", err)
-		}
-		defer sourceDB.Close()
-	}
-	if utils.IsSQLType(cfg.Destination.Type) {
-		destDB, err = etl.OpenDB(cfg.Destination)
-		if err != nil {
-			log.Fatalf("Error connecting to destination DB: %v", err)
-		}
-		defer destDB.Close()
-	}
-	for _, tableCfg := range cfg.Tables {
-		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
-			continue
-		}
-		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
-			if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
-				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
-			}
-		}
-		opts := []Option{
-			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
-			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
-			WithCheckpoint(NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
-				if name, ok := rec["name"].(string); ok {
-					return name
-				}
-				return ""
-			}),
-			WithMapping(tableCfg.Mapping),
-			WithTransformers(),
-			WithWorkerCount(2),
-			WithBatchSize(tableCfg.BatchSize),
-			WithRawChanBuffer(50),
-		}
-		if tableCfg.KeyValueTable {
-			opts = append(opts, WithKeyValueTransformer(
-				tableCfg.ExtraValues,
-				tableCfg.IncludeFields,
-				tableCfg.ExcludeFields,
-				tableCfg.KeyField,
-				tableCfg.ValueField,
-			))
-		}
-		etlJob := NewETL(opts...)
-		ctx := context.Background()
-		if err := etlJob.Run(ctx); err != nil {
-			log.Printf("ETL job failed: %v", err)
-		}
-		if err := etlJob.Close(); err != nil {
-			log.Printf("Error closing ETL job: %v", err)
-		}
-		log.Printf("Migration for %s complete", tableCfg.OldName)
-	}
-	log.Println("All migrations complete.")
 }
 
 func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) error {
@@ -553,7 +480,7 @@ func NewFileLoader(fileName string, appendMode bool) *FileLoader {
 	}
 }
 
-func (fl *FileLoader) Setup(ctx context.Context) error {
+func (fl *FileLoader) Setup(_ context.Context) error {
 	switch fl.extension {
 	case "json":
 		if fl.appendMode {
@@ -638,7 +565,7 @@ func (fl *FileLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (fl *FileLoader) LoadBatch(ctx context.Context, records []utils.Record) error {
+func (fl *FileLoader) LoadBatch(_ context.Context, records []utils.Record) error {
 	switch fl.extension {
 	case "json":
 		for _, rec := range records {
