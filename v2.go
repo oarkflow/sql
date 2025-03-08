@@ -9,7 +9,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 
+	"github.com/oarkflow/sql/utils"
 	v1 "github.com/oarkflow/sql/v1"
+	"github.com/oarkflow/sql/v1/checkpoints"
 	"github.com/oarkflow/sql/v1/config"
 )
 
@@ -55,6 +57,12 @@ func main() {
 		etlJob := v1.NewETL(
 			v1.WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			v1.WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
+			v1.WithCheckpoint(checkpoints.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+				if name, ok := rec["name"].(string); ok {
+					return name
+				}
+				return ""
+			}),
 			v1.WithMapping(tableCfg.Mapping),
 			v1.WithTransformers(),
 			v1.WithWorkerCount(2),
