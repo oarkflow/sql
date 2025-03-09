@@ -99,6 +99,9 @@ func Run(cfg *config.Config) {
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(cfg.Buffer),
 		}
+		if tableCfg.NormalizeSchema != nil {
+			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
+		}
 		var mapperList []contract.Mapper
 		if len(tableCfg.Mapping) > 0 {
 			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
@@ -115,7 +118,6 @@ func Run(cfg *config.Config) {
 			))
 		}
 		etlJob := NewETL(opts...)
-
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
 				lookup, err := adapters.NewLookupLoader(lkup)
@@ -194,7 +196,6 @@ func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record) (<
 				nRec, err := normalizeRecord(rec, nn.schema)
 				if err != nil {
 					log.Printf("[Normalize Worker %d] Error: %v", workerID, err)
-
 					continue
 				}
 				out <- nRec
@@ -569,7 +570,6 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
 			}
 		}
 	}
-
 	if loadNode, ok := nodes["load"]; ok {
 		for range loadNode.outCh {
 		}
@@ -584,6 +584,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			rawChanBuffer: e.rawChanBuffer,
 		},
 		"normalize": &NormalizeNode{
+			schema:      e.normalizeSchema,
 			workerCount: e.workerCount,
 		},
 		"map": &MapNode{
@@ -608,9 +609,8 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		},
 	}
 	edges := []dagEdge{
-		// {Source: "source", Target: "normalize"},
-		// {Source: "normalize", Target: "map"},
-		{Source: "source", Target: "map"},
+		{Source: "source", Target: "normalize"},
+		{Source: "normalize", Target: "map"},
 		{Source: "map", Target: "transform"},
 		{Source: "transform", Target: "load"},
 	}
@@ -643,6 +643,7 @@ type ETL struct {
 	lookupStore     map[string][]utils.Record
 	lookupInCache   sync.Map
 	pipelineConfig  *PipelineConfig
+	normalizeSchema map[string]string
 }
 
 func defaultConfig() *ETL {

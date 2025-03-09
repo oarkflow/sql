@@ -43,6 +43,7 @@ type TableMapping struct {
 	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty" json:"auto_create_table,omitempty"`
 	Update              bool              `yaml:"update" json:"update"`
 	Delete              bool              `yaml:"delete" json:"delete"`
+	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
 }
 
 type Config struct {

@@ -13,6 +13,13 @@ import (
 
 type Option func(*ETL) error
 
+func WithNormalizeSchema(schema map[string]string) Option {
+	return func(e *ETL) error {
+		e.normalizeSchema = schema
+		return nil
+	}
+}
+
 func WithPipelineConfig(pc *PipelineConfig) Option {
 	return func(e *ETL) error {
 		e.pipelineConfig = pc
