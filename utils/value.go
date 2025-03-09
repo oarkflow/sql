@@ -2,13 +2,91 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/oarkflow/dipper"
 	"github.com/oarkflow/expr"
 )
+
+func NormalizeRecord(rec Record, schema map[string]string) (Record, error) {
+	for field, targetType := range schema {
+		if val, ok := rec[field]; ok {
+			normalized, err := normalizeValue(val, targetType)
+			if err != nil {
+				return nil, fmt.Errorf("error normalizing field %s: %v", field, err)
+			}
+			rec[field] = normalized
+		}
+	}
+	return rec, nil
+}
+
+func normalizeValue(val any, targetType string) (any, error) {
+	switch targetType {
+	case "int":
+		switch v := val.(type) {
+		case int:
+			return v, nil
+		case int64:
+			return int(v), nil
+		case float64:
+			return int(v), nil
+		case string:
+			i, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, err
+			}
+			return i, nil
+		case bool:
+			if v {
+				return 1, nil
+			}
+			return 0, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for int conversion: %T", val)
+		}
+	case "bool":
+		switch v := val.(type) {
+		case bool:
+			return v, nil
+		case string:
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, err
+			}
+			return b, nil
+		case int:
+			return v != 0, nil
+		case float64:
+			return v != 0, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for bool conversion: %T", val)
+		}
+	case "float":
+		switch v := val.(type) {
+		case float64:
+			return v, nil
+		case int:
+			return float64(v), nil
+		case string:
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return nil, err
+			}
+			return f, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for float conversion: %T", val)
+		}
+	case "string":
+		return fmt.Sprintf("%v", val), nil
+	default:
+		return nil, fmt.Errorf("unknown target type: %s", targetType)
+	}
+}
 
 func IsEmpty(s interface{}) bool {
 	v := reflect.ValueOf(s)

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"runtime"
-	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -48,7 +48,6 @@ func Run(cfg *config.Config) {
 	}
 	var sourceFile string
 	var sources []contract.Source
-
 	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
 		cfg.Sources = append(cfg.Sources, cfg.Source)
 	}
@@ -159,6 +158,8 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record) (<-cha
 		wg.Add(1)
 		go func(source contract.Source) {
 			defer wg.Done()
+			startTime := time.Now()
+			recordCount := 0
 			ch, err := source.Extract(ctx)
 			if err != nil {
 				log.Printf("Source extraction error: %v", err)
@@ -166,7 +167,10 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record) (<-cha
 			}
 			for rec := range ch {
 				out <- rec
+				recordCount++
 			}
+			elapsed := time.Since(startTime)
+			log.Printf("[Source] %T extracted %d records in %v", source, recordCount, elapsed)
 		}(src)
 	}
 	go func() {
@@ -184,27 +188,36 @@ type NormalizeNode struct {
 func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
 	out := make(chan utils.Record, nn.workerCount*2)
 	var wg sync.WaitGroup
+	var totalNormalized int64
+	startTime := time.Now()
 	for i := 0; i < nn.workerCount; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			localCount := 0
 			for rec := range in {
 				if nn.schema == nil {
 					out <- rec
+					localCount++
 					continue
 				}
-				nRec, err := normalizeRecord(rec, nn.schema)
+				nRec, err := utils.NormalizeRecord(rec, nn.schema)
 				if err != nil {
 					log.Printf("[Normalize Worker %d] Error: %v", workerID, err)
 					continue
 				}
 				out <- nRec
+				localCount++
 			}
+			atomic.AddInt64(&totalNormalized, int64(localCount))
+			log.Printf("[Normalize Worker %d] processed %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
 		close(out)
+		elapsed := time.Since(startTime)
+		log.Printf("[Normalize] Total processed records: %d in %v", totalNormalized, elapsed)
 	}()
 	return out, nil
 }
@@ -217,10 +230,13 @@ type MapNode struct {
 func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
 	out := make(chan utils.Record, mn.workerCount*2)
 	var wg sync.WaitGroup
+	var totalMapped int64
+	startTime := time.Now()
 	for i := 0; i < mn.workerCount; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			localCount := 0
 			for rec := range in {
 				mapped, err := applyMappers(ctx, rec, mn.mappers, workerID)
 				if err != nil {
@@ -229,13 +245,18 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan 
 				}
 				if mapped != nil {
 					out <- mapped
+					localCount++
 				}
 			}
+			atomic.AddInt64(&totalMapped, int64(localCount))
+			log.Printf("[Mapper Worker %d] mapped %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
 		close(out)
+		elapsed := time.Since(startTime)
+		log.Printf("[Mapper] Total mapped records: %d in %v", totalMapped, elapsed)
 	}()
 	return out, nil
 }
@@ -248,10 +269,13 @@ type TransformNode struct {
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
 	out := make(chan utils.Record, tn.workerCount*2)
 	var wg sync.WaitGroup
+	var totalTransformed int64
+	startTime := time.Now()
 	for i := 0; i < tn.workerCount; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			localCount := 0
 			for rec := range in {
 				transformed, err := applyTransformers(ctx, rec, tn.transformers, workerID)
 				if err != nil {
@@ -260,13 +284,18 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<
 				}
 				for _, r := range transformed {
 					out <- r
+					localCount++
 				}
 			}
+			atomic.AddInt64(&totalTransformed, int64(localCount))
+			log.Printf("[Transformer Worker %d] transformed %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
 		close(out)
+		elapsed := time.Since(startTime)
+		log.Printf("[Transformer] Total transformed records: %d in %v", totalTransformed, elapsed)
 	}()
 	return out, nil
 }
@@ -287,6 +316,8 @@ type LoaderNode struct {
 func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
 	done := make(chan utils.Record)
 	batchChan := make(chan []utils.Record, ln.workerCount)
+	startTime := time.Now()
+	var totalLoaded int64
 	go func() {
 		batch := make([]utils.Record, 0, ln.batchSize)
 		for rec := range in {
@@ -306,6 +337,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			localLoaded := 0
 			for batch := range batchChan {
 				for _, loader := range ln.loaders {
 					if err := loader.Setup(ctx); err != nil {
@@ -346,6 +378,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 							continue
 						}
 					}
+					localLoaded += len(batch)
 					if ln.checkpointStore != nil && ln.checkpointFunc != nil {
 						cp := ln.checkpointFunc(batch[len(batch)-1])
 						ln.cpMutex.Lock()
@@ -360,89 +393,17 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 					}
 				}
 			}
+			atomic.AddInt64(&totalLoaded, int64(localLoaded))
+			log.Printf("[Loader Worker %d] loaded %d records", workerID, localLoaded)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
 		close(done)
+		elapsed := time.Since(startTime)
+		log.Printf("[Loader] Total loaded records: %d in %v", totalLoaded, elapsed)
 	}()
 	return done, nil
-}
-
-func normalizeRecord(rec utils.Record, schema map[string]string) (utils.Record, error) {
-	for field, targetType := range schema {
-		if val, ok := rec[field]; ok {
-			normalized, err := normalizeValue(val, targetType)
-			if err != nil {
-				return nil, fmt.Errorf("error normalizing field %s: %v", field, err)
-			}
-			rec[field] = normalized
-		}
-	}
-	return rec, nil
-}
-
-func normalizeValue(val interface{}, targetType string) (interface{}, error) {
-	switch targetType {
-	case "int":
-		switch v := val.(type) {
-		case int:
-			return v, nil
-		case int64:
-			return int(v), nil
-		case float64:
-			return int(v), nil
-		case string:
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				return nil, err
-			}
-			return i, nil
-		case bool:
-			if v {
-				return 1, nil
-			}
-			return 0, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for int conversion: %T", val)
-		}
-	case "bool":
-		switch v := val.(type) {
-		case bool:
-			return v, nil
-		case string:
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				return nil, err
-			}
-			return b, nil
-		case int:
-			return v != 0, nil
-		case float64:
-			return v != 0, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for bool conversion: %T", val)
-		}
-	case "float":
-		switch v := val.(type) {
-		case float64:
-			return v, nil
-		case int:
-			return float64(v), nil
-		case string:
-			f, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				return nil, err
-			}
-			return f, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for float conversion: %T", val)
-		}
-	case "string":
-		return fmt.Sprintf("%v", val), nil
-	default:
-		return nil, fmt.Errorf("unknown target type: %s", targetType)
-	}
 }
 
 func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapper, workerID int) (utils.Record, error) {
@@ -671,10 +632,14 @@ func NewETL(opts ...Option) *ETL {
 }
 
 func (e *ETL) Run(ctx context.Context) error {
+	overallStart := time.Now()
 	if e.pipelineConfig == nil {
 		e.pipelineConfig = e.buildDefaultPipeline()
 	}
-	return e.runPipeline(ctx, e.pipelineConfig)
+	err := e.runPipeline(ctx, e.pipelineConfig)
+	elapsed := time.Since(overallStart)
+	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
+	return err
 }
 
 func (e *ETL) Close() error {
@@ -691,7 +656,7 @@ func (e *ETL) Close() error {
 	return nil
 }
 
-func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
+func (e *ETL) lookupIn(args ...any) (any, error) {
 	if len(args) != 4 {
 		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")
 	}
