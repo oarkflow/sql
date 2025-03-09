@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,7 @@ func Run(cfg *config.Config) {
 	}
 	var sourceFile string
 	var sources []contract.Source
+	var sourcesToMigrate []string
 	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
 		cfg.Sources = append(cfg.Sources, cfg.Source)
 	}
@@ -55,6 +57,21 @@ func Run(cfg *config.Config) {
 		if sourceCfg.File != "" {
 			sourceFile = sourceCfg.File
 		}
+		var tmp []string
+		if sourceCfg.File != "" {
+			tmp = append(tmp, sourceCfg.File)
+		}
+		if sourceCfg.Table != "" {
+			tmp = append(tmp, sourceCfg.Table)
+		}
+		if sourceCfg.Source != "" {
+			tmp = append(tmp, sourceCfg.Source)
+		}
+
+		if len(tmp) > 0 {
+			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
+		}
+
 		var sourceDB *sql.DB
 		if utils.IsSQLType(sourceCfg.Type) {
 			sourceDB, err = config.OpenDB(sourceCfg)
@@ -138,7 +155,17 @@ func Run(cfg *config.Config) {
 		if err := etlJob.Close(); err != nil {
 			log.Printf("Error closing ETL job: %v", err)
 		}
-		log.Printf("Migration for %s complete", tableCfg.OldName)
+		var dst string
+		if tableCfg.NewName != "" {
+			dst = tableCfg.NewName
+		} else if cfg.Destination.File != "" {
+			dst = cfg.Destination.File
+		} else if cfg.Destination.Table != "" {
+			dst = cfg.Destination.Table
+		} else if cfg.Destination.Source != "" {
+			dst = cfg.Destination.Source
+		}
+		log.Printf("Migration for %s to %s completed", "["+strings.Join(sourcesToMigrate, ", ")+"]", dst)
 	}
 	log.Println("All migrations complete.")
 }
