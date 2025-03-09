@@ -64,14 +64,14 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 	}
 }
 
-func WithDestination(destType string, destDB *sql.DB, destFile string, cfg config.TableMapping) Option {
+func WithDestination(destType string, destDB *sql.DB, driver, destFile string, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contract.Loader
 		if utils.IsSQLType(destType) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = adapters.NewSQLAdapterAsLoader(destDB, destType, cfg)
+			destination = adapters.NewSQLAdapterAsLoader(destDB, destType, driver, cfg, cfg.NormalizeSchema)
 		} else if destType == "csv" || destType == "json" {
 			file := cfg.NewName
 			if file == "" {

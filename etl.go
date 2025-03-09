@@ -106,7 +106,7 @@ func Run(cfg *config.Config) {
 		}
 		opts := []Option{
 			WithSources(sources...),
-			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
+			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.Driver, cfg.Destination.File, tableCfg),
 			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
 				name, _ := rec["name"].(string)
 				return name
@@ -369,7 +369,6 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 				for _, loader := range ln.loaders {
 					if err := loader.Setup(ctx); err != nil {
 						log.Printf("[Loader Worker %d] Setup error: %v", workerID, err)
-						continue
 					}
 					if txnLoader, ok := loader.(contract.Transactional); ok {
 						if err := txnLoader.Begin(ctx); err != nil {
@@ -377,7 +376,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 							continue
 						}
 						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
-							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
+							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
 								log.Printf("[Loader Worker %d] Table creation error: %v", workerID, err)
 								continue
 							}

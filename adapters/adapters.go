@@ -11,7 +11,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/oarkflow/etl/config"
 	"github.com/oarkflow/etl/contract"
@@ -25,13 +27,13 @@ func NewLookupLoader(lkup config.DataConfig) (contract.LookupLoader, error) {
 	case "postgresql", "mysql", "sqlite":
 		db, err := config.OpenDB(lkup)
 		if err != nil {
-			log.Fatalf("Error connecting to lookup DB: %v", err)
+			return nil, fmt.Errorf("error connecting to lookup DB: %v", err)
 		}
 		return NewSQLAdapterAsSource(db, "", lkup.Source), nil
 	case "csv", "json":
 		return NewFileAdapter(lkup.File, "source", false), nil
 	default:
-		return nil, fmt.Errorf("Unsupported lookup type: %s", lkup.Type)
+		return nil, fmt.Errorf("unsupported lookup type: %s", lkup.Type)
 	}
 }
 
@@ -238,36 +240,40 @@ func (fl *FileAdapter) Extract(_ context.Context) (<-chan utils.Record, error) {
 }
 
 type SQLAdapter struct {
-	Db             *sql.DB
-	mode           string
-	Table          string
-	truncate       bool
-	updateSequence bool
-	destType       string
-	update         bool
-	delete         bool
-	query          string
-	AutoCreate     bool
-	Created        bool
+	Db              *sql.DB
+	mode            string
+	Table           string
+	truncate        bool
+	updateSequence  bool
+	destType        string
+	update          bool
+	delete          bool
+	query           string
+	AutoCreate      bool
+	Created         bool
+	Driver          string
+	NormalizeSchema map[string]string
 }
 
-func NewSQLAdapterAsLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLAdapter {
+func NewSQLAdapterAsLoader(db *sql.DB, destType, driver string, cfg config.TableMapping, normalizeSchema map[string]string) *SQLAdapter {
 	autoCreate := false
 	if !cfg.KeyValueTable && cfg.AutoCreateTable {
 		autoCreate = true
 	}
 	return &SQLAdapter{
-		Db:             db,
-		destType:       destType,
-		Table:          cfg.NewName,
-		truncate:       cfg.TruncateDestination,
-		updateSequence: cfg.UpdateSequence,
-		update:         cfg.Update,
-		delete:         cfg.Delete,
-		query:          cfg.Query,
-		AutoCreate:     autoCreate,
-		Created:        false,
-		mode:           "loader",
+		Db:              db,
+		destType:        destType,
+		Table:           cfg.NewName,
+		truncate:        cfg.TruncateDestination,
+		updateSequence:  cfg.UpdateSequence,
+		update:          cfg.Update,
+		delete:          cfg.Delete,
+		query:           cfg.Query,
+		AutoCreate:      autoCreate,
+		Created:         false,
+		Driver:          driver,
+		NormalizeSchema: normalizeSchema,
+		mode:            "loader",
 	}
 }
 
@@ -280,12 +286,37 @@ func (l *SQLAdapter) Setup(ctx context.Context) error {
 		return nil
 	}
 	if l.truncate {
-		_, err := l.Db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", l.Table))
+		exists, err := tableExists(l.Db, l.Table, l.Driver)
 		if err != nil {
-			log.Printf("Truncate error for table %s: %v", l.Table, err)
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		_, err = l.Db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", l.Table))
+		if err != nil {
+			return fmt.Errorf("truncate error for table %s: %v", l.Table, err)
 		}
 	}
 	return nil
+}
+
+func tableExists(db *sql.DB, tableName, dbType string) (bool, error) {
+	var count int
+	var query string
+	switch dbType {
+	case "mysql", "postgres":
+		query = fmt.Sprintf("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '%s'", tableName)
+	case "sqlite":
+		query = fmt.Sprintf("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='%s'", tableName)
+	default:
+		return false, fmt.Errorf("unsupported DBMS type: %s", dbType)
+	}
+	err := db.QueryRow(query).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
@@ -323,7 +354,7 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 		return nil
 	}
 	if l.AutoCreate && !l.Created {
-		if err := sqlutil.CreateTableFromRecord(l.Db, l.Table, batch[0]); err != nil {
+		if err := sqlutil.CreateTableFromRecord(l.Db, l.Driver, l.Table, l.NormalizeSchema); err != nil {
 			return err
 		}
 		l.Created = true
@@ -332,6 +363,7 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 	for k := range batch[0] {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	var placeholders []string
 	var args []any
 	argCounter := 1
@@ -354,7 +386,6 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 }
 
 func (l *SQLAdapter) LoadData() ([]utils.Record, error) {
-	// Use the existing Extract() method to read records from the database.
 	ch, err := l.Extract(context.Background())
 	if err != nil {
 		return nil, err
@@ -415,4 +446,186 @@ func (l *SQLAdapter) Close() error {
 		return sqlutil.UpdateSequence(l.Db, l.Table)
 	}
 	return l.Db.Close()
+}
+
+func defaultPlaceholder(destType string) func(int) string {
+	switch strings.ToLower(destType) {
+	case "postgresql":
+		return func(i int) string { return fmt.Sprintf("$%d", i) }
+	default: // Assume MySQL/SQLite uses "?"
+		return func(i int) string { return "?" }
+	}
+}
+
+// StreamingSQLLoader implements a streaming loader that batches records
+// and uses a worker pool with prepared statements for concurrent INSERTs.
+type StreamingSQLLoader struct {
+	Db            *sql.DB
+	Table         string
+	batchSize     int
+	workerCount   int
+	destType      string
+	placeholderFn func(int) string
+	AutoCreate    bool
+	Created       bool
+}
+
+// NewStreamingSQLLoader constructs a new StreamingSQLLoader.
+func NewStreamingSQLLoader(db *sql.DB, destType string, table string, batchSize, workerCount int, autoCreate bool) *StreamingSQLLoader {
+	return &StreamingSQLLoader{
+		Db:            db,
+		Table:         table,
+		batchSize:     batchSize,
+		workerCount:   workerCount,
+		destType:      destType,
+		AutoCreate:    autoCreate,
+		Created:       false,
+		placeholderFn: defaultPlaceholder(destType),
+	}
+}
+
+// Setup performs any initialization required for streaming.
+// Here you can add table existence or creation logic if needed.
+func (loader *StreamingSQLLoader) Setup(ctx context.Context) error {
+	// For now, we assume the table already exists.
+	return nil
+}
+
+// prepareStmt builds a parameterized INSERT statement for a given batch.
+func (loader *StreamingSQLLoader) prepareStmt(keys []string, numRecords int) (*sql.Stmt, error) {
+	placeholders := []string{}
+	argCounter := 1
+	for i := 0; i < numRecords; i++ {
+		innerPlaceholders := []string{}
+		for range keys {
+			innerPlaceholders = append(innerPlaceholders, loader.placeholderFn(argCounter))
+			argCounter++
+		}
+		placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(innerPlaceholders, ", ")))
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", loader.Table, strings.Join(keys, ", "), strings.Join(placeholders, ", "))
+	return loader.Db.Prepare(query)
+}
+
+// StreamLoad consumes records from the provided channel, groups them into batches,
+// and concurrently executes INSERT statements.
+func (loader *StreamingSQLLoader) StreamLoad(ctx context.Context, recordsCh <-chan utils.Record) error {
+	batchesCh := make(chan []utils.Record, loader.workerCount)
+	var wg sync.WaitGroup
+
+	// Batch collector goroutine.
+	go func() {
+		var batch []utils.Record
+		for rec := range recordsCh {
+			batch = append(batch, rec)
+			if len(batch) >= loader.batchSize {
+				batchesCh <- batch
+				batch = nil
+			}
+		}
+		if len(batch) > 0 {
+			batchesCh <- batch
+		}
+		close(batchesCh)
+	}()
+
+	// Worker function to process batches.
+	worker := func() {
+		defer wg.Done()
+		for batch := range batchesCh {
+			if len(batch) == 0 {
+				continue
+			}
+			// Determine a consistent key order from the first record.
+			keys := []string{}
+			for k := range batch[0] {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			stmt, err := loader.prepareStmt(keys, len(batch))
+			if err != nil {
+				log.Printf("Error preparing statement: %v", err)
+				continue
+			}
+			var args []any
+			for _, rec := range batch {
+				for _, key := range keys {
+					args = append(args, rec[key])
+				}
+			}
+			if _, err := stmt.ExecContext(ctx, args...); err != nil {
+				log.Printf("Error executing batch insert: %v", err)
+			}
+			stmt.Close()
+		}
+	}
+
+	// Launch concurrent workers.
+	wg.Add(loader.workerCount)
+	for i := 0; i < loader.workerCount; i++ {
+		go worker()
+	}
+	wg.Wait()
+	return nil
+}
+
+// Close cleans up any resources used by the streaming loader.
+// In this implementation, there are no persistent resources.
+func (loader *StreamingSQLLoader) Close() error {
+	return nil
+}
+
+// StreamingLoaderAdapter wraps StreamingSQLLoader to implement the contract.Loader interface.
+// It provides a StoreBatch method that ETL expects, by sending each record of the batch
+// into an internal channel processed by the streaming loader.
+type StreamingLoaderAdapter struct {
+	Loader    *StreamingSQLLoader
+	recordsCh chan utils.Record
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+// NewStreamingLoaderAdapter creates a new adapter with a buffered channel.
+func NewStreamingLoaderAdapter(loader *StreamingSQLLoader, bufferSize int) *StreamingLoaderAdapter {
+	ctx, cancel := context.WithCancel(context.Background())
+	adapter := &StreamingLoaderAdapter{
+		Loader:    loader,
+		recordsCh: make(chan utils.Record, bufferSize),
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+	adapter.wg.Add(1)
+	go func() {
+		defer adapter.wg.Done()
+		if err := adapter.Loader.StreamLoad(ctx, adapter.recordsCh); err != nil {
+			log.Printf("Error in StreamingSQLLoader: %v", err)
+		}
+	}()
+	return adapter
+}
+
+// Setup calls the underlying loader's Setup method.
+func (sla *StreamingLoaderAdapter) Setup(ctx context.Context) error {
+	return sla.Loader.Setup(ctx)
+}
+
+// StoreBatch receives a batch of records from the ETL and sends each record to the streaming channel.
+func (sla *StreamingLoaderAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
+	for _, rec := range batch {
+		select {
+		case sla.recordsCh <- rec:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// Close cancels the context, closes the channel, and waits for the worker to finish.
+func (sla *StreamingLoaderAdapter) Close() error {
+	sla.cancel()
+	close(sla.recordsCh)
+	sla.wg.Wait()
+	return sla.Loader.Close()
 }

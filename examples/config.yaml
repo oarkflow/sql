@@ -13,8 +13,13 @@ sources:
         source: "SELECT * FROM providers_sql"
 
 destination:
-    type: "json"
-    file: "output.json"
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    username: "postgres"
+    password: "postgres"
+    driver: "postgres"
+    database: "mydb"
 
 lookups:
     -   type: "csv"
@@ -25,7 +30,9 @@ lookups:
         key: "facilities"
 
 tables:
-    -   clone_source: true
+    -   new_name: "my_providers"
+        old_name: "providers"
+        clone_source: true
         migrate: true
         batch_size: 100
         truncate_destination: true
