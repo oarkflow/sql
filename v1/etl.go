@@ -61,6 +61,12 @@ func Run(cfg *config.Config) {
 		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
 		}
+		if tableCfg.OldName == "" && cfg.Source.File != "" {
+			tableCfg.OldName = cfg.Source.File
+		}
+		if tableCfg.NewName == "" && cfg.Destination.File != "" {
+			tableCfg.NewName = cfg.Destination.File
+		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
 		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
 			if err := sqlutil.CreateKeyValueTable(
