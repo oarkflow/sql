@@ -14,7 +14,7 @@ type Source interface {
 
 type Loader interface {
 	Setup(ctx context.Context) error
-	LoadBatch(ctx context.Context, batch []utils.Record) error
+	StoreBatch(ctx context.Context, batch []utils.Record) error
 	Close() error
 }
 
@@ -45,4 +45,8 @@ type Validator interface {
 
 type MultiTransformer interface {
 	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
+}
+
+type LookupLoader interface {
+	LoadData() ([]map[string]string, error)
 }

@@ -131,7 +131,7 @@ func (fl *FileAdapter) Setup(_ context.Context) error {
 	return nil
 }
 
-func (fl *FileAdapter) LoadBatch(_ context.Context, records []utils.Record) error {
+func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) error {
 	switch fl.extension {
 	case "json":
 		for _, rec := range records {
@@ -193,6 +193,63 @@ func (fl *FileAdapter) Close() error {
 		return fl.file.Close()
 	}
 	return nil
+}
+
+func (fl *FileAdapter) LoadData() ([]map[string]string, error) {
+	// Open the file in read-only mode.
+	f, err := os.Open(fl.Filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Ensure the extension is set.
+	if fl.extension == "" {
+		fl.extension = strings.TrimPrefix(strings.ToLower(filepath.Ext(fl.Filename)), ".")
+	}
+
+	switch fl.extension {
+	case "csv":
+		r := csv.NewReader(f)
+		headers, err := r.Read()
+		if err != nil {
+			return nil, err
+		}
+		var result []map[string]string
+		for {
+			row, err := r.Read()
+			if err != nil {
+				break
+			}
+			// Skip rows that do not match the header length.
+			if len(row) != len(headers) {
+				continue
+			}
+			rowMap := make(map[string]string)
+			for i, header := range headers {
+				rowMap[header] = row[i]
+			}
+			result = append(result, rowMap)
+		}
+		return result, nil
+	case "json":
+		var data []map[string]interface{}
+		decoder := json.NewDecoder(f)
+		if err := decoder.Decode(&data); err != nil {
+			return nil, err
+		}
+		result := make([]map[string]string, 0, len(data))
+		for _, item := range data {
+			row := make(map[string]string)
+			for k, v := range item {
+				row[k] = fmt.Sprintf("%v", v)
+			}
+			result = append(result, row)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported file extension for lookup: %s", fl.extension)
+	}
 }
 
 func (fl *FileAdapter) Extract(_ context.Context) (<-chan utils.Record, error) {
@@ -260,7 +317,7 @@ func (l *SQLAdapter) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *SQLAdapter) LoadBatch(ctx context.Context, batch []utils.Record) error {
+func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
 	if l.update {
 		for _, rec := range batch {
 			var q string
@@ -323,6 +380,38 @@ func (l *SQLAdapter) LoadBatch(ctx context.Context, batch []utils.Record) error 
 	)
 	_, err := l.Db.ExecContext(ctx, q, args...)
 	return err
+}
+
+func (l *SQLAdapter) LoadData() ([]map[string]string, error) {
+	rows, err := l.Db.Query(l.query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []map[string]string
+	for rows.Next() {
+		columns := make([]interface{}, len(cols))
+		columnPointers := make([]interface{}, len(cols))
+		for i := range columns {
+			columnPointers[i] = &columns[i]
+		}
+		if err := rows.Scan(columnPointers...); err != nil {
+			return nil, err
+		}
+		rowMap := make(map[string]string)
+		for i, colName := range cols {
+			// Format each column value as a string.
+			rowMap[colName] = fmt.Sprintf("%v", columns[i])
+		}
+		result = append(result, rowMap)
+	}
+	return result, nil
 }
 
 func (l *SQLAdapter) Extract(ctx context.Context) (<-chan utils.Record, error) {

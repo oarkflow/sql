@@ -123,7 +123,7 @@ func (fl *FileLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (fl *FileLoader) LoadBatch(ctx context.Context, records []utils.Record) error {
+func (fl *FileLoader) StoreBatch(ctx context.Context, records []utils.Record) error {
 	switch fl.extension {
 	case "json":
 		for _, rec := range records {

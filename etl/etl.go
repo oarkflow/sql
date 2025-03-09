@@ -182,7 +182,7 @@ func (e *ETL) Run(ctx context.Context) error {
 							continue
 						}
 						err := retry(e.retryCount, e.retryDelay, func() error {
-							return loader.LoadBatch(ctx, batch)
+							return loader.StoreBatch(ctx, batch)
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Error loading batch with transaction: %v", workerID, err)
@@ -198,7 +198,7 @@ func (e *ETL) Run(ctx context.Context) error {
 					} else {
 						err := RunInTransaction(ctx, func(tx *Transaction) error {
 							return retry(e.retryCount, e.retryDelay, func() error {
-								return loader.LoadBatch(ctx, batch)
+								return loader.StoreBatch(ctx, batch)
 							})
 						})
 						if err != nil {

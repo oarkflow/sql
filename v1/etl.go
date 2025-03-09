@@ -3,11 +3,8 @@ package v1
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,171 +26,33 @@ import (
 	"github.com/oarkflow/sql/utils/sqlutil"
 )
 
-///////////////////////////////////////////////////////////////////////////////
-// Lookup System - Generic Interface and Implementations
-///////////////////////////////////////////////////////////////////////////////
-
-// LookupLoader is the generic interface for loading lookup data.
-type LookupLoader interface {
-	LoadData() ([]map[string]string, error)
-}
-
-// SQLLookupLoader implements LookupLoader for SQL-based sources.
-type SQLLookupLoader struct {
-	config config.LookupConfig
-}
-
-func (s *SQLLookupLoader) LoadData() ([]map[string]string, error) {
-	var dsn string
-	switch strings.ToLower(s.config.Driver) {
-	case "postgres", "postgresql":
-		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-			s.config.Host, s.config.Port, s.config.Username, s.config.Password, s.config.Database)
-	case "mysql":
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
-			s.config.Username, s.config.Password, s.config.Host, s.config.Port, s.config.Database)
-	case "sqlite":
-		dsn = s.config.File
-	default:
-		return nil, fmt.Errorf("unsupported SQL driver: %s", s.config.Driver)
-	}
-	db, err := sql.Open(s.config.Driver, dsn)
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	return loadLookupDataFromSQLGeneric(db, s.config.Source)
-}
-
-// CSVLookupLoader implements LookupLoader for CSV files.
-type CSVLookupLoader struct {
-	filePath string
-}
-
-func (c *CSVLookupLoader) LoadData() ([]map[string]string, error) {
-	return loadLookupDataFromCSVGeneric(c.filePath)
-}
-
-// JSONLookupLoader implements LookupLoader for JSON files.
-type JSONLookupLoader struct {
-	filePath string
-}
-
-func (j *JSONLookupLoader) LoadData() ([]map[string]string, error) {
-	f, err := os.Open(j.filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var data []map[string]interface{}
-	decoder := json.NewDecoder(f)
-	if err := decoder.Decode(&data); err != nil {
-		return nil, err
-	}
-	// Convert each map[string]interface{} into map[string]string.
-	result := make([]map[string]string, 0, len(data))
-	for _, item := range data {
-		row := make(map[string]string)
-		for k, v := range item {
-			row[k] = fmt.Sprintf("%v", v)
-		}
-		result = append(result, row)
-	}
-	return result, nil
-}
-
-// KVLookupLoader is a stub for key-value based lookups (e.g. Redis, badger, bbolt, etc).
-type KVLookupLoader struct {
-	// Add fields for connection details if necessary.
-}
-
-func (k *KVLookupLoader) LoadData() ([]map[string]string, error) {
-	return nil, fmt.Errorf("KVLookupLoader not implemented")
-}
-
-// NewLookupLoader returns a concrete LookupLoader based on the lookup configuration.
-func NewLookupLoader(lkup config.LookupConfig) (LookupLoader, error) {
+func NewLookupLoader(lkup config.LookupConfig) (contract.LookupLoader, error) {
 	switch strings.ToLower(lkup.Type) {
 	case "postgresql", "mysql", "sqlite":
-		return &SQLLookupLoader{config: lkup}, nil
-	case "csv":
-		return &CSVLookupLoader{filePath: lkup.File}, nil
-	case "json":
-		return &JSONLookupLoader{filePath: lkup.File}, nil
-	case "kv":
-		return &KVLookupLoader{}, nil
-	default:
-		return nil, fmt.Errorf("unsupported lookup type: %s", lkup.Type)
-	}
-}
-
-// Helper functions used by lookup loaders.
-
-func loadLookupDataFromSQLGeneric(db *sql.DB, query string) ([]map[string]string, error) {
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-
-	var result []map[string]string
-	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
-		for i := range columns {
-			columnPointers[i] = &columns[i]
+		var dsn string
+		switch strings.ToLower(lkup.Driver) {
+		case "postgres", "postgresql":
+			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+				lkup.Host, lkup.Port, lkup.Username, lkup.Password, lkup.Database)
+		case "mysql":
+			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+				lkup.Username, lkup.Password, lkup.Host, lkup.Port, lkup.Database)
+		case "sqlite":
+			dsn = lkup.File
+		default:
+			log.Fatalf("unsupported SQL driver: %s", lkup.Driver)
 		}
-		if err := rows.Scan(columnPointers...); err != nil {
-			return nil, err
-		}
-		rowMap := make(map[string]string)
-		for i, colName := range cols {
-			rowMap[colName] = fmt.Sprintf("%v", columns[i])
-		}
-		result = append(result, rowMap)
-	}
-	return result, nil
-}
-
-func loadLookupDataFromCSVGeneric(file string) ([]map[string]string, error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	headers, err := r.Read()
-	if err != nil {
-		return nil, err
-	}
-
-	var result []map[string]string
-	for {
-		row, err := r.Read()
+		db, err := sql.Open(lkup.Driver, dsn)
 		if err != nil {
-			break
+			log.Fatalf("Error connecting to lookup DB: %v", err)
 		}
-		if len(row) != len(headers) {
-			continue
-		}
-		rowMap := make(map[string]string)
-		for i, header := range headers {
-			rowMap[header] = row[i]
-		}
-		result = append(result, rowMap)
+		return adapters.NewSQLAdapterAsSource(db, "", lkup.Source), nil
+	case "csv", "json":
+		return adapters.NewFileAdapter(lkup.File, "source", false), nil
+	default:
+		return nil, fmt.Errorf("Unsupported lookup type: %s", lkup.Type)
 	}
-	return result, nil
 }
-
-///////////////////////////////////////////////////////////////////////////////
-// ETL Implementation (Unchanged Logic, Updated Lookup Section)
-///////////////////////////////////////////////////////////////////////////////
 
 func Run(cfg *config.Config) {
 	var sourceDB *sql.DB
@@ -247,12 +106,9 @@ func Run(cfg *config.Config) {
 			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
 			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
-				if name, ok := rec["name"].(string); ok {
-					return name
-				}
-				return ""
+				name, _ := rec["name"].(string)
+				return name
 			}),
-			WithTransformers(),
 			WithWorkerCount(cfg.WorkerCount),
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(cfg.Buffer),
@@ -273,7 +129,7 @@ func Run(cfg *config.Config) {
 			))
 		}
 		etlJob := NewETL(opts...)
-		// --- Updated Lookup Section using the new generic lookup system ---
+
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
 				lookup, err := NewLookupLoader(lkup)
@@ -284,7 +140,7 @@ func Run(cfg *config.Config) {
 				if err != nil {
 					log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
 				}
-				// Store the dataset using the lookup key from configuration.
+
 				etlJob.lookupStore[lkup.Key] = data
 			}
 		}
@@ -462,7 +318,7 @@ func (e *ETL) Run(ctx context.Context) error {
 							sqlLoader.Created = true
 						}
 						if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-							return loader.LoadBatch(ctx, batch)
+							return loader.StoreBatch(ctx, batch)
 						}); err != nil {
 							e.incrementError()
 							log.Printf("[Loader Worker %d] Error loading batch with transaction: %v", workerID, err)
@@ -475,7 +331,7 @@ func (e *ETL) Run(ctx context.Context) error {
 					} else {
 						err := transactions.RunInTransaction(ctx, func(tx *transactions.Transaction) error {
 							return resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-								return loader.LoadBatch(ctx, batch)
+								return loader.StoreBatch(ctx, batch)
 							})
 						})
 						if err != nil {
@@ -569,16 +425,6 @@ func (e *ETL) incrementError() {
 	}
 }
 
-// lookupIn is the custom function used in mapping expressions. It expects exactly four arguments:
-//
-//	0: string – the lookup dataset key (e.g. "facilities")
-//	1: string – the lookup field name (e.g. "facility_name")
-//	2: any    – the source record's value to match (e.g. facility_name value)
-//	3: string – the target field name (e.g. "facility_id")
-//
-// It retrieves the lookup dataset from lookupStore, searches for a row where the value in lookupField
-// equals the provided source value, and returns the corresponding value from the target field.
-// The result is cached to avoid repeated lookups.
 func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if len(args) != 4 {
 		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")

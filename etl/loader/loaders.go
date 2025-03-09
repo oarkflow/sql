@@ -41,7 +41,7 @@ func (l *SQLLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
+func (l *SQLLoader) StoreBatch(ctx context.Context, batch []utils.Record) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -127,7 +127,7 @@ func (l *KeyValueLoader) Setup(ctx context.Context) error {
 	return nil
 }
 
-func (l *KeyValueLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
+func (l *KeyValueLoader) StoreBatch(ctx context.Context, batch []utils.Record) error {
 	for _, rec := range batch {
 		kv := make(map[string]any)
 		for k, v := range l.extraValues {
