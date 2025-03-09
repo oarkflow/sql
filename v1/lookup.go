@@ -5,15 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
-	"sync"
 )
-
-// GlobalLookupStore holds preloaded lookup datasets.
-// Each dataset is stored as a slice of rows where each row is a map[string]string.
-var GlobalLookupStore = make(map[string][]map[string]string)
-
-// lookupInCache caches lookup results for a given combination of parameters.
-var lookupInCache sync.Map
 
 // lookupIn is the custom function used in mapping expressions. It expects exactly four arguments:
 //
@@ -25,7 +17,7 @@ var lookupInCache sync.Map
 // It retrieves the lookup dataset from GlobalLookupStore, searches for a row where the value in the lookup field
 // equals the provided source value, and returns the corresponding value from the target field.
 // The result is cached to avoid repeated lookups.
-func lookupIn(args ...interface{}) (interface{}, error) {
+func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if len(args) != 4 {
 		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")
 	}
@@ -46,11 +38,11 @@ func lookupIn(args ...interface{}) (interface{}, error) {
 
 	// Compose a cache key that uniquely identifies this lookup request.
 	cacheKey := datasetKey + ":" + lookupField + ":" + sourceValStr + ":" + targetField
-	if cached, found := lookupInCache.Load(cacheKey); found {
+	if cached, found := e.lookupInCache.Load(cacheKey); found {
 		return cached, nil
 	}
 	// Retrieve the lookup dataset.
-	dataset, exists := GlobalLookupStore[datasetKey]
+	dataset, exists := e.lookupStore[datasetKey]
 	if !exists {
 		return nil, fmt.Errorf("lookupIn: no lookup dataset found for key %s", datasetKey)
 	}
@@ -59,8 +51,7 @@ func lookupIn(args ...interface{}) (interface{}, error) {
 	for _, row := range dataset {
 		if row[lookupField] == sourceValStr {
 			result := row[targetField]
-			fmt.Println("Found", result, targetField, row)
-			lookupInCache.Store(cacheKey, result)
+			e.lookupInCache.Store(cacheKey, result)
 			return result, nil
 		}
 	}

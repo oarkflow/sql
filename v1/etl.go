@@ -308,6 +308,8 @@ type ETL struct {
 	errorLock       sync.Mutex
 	circuitBreaker  *CircuitBreaker
 	cancelFunc      context.CancelFunc
+	lookupStore     map[string][]map[string]string
+	lookupInCache   sync.Map
 }
 
 func defaultConfig() *ETL {
@@ -319,6 +321,7 @@ func defaultConfig() *ETL {
 		loaderWorkers:  2,
 		rawChanBuffer:  100,
 		maxErrorCount:  10,
+		lookupStore:    make(map[string][]map[string]string),
 		circuitBreaker: NewCircuitBreaker(5, 5*time.Second),
 	}
 }
@@ -1125,7 +1128,6 @@ func (s *SQLSource) Close() error {
 }
 
 func RunETLWithConfig(cfg *config.Config) {
-	expr.AddFunction("lookupIn", lookupIn)
 	var sourceDB *sql.DB
 	var destDB *sql.DB
 	var err error
@@ -1188,6 +1190,7 @@ func RunETLWithConfig(cfg *config.Config) {
 				tableCfg.ValueField,
 			))
 		}
+		etlJob := NewETL(opts...)
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
 				var data []map[string]string
@@ -1220,10 +1223,10 @@ func RunETLWithConfig(cfg *config.Config) {
 					log.Fatalf("Unsupported lookup type: %s", lkup.Type)
 				}
 				// Store the dataset using the lookup key from configuration.
-				GlobalLookupStore[lkup.Key] = data
+				etlJob.lookupStore[lkup.Key] = data
 			}
 		}
-		etlJob := NewETL(opts...)
+		expr.AddFunction("lookupIn", etlJob.lookupIn)
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {
 			log.Printf("ETL job failed: %v", err)
