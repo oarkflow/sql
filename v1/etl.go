@@ -20,6 +20,7 @@ import (
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/resilience"
+	"github.com/oarkflow/sql/transactions"
 	"github.com/oarkflow/sql/utils"
 	"github.com/oarkflow/sql/utils/sqlutil"
 )
@@ -291,21 +292,40 @@ func (e *ETL) Run(ctx context.Context) error {
 						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
 						continue
 					}
-
-					if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
-						if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
-							e.incrementError()
-							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
+					if txnLoader, ok := loader.(contract.Transactional); ok {
+						if err := txnLoader.Begin(ctx); err != nil {
+							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
 							continue
 						}
-						sqlLoader.Created = true
-					}
-					if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-						return loader.LoadBatch(ctx, batch)
-					}); err != nil {
-						e.incrementError()
-						log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
-						continue
+						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
+								e.incrementError()
+								log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
+								continue
+							}
+							sqlLoader.Created = true
+						}
+						if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
+							return loader.LoadBatch(ctx, batch)
+						}); err != nil {
+							e.incrementError()
+							log.Printf("[Loader Worker %d] Error loading batchwith transaction: %v", workerID, err)
+							continue
+						}
+						if err := txnLoader.Commit(ctx); err != nil {
+							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
+							continue
+						}
+					} else {
+						err := transactions.RunInTransaction(ctx, func(tx *transactions.Transaction) error {
+							return resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
+								return loader.LoadBatch(ctx, batch)
+							})
+						})
+						if err != nil {
+							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
+							continue
+						}
 					}
 					if e.checkpointStore != nil && e.checkpointFunc != nil {
 						cp := e.checkpointFunc(batch[len(batch)-1])
