@@ -50,3 +50,7 @@ type MultiTransformer interface {
 type LookupLoader interface {
 	LoadData() ([]utils.Record, error)
 }
+
+type Node interface {
+	Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error)
+}

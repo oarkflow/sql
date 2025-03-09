@@ -24,9 +24,409 @@ import (
 	"github.com/oarkflow/etl/utils/sqlutil"
 )
 
+type SourceNode struct {
+	sources       []contract.Source
+	rawChanBuffer int
+}
+
+func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, sn.rawChanBuffer)
+	var wg sync.WaitGroup
+	for _, src := range sn.sources {
+		if err := src.Setup(ctx); err != nil {
+			return nil, fmt.Errorf("source setup error: %v", err)
+		}
+		wg.Add(1)
+		go func(source contract.Source) {
+			defer wg.Done()
+			ch, err := source.Extract(ctx)
+			if err != nil {
+				log.Printf("Source extraction error: %v", err)
+				return
+			}
+			for rec := range ch {
+				out <- rec
+			}
+		}(src)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out, nil
+}
+
+type MapNode struct {
+	mappers     []contract.Mapper
+	workerCount int
+}
+
+func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, mn.workerCount*2)
+	var wg sync.WaitGroup
+	for i := 0; i < mn.workerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for rec := range in {
+				mapped, err := applyMappers(ctx, rec, mn.mappers, workerID)
+				if err != nil {
+					log.Printf("[Mapper Worker %d] Error: %v", workerID, err)
+					continue
+				}
+				if mapped != nil {
+					out <- mapped
+				}
+			}
+		}(i)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out, nil
+}
+
+type TransformNode struct {
+	transformers []contract.Transformer
+	workerCount  int
+}
+
+func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, tn.workerCount*2)
+	var wg sync.WaitGroup
+	for i := 0; i < tn.workerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for rec := range in {
+				transformed, err := applyTransformers(ctx, rec, tn.transformers, workerID)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] Error: %v", workerID, err)
+					continue
+				}
+				for _, r := range transformed {
+					out <- r
+				}
+			}
+		}(i)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out, nil
+}
+
+type LoaderNode struct {
+	loaders         []contract.Loader
+	workerCount     int
+	batchSize       int
+	retryCount      int
+	retryDelay      time.Duration
+	circuitBreaker  *resilience.CircuitBreaker
+	checkpointStore contract.CheckpointStore
+	checkpointFunc  func(rec utils.Record) string
+	cpMutex         *sync.Mutex
+	lastCheckpoint  string
+}
+
+func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
+	done := make(chan utils.Record)
+	batchChan := make(chan []utils.Record, ln.workerCount)
+	go func() {
+		batch := make([]utils.Record, 0, ln.batchSize)
+		for rec := range in {
+			batch = append(batch, rec)
+			if len(batch) >= ln.batchSize {
+				batchChan <- batch
+				batch = make([]utils.Record, 0, ln.batchSize)
+			}
+		}
+		if len(batch) > 0 {
+			batchChan <- batch
+		}
+		close(batchChan)
+	}()
+	var wg sync.WaitGroup
+	for i := 0; i < ln.workerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for batch := range batchChan {
+				for _, loader := range ln.loaders {
+					if err := loader.Setup(ctx); err != nil {
+						log.Printf("[Loader Worker %d] Setup error: %v", workerID, err)
+						continue
+					}
+					if txnLoader, ok := loader.(contract.Transactional); ok {
+						if err := txnLoader.Begin(ctx); err != nil {
+							log.Printf("[Loader Worker %d] Begin transaction error: %v", workerID, err)
+							continue
+						}
+						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
+								log.Printf("[Loader Worker %d] Table creation error: %v", workerID, err)
+								continue
+							}
+							sqlLoader.Created = true
+						}
+						err := resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+							return loader.StoreBatch(ctx, batch)
+						})
+						if err != nil {
+							log.Printf("[Loader Worker %d] Batch load error (transaction): %v", workerID, err)
+							continue
+						}
+						if err := txnLoader.Commit(ctx); err != nil {
+							log.Printf("[Loader Worker %d] Commit error: %v", workerID, err)
+							continue
+						}
+					} else {
+						err := transactions.RunInTransaction(ctx, func(tx *transactions.Transaction) error {
+							return resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+								return loader.StoreBatch(ctx, batch)
+							})
+						})
+						if err != nil {
+							log.Printf("[Loader Worker %d] Batch load error: %v", workerID, err)
+							continue
+						}
+					}
+					if ln.checkpointStore != nil && ln.checkpointFunc != nil {
+						cp := ln.checkpointFunc(batch[len(batch)-1])
+						ln.cpMutex.Lock()
+						if cp > ln.lastCheckpoint {
+							if err := ln.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
+								log.Printf("[Loader Worker %d] Checkpoint error: %v", workerID, err)
+							} else {
+								ln.lastCheckpoint = cp
+							}
+						}
+						ln.cpMutex.Unlock()
+					}
+				}
+			}
+		}(i)
+	}
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done, nil
+}
+
+func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapper, workerID int) (utils.Record, error) {
+	for _, mapper := range mappers {
+		var err error
+		rec, err = mapper.Map(ctx, rec)
+		if err != nil {
+			log.Printf("[Mapper Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
+			return nil, err
+		}
+	}
+	return rec, nil
+}
+
+func applyTransformers(ctx context.Context, rec utils.Record, transformers []contract.Transformer, workerID int) ([]utils.Record, error) {
+	records := []utils.Record{rec}
+	for _, transformer := range transformers {
+		var nextRecords []utils.Record
+		if mt, ok := transformer.(contract.MultiTransformer); ok {
+			for _, r := range records {
+				recs, err := mt.TransformMany(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, recs...)
+			}
+		} else {
+			for _, r := range records {
+				r2, err := transformer.Transform(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, r2)
+			}
+		}
+		records = nextRecords
+	}
+	return records, nil
+}
+
+func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
+	var wg sync.WaitGroup
+	out := make(chan utils.Record)
+	output := func(c <-chan utils.Record) {
+		for rec := range c {
+			out <- rec
+		}
+		wg.Done()
+	}
+	wg.Add(len(channels))
+	for _, c := range channels {
+		go output(c)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
+}
+
+type dagNode struct {
+	id       string
+	pn       contract.Node
+	inChs    []<-chan utils.Record
+	outCh    <-chan utils.Record
+	indegree int
+}
+
+type dagEdge struct {
+	source string
+	target string
+}
+
+type ETL struct {
+	sources         []contract.Source
+	mappers         []contract.Mapper
+	transformers    []contract.Transformer
+	loaders         []contract.Loader
+	workerCount     int
+	loaderWorkers   int
+	batchSize       int
+	retryCount      int
+	retryDelay      time.Duration
+	rawChanBuffer   int
+	checkpointStore contract.CheckpointStore
+	checkpointFunc  func(rec utils.Record) string
+	lastCheckpoint  string
+	cpMutex         sync.Mutex
+	maxErrorCount   int
+	errorCount      int
+	errorLock       sync.Mutex
+	circuitBreaker  *resilience.CircuitBreaker
+	cancelFunc      context.CancelFunc
+	lookupStore     map[string][]utils.Record
+	lookupInCache   sync.Map
+}
+
+func defaultConfig() *ETL {
+	return &ETL{
+		workerCount:    4,
+		batchSize:      100,
+		retryCount:     3,
+		retryDelay:     100 * time.Millisecond,
+		loaderWorkers:  2,
+		rawChanBuffer:  100,
+		maxErrorCount:  10,
+		lookupStore:    make(map[string][]utils.Record),
+		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
+	}
+}
+
+func NewETL(opts ...Option) *ETL {
+	e := defaultConfig()
+	for _, opt := range opts {
+		if err := opt(e); err != nil {
+			log.Printf("Error applying option: %v", err)
+		}
+	}
+	return e
+}
+
+func (e *ETL) Run(ctx context.Context) error {
+	nodes := map[string]*dagNode{
+		"source": {
+			id: "source",
+			pn: &SourceNode{
+				sources:       e.sources,
+				rawChanBuffer: e.rawChanBuffer,
+			},
+		},
+		"map": {
+			id: "map",
+			pn: &MapNode{
+				mappers:     e.mappers,
+				workerCount: e.workerCount,
+			},
+		},
+		"transform": {
+			id: "transform",
+			pn: &TransformNode{
+				transformers: e.transformers,
+				workerCount:  e.workerCount,
+			},
+		},
+		"load": {
+			id: "load",
+			pn: &LoaderNode{
+				loaders:         e.loaders,
+				workerCount:     e.loaderWorkers,
+				batchSize:       e.batchSize,
+				retryCount:      e.retryCount,
+				retryDelay:      e.retryDelay,
+				circuitBreaker:  e.circuitBreaker,
+				checkpointStore: e.checkpointStore,
+				checkpointFunc:  e.checkpointFunc,
+				cpMutex:         &e.cpMutex,
+				lastCheckpoint:  e.lastCheckpoint,
+			},
+		},
+	}
+	edges := []dagEdge{
+		{source: "source", target: "map"},
+		{source: "map", target: "transform"},
+		{source: "transform", target: "load"},
+	}
+	for _, edge := range edges {
+		if node, ok := nodes[edge.target]; ok {
+			node.indegree++
+		}
+	}
+	var queue []string
+	for id, node := range nodes {
+		if node.indegree == 0 {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		currentID := queue[0]
+		queue = queue[1:]
+		currentNode := nodes[currentID]
+		var input <-chan utils.Record
+		if len(currentNode.inChs) == 0 {
+			input = nil
+		} else if len(currentNode.inChs) == 1 {
+			input = currentNode.inChs[0]
+		} else {
+			input = mergeChannels(currentNode.inChs)
+		}
+		outCh, err := currentNode.pn.Process(ctx, input)
+		if err != nil {
+			return fmt.Errorf("error running node %s: %v", currentID, err)
+		}
+		currentNode.outCh = outCh
+		for _, edge := range edges {
+			if edge.source == currentID {
+				targetNode := nodes[edge.target]
+				targetNode.inChs = append(targetNode.inChs, currentNode.outCh)
+				targetNode.indegree--
+				if targetNode.indegree == 0 {
+					queue = append(queue, targetNode.id)
+				}
+			}
+		}
+	}
+	for range nodes["load"].outCh {
+	}
+	return nil
+}
+
 func Run(cfg *config.Config) {
-	var sourceDB *sql.DB
-	var destDB *sql.DB
+	var sourceDB, destDB *sql.DB
 	var err error
 	if utils.IsSQLType(cfg.Source.Type) {
 		sourceDB, err = config.OpenDB(cfg.Source)
@@ -110,14 +510,14 @@ func Run(cfg *config.Config) {
 				if err != nil {
 					log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
 				}
-
 				etlJob.lookupStore[lkup.Key] = data
 			}
 		}
 		expr.AddFunction("lookupIn", etlJob.lookupIn)
+
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {
-			log.Printf("ETL job failed: %v", err)
+			log.Printf("ETL DAG job failed: %v", err)
 		}
 		if err := etlJob.Close(); err != nil {
 			log.Printf("Error closing ETL job: %v", err)
@@ -125,210 +525,6 @@ func Run(cfg *config.Config) {
 		log.Printf("Migration for %s complete", tableCfg.OldName)
 	}
 	log.Println("All migrations complete.")
-}
-
-type ETL struct {
-	sources         []contract.Source
-	mappers         []contract.Mapper
-	validators      []contract.Validator
-	transformers    []contract.Transformer
-	loaders         []contract.Loader
-	workerCount     int
-	batchSize       int
-	retryCount      int
-	retryDelay      time.Duration
-	loaderWorkers   int
-	rawChanBuffer   int
-	checkpointStore contract.CheckpointStore
-	checkpointFunc  func(rec utils.Record) string
-	lastCheckpoint  string
-	cpMutex         sync.Mutex
-	maxErrorCount   int
-	errorCount      int
-	errorLock       sync.Mutex
-	circuitBreaker  *resilience.CircuitBreaker
-	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]utils.Record
-	lookupInCache   sync.Map
-}
-
-func defaultConfig() *ETL {
-	return &ETL{
-		workerCount:    4,
-		batchSize:      100,
-		retryCount:     3,
-		retryDelay:     100 * time.Millisecond,
-		loaderWorkers:  2,
-		rawChanBuffer:  100,
-		maxErrorCount:  10,
-		lookupStore:    make(map[string][]utils.Record),
-		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
-	}
-}
-
-func NewETL(opts ...Option) *ETL {
-	e := defaultConfig()
-	for _, opt := range opts {
-		if err := opt(e); err != nil {
-			log.Printf("Error applying option: %v", err)
-		}
-	}
-	return e
-}
-
-func (e *ETL) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	e.cancelFunc = cancel
-	defer cancel()
-
-	if e.checkpointStore != nil {
-		if cp, err := e.checkpointStore.GetCheckpoint(ctx); err != nil {
-			log.Printf("Error retrieving checkpoint: %v", err)
-		} else {
-			e.lastCheckpoint = cp
-			log.Printf("Resuming from checkpoint: %s", e.lastCheckpoint)
-		}
-	}
-	rawChan := make(chan utils.Record, e.rawChanBuffer)
-	var srcWG sync.WaitGroup
-	for _, s := range e.sources {
-		if err := s.Setup(ctx); err != nil {
-			e.incrementError()
-			return fmt.Errorf("source setup error: %v", err)
-		}
-		srcWG.Add(1)
-		go func(src contract.Source) {
-			defer srcWG.Done()
-			ch, err := src.Extract(ctx)
-			if err != nil {
-				e.incrementError()
-				log.Printf("Source extraction error: %v", err)
-				return
-			}
-			for rec := range ch {
-				rawChan <- rec
-			}
-		}(s)
-	}
-	go func() {
-		srcWG.Wait()
-		close(rawChan)
-	}()
-	processedChan := make(chan utils.Record, e.workerCount*2)
-	var procWG sync.WaitGroup
-	for i := 0; i < e.workerCount; i++ {
-		procWG.Add(1)
-		go func(workerID int) {
-			defer procWG.Done()
-			for raw := range rawChan {
-				rec, err := e.applyMappers(ctx, raw, workerID)
-				if err != nil {
-					e.incrementError()
-					continue
-				}
-				if rec == nil {
-					continue
-				}
-				outRecords, err := e.applyTransformers(ctx, rec, workerID)
-				if err != nil {
-					e.incrementError()
-					continue
-				}
-				for _, r := range outRecords {
-					processedChan <- r
-				}
-			}
-		}(i)
-	}
-	go func() {
-		procWG.Wait()
-		close(processedChan)
-	}()
-	batchChan := make(chan []utils.Record, e.loaderWorkers)
-	var batchWG sync.WaitGroup
-	batchWG.Add(1)
-	go func() {
-		defer batchWG.Done()
-		batch := make([]utils.Record, 0, e.batchSize)
-		for rec := range processedChan {
-			batch = append(batch, rec)
-			if len(batch) >= e.batchSize {
-				batchChan <- batch
-				batch = make([]utils.Record, 0, e.batchSize)
-			}
-		}
-		if len(batch) > 0 {
-			batchChan <- batch
-		}
-		close(batchChan)
-	}()
-	var loaderWG sync.WaitGroup
-	for i := 0; i < e.loaderWorkers; i++ {
-		loaderWG.Add(1)
-		go func(workerID int) {
-			defer loaderWG.Done()
-			for batch := range batchChan {
-				for _, loader := range e.loaders {
-					if err := loader.Setup(ctx); err != nil {
-						e.incrementError()
-						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
-						continue
-					}
-					if txnLoader, ok := loader.(contract.Transactional); ok {
-						if err := txnLoader.Begin(ctx); err != nil {
-							log.Printf("[Loader Worker %d] Error beginning transaction: %v", workerID, err)
-							continue
-						}
-						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
-							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
-								e.incrementError()
-								log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
-								continue
-							}
-							sqlLoader.Created = true
-						}
-						if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-							return loader.StoreBatch(ctx, batch)
-						}); err != nil {
-							e.incrementError()
-							log.Printf("[Loader Worker %d] Error loading batch with transaction: %v", workerID, err)
-							continue
-						}
-						if err := txnLoader.Commit(ctx); err != nil {
-							log.Printf("[Loader Worker %d] Commit failed: %v", workerID, err)
-							continue
-						}
-					} else {
-						err := transactions.RunInTransaction(ctx, func(tx *transactions.Transaction) error {
-							return resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-								return loader.StoreBatch(ctx, batch)
-							})
-						})
-						if err != nil {
-							log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
-							continue
-						}
-					}
-					if e.checkpointStore != nil && e.checkpointFunc != nil {
-						cp := e.checkpointFunc(batch[len(batch)-1])
-						e.cpMutex.Lock()
-						if cp > e.lastCheckpoint {
-							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
-								e.incrementError()
-								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
-							} else {
-								e.lastCheckpoint = cp
-							}
-						}
-						e.cpMutex.Unlock()
-					}
-				}
-			}
-		}(i)
-	}
-	batchWG.Wait()
-	loaderWG.Wait()
-	return nil
 }
 
 func (e *ETL) Close() error {
@@ -345,61 +541,10 @@ func (e *ETL) Close() error {
 	return nil
 }
 
-func (e *ETL) applyMappers(ctx context.Context, rec utils.Record, workerID int) (utils.Record, error) {
-	for _, mapper := range e.mappers {
-		var err error
-		rec, err = mapper.Map(ctx, rec)
-		if err != nil {
-			log.Printf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
-			return nil, err
-		}
-	}
-	return rec, nil
-}
-
-func (e *ETL) applyTransformers(ctx context.Context, rec utils.Record, workerID int) ([]utils.Record, error) {
-	records := []utils.Record{rec}
-	for _, transformer := range e.transformers {
-		var nextRecords []utils.Record
-		for _, r := range records {
-			if mt, ok := transformer.(contract.MultiTransformer); ok {
-				recs, err := mt.TransformMany(ctx, r)
-				if err != nil {
-					log.Printf("[Worker %d] MultiTransformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, recs...)
-			} else {
-				r2, err := transformer.Transform(ctx, r)
-				if err != nil {
-					log.Printf("[Worker %d] Transformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, r2)
-			}
-		}
-		records = nextRecords
-	}
-	return records, nil
-}
-
-func (e *ETL) incrementError() {
-	e.errorLock.Lock()
-	defer e.errorLock.Unlock()
-	e.errorCount++
-	if e.errorCount >= e.maxErrorCount {
-		log.Println("Max error count reached, cancelling ETL process")
-		if e.cancelFunc != nil {
-			e.cancelFunc()
-		}
-	}
-}
-
 func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if len(args) != 4 {
 		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")
 	}
-
 	datasetKey, ok := args[0].(string)
 	if !ok {
 		return nil, fmt.Errorf("lookupIn: first argument must be string (lookup dataset key)")
@@ -413,7 +558,6 @@ func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if !ok {
 		return nil, fmt.Errorf("lookupIn: fourth argument must be string (target field name)")
 	}
-
 	cacheKey := datasetKey + ":" + lookupField + ":" + sourceValStr + ":" + targetField
 	if cached, found := e.lookupInCache.Load(cacheKey); found {
 		return cached, nil
@@ -422,9 +566,8 @@ func (e *ETL) lookupIn(args ...interface{}) (interface{}, error) {
 	if !exists {
 		return nil, fmt.Errorf("lookupIn: no lookup dataset found for key %s", datasetKey)
 	}
-
 	for _, row := range dataset {
-		if row[lookupField] == sourceValStr {
+		if fmt.Sprintf("%v", row[lookupField]) == sourceValStr {
 			result := row[targetField]
 			e.lookupInCache.Store(cacheKey, result)
 			return result, nil
