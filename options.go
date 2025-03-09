@@ -13,22 +13,37 @@ import (
 
 type Option func(*ETL) error
 
+func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) (contract.Source, error) {
+	var src contract.Source
+	if utils.IsSQLType(sourceType) {
+		if sourceDB == nil {
+			return nil, fmt.Errorf("source database is nil")
+		}
+		src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
+	} else if sourceType == "csv" || sourceType == "json" {
+		file := sourceTable
+		if file == "" {
+			file = sourceFile
+		}
+		src = adapters.NewFileAdapter(file, "source", false)
+	} else {
+		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
+	}
+	return src, nil
+}
+
+func WithSources(sources ...contract.Source) Option {
+	return func(e *ETL) error {
+		e.sources = append(e.sources, sources...)
+		return nil
+	}
+}
+
 func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
 	return func(e *ETL) error {
-		var src contract.Source
-		if utils.IsSQLType(sourceType) {
-			if sourceDB == nil {
-				return fmt.Errorf("source database is nil")
-			}
-			src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
-		} else if sourceType == "csv" || sourceType == "json" {
-			file := sourceTable
-			if file == "" {
-				file = sourceFile
-			}
-			src = adapters.NewFileAdapter(file, "source", false)
-		} else {
-			return fmt.Errorf("unsupported source type: %s", sourceType)
+		src, err := NewSource(sourceType, sourceDB, sourceFile, sourceTable, sourceQuery)
+		if err != nil {
+			return err
 		}
 		e.sources = append(e.sources, src)
 		return nil

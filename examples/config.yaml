@@ -5,7 +5,7 @@ source:
 destination:
     type: "csv"
     file: "output.csv"
-    
+
 lookups: # can be file, sql dbms, rest etc
     -   type: "csv"
         file: "users.csv"
@@ -15,11 +15,12 @@ lookups: # can be file, sql dbms, rest etc
         key: "facilities"
 
 tables:
-    - clone_source: true
-      migrate: true                   # Ignored for file loaders.
-      batch_size: 100
-      truncate_destination: true      # If true, clears the file before writing.
-      auto_create_table: true        # Not used for file loaders.
-      mapping:
-          facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
-          user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
+    -   clone_source: true
+        migrate: true                   # Ignored for file loaders.
+        batch_size: 100
+        truncate_destination: true      # If true, clears the file before writing.
+        auto_create_table: true        # Not used for file loaders.
+        mapping:
+            facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
+            user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
+            is_active: "is_active"

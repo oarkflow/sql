@@ -195,7 +195,7 @@ func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) err
 }
 
 func (fl *FileAdapter) Close() error {
-	if fl.extension == "json" {
+	if fl.extension == "json" && fl.bufWriter != nil {
 		if _, err := fl.bufWriter.WriteString("\n]\n"); err != nil {
 			return fmt.Errorf("failed to write JSON array close: %w", err)
 		}
