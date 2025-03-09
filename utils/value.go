@@ -9,6 +9,21 @@ import (
 	"github.com/oarkflow/expr"
 )
 
+func GetDataType(v any) string {
+	switch v.(type) {
+	case int, int32, int64:
+		return "int"
+	case float32, float64:
+		return "float"
+	case bool:
+		return "bool"
+	case string:
+		return "string"
+	default:
+		return "unknown"
+	}
+}
+
 func GetValue(c context.Context, v string, data map[string]any) (key string, val any) {
 	key, val = getVal(c, v, data)
 	if val == nil {

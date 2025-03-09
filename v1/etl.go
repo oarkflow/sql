@@ -12,8 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oarkflow/expr"
 
+	"github.com/oarkflow/sql/checkpoint"
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
@@ -279,34 +278,6 @@ func applyTransformers(ctx context.Context, transformers []contract.Transformer,
 	return records, nil
 }
 
-type FileCheckpointStore struct {
-	fileName string
-	mu       sync.Mutex
-}
-
-func NewFileCheckpointStore(fileName string) *FileCheckpointStore {
-	return &FileCheckpointStore{fileName: fileName}
-}
-
-func (cs *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return os.WriteFile(cs.fileName, []byte(cp), 0644)
-}
-
-func (cs *FileCheckpointStore) GetCheckpoint(context.Context) (string, error) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	data, err := os.ReadFile(cs.fileName)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return string(data), nil
-}
-
 type FileLoader struct {
 	fileName        string
 	extension       string
@@ -434,7 +405,7 @@ func (fl *FileLoader) LoadBatch(_ context.Context, records []utils.Record) error
 		}
 	case "csv":
 		if len(records) > 0 {
-			fl.csvHeader = extractCSVHeader(records[0])
+			fl.csvHeader = fileutil.ExtractCSVHeader(records[0])
 		}
 		if !fl.headerWritten && len(records) > 0 {
 			if err := fl.csvWriter.Write(fl.csvHeader); err != nil {
@@ -443,7 +414,7 @@ func (fl *FileLoader) LoadBatch(_ context.Context, records []utils.Record) error
 			fl.headerWritten = true
 		}
 		for _, rec := range records {
-			row, err := buildCSVRow(fl.csvHeader, rec)
+			row, err := fileutil.BuildCSVRow(fl.csvHeader, rec)
 			if err != nil {
 				return fmt.Errorf("failed to build CSV row: %w", err)
 			}
@@ -476,39 +447,6 @@ func (fl *FileLoader) Close() error {
 		return fl.file.Close()
 	}
 	return nil
-}
-
-func extractCSVHeader(rec utils.Record) []string {
-	header := make([]string, 0, len(rec))
-	for key := range rec {
-		header = append(header, key)
-	}
-	sort.Strings(header)
-	return header
-}
-
-func buildCSVRow(header []string, rec utils.Record) ([]string, error) {
-	row := make([]string, len(header))
-	for i, key := range header {
-		val, ok := rec[key]
-		if !ok {
-			row[i] = ""
-			continue
-		}
-		switch v := val.(type) {
-		case string:
-			row[i] = v
-		case int:
-			row[i] = strconv.Itoa(v)
-		case int64:
-			row[i] = strconv.FormatInt(v, 10)
-		case float64:
-			row[i] = strconv.FormatFloat(v, 'f', -1, 64)
-		default:
-			row[i] = fmt.Sprintf("%v", v)
-		}
-	}
-	return row, nil
 }
 
 type SQLLoader struct {
@@ -561,7 +499,7 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 			if l.query != "" {
 				q = l.query
 			} else {
-				q, args = buildUpdateStatement(l.table, rec)
+				q, args = sqlutil.BuildUpdateStatement(l.table, rec)
 			}
 			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
 				return err
@@ -576,7 +514,7 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 			if l.query != "" {
 				q = l.query
 			} else {
-				q, args = buildDeleteStatement(l.table, rec)
+				q, args = sqlutil.BuildDeleteStatement(l.table, rec)
 			}
 			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
 				return err
@@ -618,49 +556,9 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 	return err
 }
 
-func buildUpdateStatement(table string, rec utils.Record) (string, []any) {
-	var setParts []string
-	var args []any
-	var id any
-	for k, v := range rec {
-		if strings.ToLower(k) == "id" {
-			id = v
-			continue
-		}
-		args = append(args, v)
-		setParts = append(setParts, fmt.Sprintf("%s = $%d", k, len(args)))
-	}
-	if id == nil {
-		return "", nil
-	}
-	args = append(args, id)
-	q := fmt.Sprintf("UPDATE %s SET %s WHERE id = $%d", table, strings.Join(setParts, ", "), len(args))
-	return q, args
-}
-
-func buildDeleteStatement(table string, rec utils.Record) (string, []any) {
-	id, ok := rec["id"]
-	if !ok {
-		return "", nil
-	}
-	q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", table)
-	return q, []any{id}
-}
-
-func updateSequence(db *sql.DB, table string) error {
-	seqName := fmt.Sprintf("%s_seq", table)
-	q := fmt.Sprintf("SELECT setval('%s', (SELECT MAX(id) FROM %s))", seqName, table)
-	if _, err := db.ExecContext(context.Background(), q); err != nil {
-		log.Printf("Error updating sequence %s: %v", seqName, err)
-		return err
-	}
-	log.Printf("Sequence %s updated", seqName)
-	return nil
-}
-
 func (l *SQLLoader) Close() error {
 	if l.destType == "postgresql" && l.updateSequence {
-		return updateSequence(l.db, l.table)
+		return sqlutil.UpdateSequence(l.db, l.table)
 	}
 	return nil
 }
@@ -701,7 +599,7 @@ func (lm *LowercaseMapper) Map(ctx context.Context, rec utils.Record) (utils.Rec
 }
 
 type KeyValueTransformer struct {
-	ExtraValues   map[string]interface{}
+	ExtraValues   map[string]any
 	IncludeFields []string
 	ExcludeFields []string
 	KeyField      string
@@ -724,7 +622,7 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) 
 }
 
 func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
-	base := make(map[string]interface{})
+	base := make(map[string]any)
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
 		if val, ok := rec[srcField]; ok {
@@ -760,26 +658,11 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 		newRec[kt.KeyField] = cand
 		if val, ok := rec[cand]; ok {
 			newRec[kt.ValueField] = val
-			newRec["value_type"] = typeName(val)
+			newRec["value_type"] = utils.GetDataType(val)
 		}
 		out = append(out, newRec)
 	}
 	return out, nil
-}
-
-func typeName(v interface{}) string {
-	switch v.(type) {
-	case int, int32, int64:
-		return "int"
-	case float32, float64:
-		return "float"
-	case bool:
-		return "bool"
-	case string:
-		return "string"
-	default:
-		return "unknown"
-	}
 }
 
 type FileSource struct {
@@ -916,7 +799,7 @@ func RunETLWithConfig(cfg *config.Config) {
 		opts := []Option{
 			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
 			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
-			WithCheckpoint(NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
 				if name, ok := rec["name"].(string); ok {
 					return name
 				}
