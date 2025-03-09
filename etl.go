@@ -1,4 +1,4 @@
-package v1
+package etl
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,59 +13,30 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oarkflow/expr"
 
-	"github.com/oarkflow/sql/adapters"
-	"github.com/oarkflow/sql/checkpoint"
-	"github.com/oarkflow/sql/etl"
-	"github.com/oarkflow/sql/etl/config"
-	"github.com/oarkflow/sql/etl/contract"
-	"github.com/oarkflow/sql/mappers"
-	"github.com/oarkflow/sql/resilience"
-	"github.com/oarkflow/sql/transactions"
-	"github.com/oarkflow/sql/utils"
-	"github.com/oarkflow/sql/utils/sqlutil"
+	"github.com/oarkflow/etl/adapters"
+	"github.com/oarkflow/etl/checkpoint"
+	"github.com/oarkflow/etl/config"
+	"github.com/oarkflow/etl/contract"
+	"github.com/oarkflow/etl/mappers"
+	"github.com/oarkflow/etl/resilience"
+	"github.com/oarkflow/etl/transactions"
+	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/utils/sqlutil"
 )
-
-func NewLookupLoader(lkup config.LookupConfig) (contract.LookupLoader, error) {
-	switch strings.ToLower(lkup.Type) {
-	case "postgresql", "mysql", "sqlite":
-		var dsn string
-		switch strings.ToLower(lkup.Driver) {
-		case "postgres", "postgresql":
-			dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-				lkup.Host, lkup.Port, lkup.Username, lkup.Password, lkup.Database)
-		case "mysql":
-			dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
-				lkup.Username, lkup.Password, lkup.Host, lkup.Port, lkup.Database)
-		case "sqlite":
-			dsn = lkup.File
-		default:
-			log.Fatalf("unsupported SQL driver: %s", lkup.Driver)
-		}
-		db, err := sql.Open(lkup.Driver, dsn)
-		if err != nil {
-			log.Fatalf("Error connecting to lookup DB: %v", err)
-		}
-		return adapters.NewSQLAdapterAsSource(db, "", lkup.Source), nil
-	case "csv", "json":
-		return adapters.NewFileAdapter(lkup.File, "source", false), nil
-	default:
-		return nil, fmt.Errorf("Unsupported lookup type: %s", lkup.Type)
-	}
-}
 
 func Run(cfg *config.Config) {
 	var sourceDB *sql.DB
 	var destDB *sql.DB
 	var err error
 	if utils.IsSQLType(cfg.Source.Type) {
-		sourceDB, err = etl.OpenDB(cfg.Source)
+		sourceDB, err = config.OpenDB(cfg.Source)
 		if err != nil {
 			log.Fatalf("Error connecting to source DB: %v", err)
 		}
 		defer sourceDB.Close()
 	}
 	if utils.IsSQLType(cfg.Destination.Type) {
-		destDB, err = etl.OpenDB(cfg.Destination)
+		destDB, err = config.OpenDB(cfg.Destination)
 		if err != nil {
 			log.Fatalf("Error connecting to destination DB: %v", err)
 		}
@@ -132,7 +102,7 @@ func Run(cfg *config.Config) {
 
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
-				lookup, err := NewLookupLoader(lkup)
+				lookup, err := adapters.NewLookupLoader(lkup)
 				if err != nil {
 					log.Fatalf("Unsupported lookup type: %s", lkup.Type)
 				}

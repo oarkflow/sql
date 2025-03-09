@@ -1,6 +1,8 @@
 package config
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -17,19 +19,7 @@ type DataConfig struct {
 	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
 	File          string `yaml:"file,omitempty" json:"file,omitempty"`
 	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
-}
-
-type LookupConfig struct {
-	Key           string `yaml:"key"`
-	Type          string `yaml:"type" json:"type"`
-	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
-	Driver        string `yaml:"driver,omitempty" json:"driver,omitempty"`
-	Username      string `yaml:"username,omitempty" json:"username,omitempty"`
-	Password      string `yaml:"password,omitempty" json:"password,omitempty"`
-	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
-	File          string `yaml:"file,omitempty" json:"file,omitempty"`
-	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
+	Table         string `yaml:"table"`
 	Source        string `yaml:"source"`
 }
 
@@ -58,7 +48,7 @@ type TableMapping struct {
 type Config struct {
 	Source      DataConfig     `yaml:"source" json:"source"`
 	Destination DataConfig     `yaml:"destination" json:"destination"`
-	Lookups     []LookupConfig `yaml:"lookups" json:"lookups"`
+	Lookups     []DataConfig   `yaml:"lookups" json:"lookups"`
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
 	Buffer      int            `json:"buffer" yaml:"buffer"`
@@ -75,4 +65,22 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func OpenDB(cfg DataConfig) (*sql.DB, error) {
+	var dsn string
+	if cfg.Driver == "mysql" {
+		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+			cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+	} else if cfg.Driver == "postgres" {
+		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database)
+	} else {
+		return nil, fmt.Errorf("unsupported driver: %s", cfg.Driver)
+	}
+	db, err := sql.Open(cfg.Driver, dsn)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
 }

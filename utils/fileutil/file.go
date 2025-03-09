@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/etl/utils"
 )
 
 func ProcessFile(filename string, callbacks ...func(utils.Record)) ([]utils.Record, error) {

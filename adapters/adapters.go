@@ -13,11 +13,27 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/oarkflow/sql/etl/config"
-	"github.com/oarkflow/sql/utils"
-	"github.com/oarkflow/sql/utils/fileutil"
-	"github.com/oarkflow/sql/utils/sqlutil"
+	"github.com/oarkflow/etl/config"
+	"github.com/oarkflow/etl/contract"
+	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/utils/fileutil"
+	"github.com/oarkflow/etl/utils/sqlutil"
 )
+
+func NewLookupLoader(lkup config.DataConfig) (contract.LookupLoader, error) {
+	switch strings.ToLower(lkup.Type) {
+	case "postgresql", "mysql", "sqlite":
+		db, err := config.OpenDB(lkup)
+		if err != nil {
+			log.Fatalf("Error connecting to lookup DB: %v", err)
+		}
+		return NewSQLAdapterAsSource(db, "", lkup.Source), nil
+	case "csv", "json":
+		return NewFileAdapter(lkup.File, "source", false), nil
+	default:
+		return nil, fmt.Errorf("Unsupported lookup type: %s", lkup.Type)
+	}
+}
 
 type FileAdapter struct {
 	mode            string
@@ -196,60 +212,15 @@ func (fl *FileAdapter) Close() error {
 }
 
 func (fl *FileAdapter) LoadData() ([]utils.Record, error) {
-	// Open the file in read-only mode.
-	f, err := os.Open(fl.Filename)
+	ch, err := fl.Extract(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	// Ensure the extension is set.
-	if fl.extension == "" {
-		fl.extension = strings.TrimPrefix(strings.ToLower(filepath.Ext(fl.Filename)), ".")
+	var records []utils.Record
+	for rec := range ch {
+		records = append(records, rec)
 	}
-
-	switch fl.extension {
-	case "csv":
-		r := csv.NewReader(f)
-		headers, err := r.Read()
-		if err != nil {
-			return nil, err
-		}
-		var result []utils.Record
-		for {
-			row, err := r.Read()
-			if err != nil {
-				break
-			}
-			// Skip rows that do not match the header length.
-			if len(row) != len(headers) {
-				continue
-			}
-			rowMap := make(map[string]any)
-			for i, header := range headers {
-				rowMap[header] = row[i]
-			}
-			result = append(result, rowMap)
-		}
-		return result, nil
-	case "json":
-		var data []map[string]interface{}
-		decoder := json.NewDecoder(f)
-		if err := decoder.Decode(&data); err != nil {
-			return nil, err
-		}
-		result := make([]utils.Record, 0, len(data))
-		for _, item := range data {
-			row := make(map[string]any)
-			for k, v := range item {
-				row[k] = fmt.Sprintf("%v", v)
-			}
-			result = append(result, row)
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("unsupported file extension for lookup: %s", fl.extension)
-	}
+	return records, nil
 }
 
 func (fl *FileAdapter) Extract(_ context.Context) (<-chan utils.Record, error) {
@@ -383,35 +354,16 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 }
 
 func (l *SQLAdapter) LoadData() ([]utils.Record, error) {
-	rows, err := l.Db.Query(l.query)
+	// Use the existing Extract() method to read records from the database.
+	ch, err := l.Extract(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
+	var records []utils.Record
+	for rec := range ch {
+		records = append(records, rec)
 	}
-
-	var result []utils.Record
-	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
-		for i := range columns {
-			columnPointers[i] = &columns[i]
-		}
-		if err := rows.Scan(columnPointers...); err != nil {
-			return nil, err
-		}
-		rowMap := make(map[string]any)
-		for i, colName := range cols {
-			// Format each column value as a string.
-			rowMap[colName] = fmt.Sprintf("%v", columns[i])
-		}
-		result = append(result, rowMap)
-	}
-	return result, nil
+	return records, nil
 }
 
 func (l *SQLAdapter) Extract(ctx context.Context) (<-chan utils.Record, error) {

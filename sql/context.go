@@ -7,7 +7,7 @@ import (
 
 	"github.com/oarkflow/convert"
 
-	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/etl/utils"
 )
 
 func loadDataForSubquery() []utils.Record {

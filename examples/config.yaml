@@ -3,13 +3,8 @@ source:
     file: "providers.csv"
 
 destination:
-    type: "postgresql"
-    host: "localhost"
-    port: 5432
-    driver: "postgres"
-    username: "postgres"
-    password: "postgres"
-    database: "mydb"
+    type: "csv"
+    file: "output.csv"
     
 lookups: # can be file, sql dbms, rest etc
     -   type: "csv"
@@ -20,8 +15,7 @@ lookups: # can be file, sql dbms, rest etc
         key: "facilities"
 
 tables:
-    - new_name: "providers"          # For file destinations, this is the target file.
-      clone_source: true
+    - clone_source: true
       migrate: true                   # Ignored for file loaders.
       batch_size: 100
       truncate_destination: true      # If true, clears the file before writing.

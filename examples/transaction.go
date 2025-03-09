@@ -7,12 +7,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/oarkflow/sql/etl"
+	"github.com/oarkflow/etl/transactions"
 )
 
 func main() {
 	fmt.Println("File Transaction Example")
-	err := etl.RunInTransaction(context.Background(), func(tx *etl.Transaction) error {
+	err := transactions.RunInTransaction(context.Background(), func(tx *transactions.Transaction) error {
 		tmpFile, err := os.CreateTemp("", "transfile_*")
 		if err != nil {
 			return fmt.Errorf("failed to create temp file: %w", err)

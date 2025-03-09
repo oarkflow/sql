@@ -32,4 +32,4 @@ dist
 *.json
 *.csv
 **.DS_Store**
-/checkpoint.txt
+/examples/checkpoint.txt

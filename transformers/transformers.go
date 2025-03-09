@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/etl/utils"
 )
 
 type KeyValueTransformer struct {
