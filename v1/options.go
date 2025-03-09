@@ -7,6 +7,7 @@ import (
 	"github.com/oarkflow/sql/adapters"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
+	"github.com/oarkflow/sql/transformers"
 	"github.com/oarkflow/sql/utils"
 )
 
@@ -76,7 +77,7 @@ func WithTransformers(list ...contract.Transformer) Option {
 
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
-		kt := &KeyValueTransformer{
+		kt := &transformers.KeyValueTransformer{
 			ExtraValues:   extraValues,
 			IncludeFields: includeFields,
 			ExcludeFields: excludeFields,
