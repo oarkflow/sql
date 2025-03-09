@@ -13,8 +13,8 @@ sources:
       source: "SELECT * FROM providers_sql"
 
 destination:
-    type: "csv"
-    file: "output.csv"
+    type: "json"
+    file: "output.json"
 
 lookups:
     - type: "csv"

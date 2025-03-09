@@ -24,6 +24,124 @@ import (
 	"github.com/oarkflow/etl/utils/sqlutil"
 )
 
+func Run(cfg *config.Config) {
+	var destDB *sql.DB
+	var err error
+	if utils.IsSQLType(cfg.Destination.Type) {
+		destDB, err = config.OpenDB(cfg.Destination)
+		if err != nil {
+			log.Fatalf("Error connecting to destination DB: %v", err)
+		}
+		defer destDB.Close()
+	}
+	if cfg.Buffer == 0 {
+		cfg.Buffer = 50
+	}
+	if cfg.WorkerCount == 0 {
+		minCPU := runtime.NumCPU()
+		if minCPU <= 1 {
+			cfg.WorkerCount = 1
+		} else {
+			cfg.WorkerCount = minCPU - 1
+		}
+	}
+	var sourceFile string
+	var sources []contract.Source
+	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
+		cfg.Sources = append(cfg.Sources, cfg.Source)
+	}
+	for _, sourceCfg := range cfg.Sources {
+		if sourceCfg.File != "" {
+			sourceFile = sourceCfg.File
+		}
+		var sourceDB *sql.DB
+		if utils.IsSQLType(sourceCfg.Type) {
+			sourceDB, err = config.OpenDB(sourceCfg)
+			if err != nil {
+				log.Fatalf("Error connecting to source DB: %v", err)
+			}
+		}
+		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source)
+		if err != nil {
+
+			panic(err)
+		}
+		sources = append(sources, src)
+	}
+	for _, tableCfg := range cfg.Tables {
+		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+			continue
+		}
+		if tableCfg.OldName == "" && sourceFile != "" {
+			tableCfg.OldName = sourceFile
+		}
+		if tableCfg.NewName == "" && cfg.Destination.File != "" {
+			tableCfg.NewName = cfg.Destination.File
+		}
+		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
+		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+			if err := sqlutil.CreateKeyValueTable(
+				destDB, tableCfg.NewName,
+				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
+			); err != nil {
+				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
+			}
+		}
+		opts := []Option{
+			WithSources(sources...),
+			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
+			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+				name, _ := rec["name"].(string)
+				return name
+			}),
+			WithWorkerCount(cfg.WorkerCount),
+			WithBatchSize(tableCfg.BatchSize),
+			WithRawChanBuffer(cfg.Buffer),
+		}
+		var mapperList []contract.Mapper
+		if len(tableCfg.Mapping) > 0 {
+			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
+		}
+		mapperList = append(mapperList, &mappers.LowercaseMapper{})
+		opts = append(opts, WithMappers(mapperList...))
+		if tableCfg.KeyValueTable {
+			opts = append(opts, WithKeyValueTransformer(
+				tableCfg.ExtraValues,
+				tableCfg.IncludeFields,
+				tableCfg.ExcludeFields,
+				tableCfg.KeyField,
+				tableCfg.ValueField,
+			))
+		}
+		etlJob := NewETL(opts...)
+
+		if len(cfg.Lookups) > 0 {
+			for _, lkup := range cfg.Lookups {
+				lookup, err := adapters.NewLookupLoader(lkup)
+				if err != nil {
+					log.Fatalf("Unsupported lookup type: %s", lkup.Type)
+				}
+				data, err := lookup.LoadData()
+				if err != nil {
+					log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
+				}
+				etlJob.lookupStore[lkup.Key] = data
+			}
+		}
+		expr.AddFunction("lookupIn", etlJob.lookupIn)
+
+		ctx := context.Background()
+		if err := etlJob.Run(ctx); err != nil {
+			log.Printf("ETL DAG job failed: %v", err)
+		}
+		if err := etlJob.Close(); err != nil {
+			log.Printf("Error closing ETL job: %v", err)
+		}
+		log.Printf("Migration for %s complete", tableCfg.OldName)
+	}
+	log.Println("All migrations complete.")
+}
+
 type SourceNode struct {
 	sources       []contract.Source
 	rawChanBuffer int
@@ -285,8 +403,106 @@ type dagNode struct {
 }
 
 type dagEdge struct {
-	source string
-	target string
+	Source string
+	Target string
+}
+
+type PipelineConfig struct {
+	Nodes map[string]contract.Node
+	Edges []dagEdge
+}
+
+func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
+	// Build internal DAG nodes.
+	nodes := make(map[string]*dagNode)
+	for id, node := range pc.Nodes {
+		nodes[id] = &dagNode{
+			id: id,
+			pn: node,
+		}
+	}
+	for _, edge := range pc.Edges {
+		if n, ok := nodes[edge.Target]; ok {
+			n.indegree++
+		}
+	}
+	var queue []string
+	for id, node := range nodes {
+		if node.indegree == 0 {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		currentID := queue[0]
+		queue = queue[1:]
+		currentNode := nodes[currentID]
+		var input <-chan utils.Record
+		if len(currentNode.inChs) == 0 {
+			input = nil
+		} else if len(currentNode.inChs) == 1 {
+			input = currentNode.inChs[0]
+		} else {
+			input = mergeChannels(currentNode.inChs)
+		}
+		outCh, err := currentNode.pn.Process(ctx, input)
+		if err != nil {
+			return fmt.Errorf("error running node %s: %v", currentID, err)
+		}
+		currentNode.outCh = outCh
+		for _, edge := range pc.Edges {
+			if edge.Source == currentID {
+				targetNode := nodes[edge.Target]
+				targetNode.inChs = append(targetNode.inChs, currentNode.outCh)
+				targetNode.indegree--
+				if targetNode.indegree == 0 {
+					queue = append(queue, targetNode.id)
+				}
+			}
+		}
+	}
+	if loadNode, ok := nodes["load"]; ok {
+		for range loadNode.outCh {
+		}
+	}
+	return nil
+}
+
+func (e *ETL) buildDefaultPipeline() *PipelineConfig {
+	nodes := map[string]contract.Node{
+		"source": &SourceNode{
+			sources:       e.sources,
+			rawChanBuffer: e.rawChanBuffer,
+		},
+		"map": &MapNode{
+			mappers:     e.mappers,
+			workerCount: e.workerCount,
+		},
+		"transform": &TransformNode{
+			transformers: e.transformers,
+			workerCount:  e.workerCount,
+		},
+		"load": &LoaderNode{
+			loaders:         e.loaders,
+			workerCount:     e.loaderWorkers,
+			batchSize:       e.batchSize,
+			retryCount:      e.retryCount,
+			retryDelay:      e.retryDelay,
+			circuitBreaker:  e.circuitBreaker,
+			checkpointStore: e.checkpointStore,
+			checkpointFunc:  e.checkpointFunc,
+			cpMutex:         &e.cpMutex,
+			lastCheckpoint:  e.lastCheckpoint,
+		},
+	}
+	edges := []dagEdge{
+		{Source: "source", Target: "map"},
+		{Source: "map", Target: "transform"},
+		{Source: "transform", Target: "load"},
+	}
+	return &PipelineConfig{
+		Nodes: nodes,
+		Edges: edges,
+	}
 }
 
 type ETL struct {
@@ -311,6 +527,7 @@ type ETL struct {
 	cancelFunc      context.CancelFunc
 	lookupStore     map[string][]utils.Record
 	lookupInCache   sync.Map
+	pipelineConfig  *PipelineConfig
 }
 
 func defaultConfig() *ETL {
@@ -338,210 +555,10 @@ func NewETL(opts ...Option) *ETL {
 }
 
 func (e *ETL) Run(ctx context.Context) error {
-	nodes := map[string]*dagNode{
-		"source": {
-			id: "source",
-			pn: &SourceNode{
-				sources:       e.sources,
-				rawChanBuffer: e.rawChanBuffer,
-			},
-		},
-		"map": {
-			id: "map",
-			pn: &MapNode{
-				mappers:     e.mappers,
-				workerCount: e.workerCount,
-			},
-		},
-		"transform": {
-			id: "transform",
-			pn: &TransformNode{
-				transformers: e.transformers,
-				workerCount:  e.workerCount,
-			},
-		},
-		"load": {
-			id: "load",
-			pn: &LoaderNode{
-				loaders:         e.loaders,
-				workerCount:     e.loaderWorkers,
-				batchSize:       e.batchSize,
-				retryCount:      e.retryCount,
-				retryDelay:      e.retryDelay,
-				circuitBreaker:  e.circuitBreaker,
-				checkpointStore: e.checkpointStore,
-				checkpointFunc:  e.checkpointFunc,
-				cpMutex:         &e.cpMutex,
-				lastCheckpoint:  e.lastCheckpoint,
-			},
-		},
+	if e.pipelineConfig == nil {
+		e.pipelineConfig = e.buildDefaultPipeline()
 	}
-	edges := []dagEdge{
-		{source: "source", target: "map"},
-		{source: "map", target: "transform"},
-		{source: "transform", target: "load"},
-	}
-	for _, edge := range edges {
-		if node, ok := nodes[edge.target]; ok {
-			node.indegree++
-		}
-	}
-	var queue []string
-	for id, node := range nodes {
-		if node.indegree == 0 {
-			queue = append(queue, id)
-		}
-	}
-	for len(queue) > 0 {
-		currentID := queue[0]
-		queue = queue[1:]
-		currentNode := nodes[currentID]
-		var input <-chan utils.Record
-		if len(currentNode.inChs) == 0 {
-			input = nil
-		} else if len(currentNode.inChs) == 1 {
-			input = currentNode.inChs[0]
-		} else {
-			input = mergeChannels(currentNode.inChs)
-		}
-		outCh, err := currentNode.pn.Process(ctx, input)
-		if err != nil {
-			return fmt.Errorf("error running node %s: %v", currentID, err)
-		}
-		currentNode.outCh = outCh
-		for _, edge := range edges {
-			if edge.source == currentID {
-				targetNode := nodes[edge.target]
-				targetNode.inChs = append(targetNode.inChs, currentNode.outCh)
-				targetNode.indegree--
-				if targetNode.indegree == 0 {
-					queue = append(queue, targetNode.id)
-				}
-			}
-		}
-	}
-	for range nodes["load"].outCh {
-	}
-	return nil
-}
-
-func Run(cfg *config.Config) {
-	var destDB *sql.DB
-	var err error
-	if utils.IsSQLType(cfg.Destination.Type) {
-		destDB, err = config.OpenDB(cfg.Destination)
-		if err != nil {
-			log.Fatalf("Error connecting to destination DB: %v", err)
-		}
-		defer destDB.Close()
-	}
-	if cfg.Buffer == 0 {
-		cfg.Buffer = 50
-	}
-	if cfg.WorkerCount == 0 {
-		minCPU := runtime.NumCPU()
-		if minCPU <= 1 {
-			cfg.WorkerCount = 1
-		} else {
-			cfg.WorkerCount = minCPU - 1
-		}
-	}
-	var sourceFile string
-	var sources []contract.Source
-	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
-		cfg.Sources = append(cfg.Sources, cfg.Source)
-	}
-	for _, sourceCfg := range cfg.Sources {
-		if sourceCfg.File != "" {
-			sourceFile = sourceCfg.File
-		}
-		var sourceDB *sql.DB
-		var err error
-		if utils.IsSQLType(sourceCfg.Type) {
-			sourceDB, err = config.OpenDB(sourceCfg)
-			if err != nil {
-				log.Fatalf("Error connecting to source DB: %v", err)
-			}
-		}
-		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source)
-		if err != nil {
-
-			panic(err)
-		}
-		sources = append(sources, src)
-	}
-	for _, tableCfg := range cfg.Tables {
-		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
-			continue
-		}
-		if tableCfg.OldName == "" && sourceFile != "" {
-			tableCfg.OldName = sourceFile
-		}
-		if tableCfg.NewName == "" && cfg.Destination.File != "" {
-			tableCfg.NewName = cfg.Destination.File
-		}
-		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
-			if err := sqlutil.CreateKeyValueTable(
-				destDB, tableCfg.NewName,
-				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
-			); err != nil {
-				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
-			}
-		}
-		opts := []Option{
-			WithSources(sources...),
-			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
-			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
-				name, _ := rec["name"].(string)
-				return name
-			}),
-			WithWorkerCount(cfg.WorkerCount),
-			WithBatchSize(tableCfg.BatchSize),
-			WithRawChanBuffer(cfg.Buffer),
-		}
-		var mapperList []contract.Mapper
-		if len(tableCfg.Mapping) > 0 {
-			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
-		}
-		mapperList = append(mapperList, &mappers.LowercaseMapper{})
-		opts = append(opts, WithMappers(mapperList...))
-		if tableCfg.KeyValueTable {
-			opts = append(opts, WithKeyValueTransformer(
-				tableCfg.ExtraValues,
-				tableCfg.IncludeFields,
-				tableCfg.ExcludeFields,
-				tableCfg.KeyField,
-				tableCfg.ValueField,
-			))
-		}
-		etlJob := NewETL(opts...)
-
-		if len(cfg.Lookups) > 0 {
-			for _, lkup := range cfg.Lookups {
-				lookup, err := adapters.NewLookupLoader(lkup)
-				if err != nil {
-					log.Fatalf("Unsupported lookup type: %s", lkup.Type)
-				}
-				data, err := lookup.LoadData()
-				if err != nil {
-					log.Fatalf("Failed to load lookup data for %s: %v", lkup.Key, err)
-				}
-				etlJob.lookupStore[lkup.Key] = data
-			}
-		}
-		expr.AddFunction("lookupIn", etlJob.lookupIn)
-
-		ctx := context.Background()
-		if err := etlJob.Run(ctx); err != nil {
-			log.Printf("ETL DAG job failed: %v", err)
-		}
-		if err := etlJob.Close(); err != nil {
-			log.Printf("Error closing ETL job: %v", err)
-		}
-		log.Printf("Migration for %s complete", tableCfg.OldName)
-	}
-	log.Println("All migrations complete.")
+	return e.runPipeline(ctx, e.pipelineConfig)
 }
 
 func (e *ETL) Close() error {

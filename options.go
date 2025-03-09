@@ -13,6 +13,13 @@ import (
 
 type Option func(*ETL) error
 
+func WithPipelineConfig(pc *PipelineConfig) Option {
+	return func(e *ETL) error {
+		e.pipelineConfig = pc
+		return nil
+	}
+}
+
 func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) (contract.Source, error) {
 	var src contract.Source
 	if utils.IsSQLType(sourceType) {
