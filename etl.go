@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ func Run(cfg *config.Config) {
 	}
 	var sourceFile string
 	var sources []contract.Source
+
 	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
 		cfg.Sources = append(cfg.Sources, cfg.Source)
 	}
@@ -63,7 +65,6 @@ func Run(cfg *config.Config) {
 		}
 		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source)
 		if err != nil {
-
 			panic(err)
 		}
 		sources = append(sources, src)
@@ -129,7 +130,6 @@ func Run(cfg *config.Config) {
 			}
 		}
 		expr.AddFunction("lookupIn", etlJob.lookupIn)
-
 		ctx := context.Background()
 		if err := etlJob.Run(ctx); err != nil {
 			log.Printf("ETL DAG job failed: %v", err)
@@ -166,6 +166,40 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record) (<-cha
 				out <- rec
 			}
 		}(src)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out, nil
+}
+
+type NormalizeNode struct {
+	schema      map[string]string
+	workerCount int
+}
+
+func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, nn.workerCount*2)
+	var wg sync.WaitGroup
+	for i := 0; i < nn.workerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for rec := range in {
+				if nn.schema == nil {
+					out <- rec
+					continue
+				}
+				nRec, err := normalizeRecord(rec, nn.schema)
+				if err != nil {
+					log.Printf("[Normalize Worker %d] Error: %v", workerID, err)
+
+					continue
+				}
+				out <- nRec
+			}
+		}(i)
 	}
 	go func() {
 		wg.Wait()
@@ -334,6 +368,82 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 	return done, nil
 }
 
+func normalizeRecord(rec utils.Record, schema map[string]string) (utils.Record, error) {
+	for field, targetType := range schema {
+		if val, ok := rec[field]; ok {
+			normalized, err := normalizeValue(val, targetType)
+			if err != nil {
+				return nil, fmt.Errorf("error normalizing field %s: %v", field, err)
+			}
+			rec[field] = normalized
+		}
+	}
+	return rec, nil
+}
+
+func normalizeValue(val interface{}, targetType string) (interface{}, error) {
+	switch targetType {
+	case "int":
+		switch v := val.(type) {
+		case int:
+			return v, nil
+		case int64:
+			return int(v), nil
+		case float64:
+			return int(v), nil
+		case string:
+			i, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, err
+			}
+			return i, nil
+		case bool:
+			if v {
+				return 1, nil
+			}
+			return 0, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for int conversion: %T", val)
+		}
+	case "bool":
+		switch v := val.(type) {
+		case bool:
+			return v, nil
+		case string:
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, err
+			}
+			return b, nil
+		case int:
+			return v != 0, nil
+		case float64:
+			return v != 0, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for bool conversion: %T", val)
+		}
+	case "float":
+		switch v := val.(type) {
+		case float64:
+			return v, nil
+		case int:
+			return float64(v), nil
+		case string:
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return nil, err
+			}
+			return f, nil
+		default:
+			return nil, fmt.Errorf("unsupported type for float conversion: %T", val)
+		}
+	case "string":
+		return fmt.Sprintf("%v", val), nil
+	default:
+		return nil, fmt.Errorf("unknown target type: %s", targetType)
+	}
+}
+
 func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapper, workerID int) (utils.Record, error) {
 	for _, mapper := range mappers {
 		var err error
@@ -413,7 +523,6 @@ type PipelineConfig struct {
 }
 
 func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
-	// Build internal DAG nodes.
 	nodes := make(map[string]*dagNode)
 	for id, node := range pc.Nodes {
 		nodes[id] = &dagNode{
@@ -460,6 +569,7 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
 			}
 		}
 	}
+
 	if loadNode, ok := nodes["load"]; ok {
 		for range loadNode.outCh {
 		}
@@ -472,6 +582,9 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		"source": &SourceNode{
 			sources:       e.sources,
 			rawChanBuffer: e.rawChanBuffer,
+		},
+		"normalize": &NormalizeNode{
+			workerCount: e.workerCount,
 		},
 		"map": &MapNode{
 			mappers:     e.mappers,
@@ -495,6 +608,8 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		},
 	}
 	edges := []dagEdge{
+		// {Source: "source", Target: "normalize"},
+		// {Source: "normalize", Target: "map"},
 		{Source: "source", Target: "map"},
 		{Source: "map", Target: "transform"},
 		{Source: "transform", Target: "load"},
