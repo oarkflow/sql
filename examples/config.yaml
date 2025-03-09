@@ -1,26 +1,37 @@
-source:
-    type: "csv"
-    file: "providers.csv"
+sources:
+    - type: "csv"
+      file: "providers.csv"
+    - type: "json"
+      file: "providers.json"
+    - type: "postgresql"
+      host: "localhost"
+      port: 5432
+      username: "postgres"
+      password: "postgres"
+      driver: "postgres"
+      database: "mydb"
+      source: "SELECT * FROM providers_sql"
 
 destination:
     type: "csv"
     file: "output.csv"
 
-lookups: # can be file, sql dbms, rest etc
-    -   type: "csv"
-        file: "users.csv"
-        key: "users"
-    -   type: "csv"
-        file: "facilities.csv"
-        key: "facilities"
+lookups:
+    - type: "csv"
+      file: "users.csv"
+      key: "users"
+    - type: "csv"
+      file: "facilities.csv"
+      key: "facilities"
 
 tables:
-    -   clone_source: true
-        migrate: true                   # Ignored for file loaders.
-        batch_size: 100
-        truncate_destination: true      # If true, clears the file before writing.
-        auto_create_table: true        # Not used for file loaders.
-        mapping:
-            facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
-            user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
-            is_active: "is_active"
+    - clone_source: true
+      migrate: true
+      batch_size: 100
+      truncate_destination: true
+      auto_create_table: true
+      mapping:
+          id: "id"
+          facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
+          user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
+          is_active: "is_active"

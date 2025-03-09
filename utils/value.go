@@ -2,12 +2,26 @@ package utils
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/oarkflow/dipper"
 	"github.com/oarkflow/expr"
 )
+
+func IsEmpty(s interface{}) bool {
+	v := reflect.ValueOf(s)
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < v.NumField(); i++ {
+		if !v.Field(i).IsZero() {
+			return false
+		}
+	}
+	return true
+}
 
 func GetDataType(v any) string {
 	switch v.(type) {

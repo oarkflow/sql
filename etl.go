@@ -426,15 +426,8 @@ func (e *ETL) Run(ctx context.Context) error {
 }
 
 func Run(cfg *config.Config) {
-	var sourceDB, destDB *sql.DB
+	var destDB *sql.DB
 	var err error
-	if utils.IsSQLType(cfg.Source.Type) {
-		sourceDB, err = config.OpenDB(cfg.Source)
-		if err != nil {
-			log.Fatalf("Error connecting to source DB: %v", err)
-		}
-		defer sourceDB.Close()
-	}
 	if utils.IsSQLType(cfg.Destination.Type) {
 		destDB, err = config.OpenDB(cfg.Destination)
 		if err != nil {
@@ -453,12 +446,36 @@ func Run(cfg *config.Config) {
 			cfg.WorkerCount = minCPU - 1
 		}
 	}
+	var sourceFile string
+	var sources []contract.Source
+	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
+		cfg.Sources = append(cfg.Sources, cfg.Source)
+	}
+	for _, sourceCfg := range cfg.Sources {
+		if sourceCfg.File != "" {
+			sourceFile = sourceCfg.File
+		}
+		var sourceDB *sql.DB
+		var err error
+		if utils.IsSQLType(sourceCfg.Type) {
+			sourceDB, err = config.OpenDB(sourceCfg)
+			if err != nil {
+				log.Fatalf("Error connecting to source DB: %v", err)
+			}
+		}
+		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source)
+		if err != nil {
+
+			panic(err)
+		}
+		sources = append(sources, src)
+	}
 	for _, tableCfg := range cfg.Tables {
 		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
 		}
-		if tableCfg.OldName == "" && cfg.Source.File != "" {
-			tableCfg.OldName = cfg.Source.File
+		if tableCfg.OldName == "" && sourceFile != "" {
+			tableCfg.OldName = sourceFile
 		}
 		if tableCfg.NewName == "" && cfg.Destination.File != "" {
 			tableCfg.NewName = cfg.Destination.File
@@ -473,7 +490,7 @@ func Run(cfg *config.Config) {
 			}
 		}
 		opts := []Option{
-			WithSource(cfg.Source.Type, sourceDB, cfg.Source.File, tableCfg.OldName, tableCfg.Query),
+			WithSources(sources...),
 			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.File, tableCfg),
 			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
 				name, _ := rec["name"].(string)

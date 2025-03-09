@@ -47,6 +47,7 @@ type TableMapping struct {
 
 type Config struct {
 	Source      DataConfig     `yaml:"source" json:"source"`
+	Sources     []DataConfig   `yaml:"sources" json:"sources"`
 	Destination DataConfig     `yaml:"destination" json:"destination"`
 	Lookups     []DataConfig   `yaml:"lookups" json:"lookups"`
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
