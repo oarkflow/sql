@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,266 +25,11 @@ import (
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
+	"github.com/oarkflow/sql/resilience"
 	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/sql/utils/fileutil"
+	"github.com/oarkflow/sql/utils/sqlutil"
 )
-
-type CircuitBreaker struct {
-	threshold    int
-	failureCount int
-	open         bool
-	openUntil    time.Time
-	resetTimeout time.Duration
-	mu           sync.Mutex
-}
-
-// NewCircuitBreaker creates a new CircuitBreaker.
-func NewCircuitBreaker(threshold int, resetTimeout time.Duration) *CircuitBreaker {
-	return &CircuitBreaker{
-		threshold:    threshold,
-		resetTimeout: resetTimeout,
-	}
-}
-
-// Allow returns true if the breaker allows execution.
-func (cb *CircuitBreaker) Allow() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if cb.open {
-		if time.Now().After(cb.openUntil) {
-			cb.open = false
-			cb.failureCount = 0
-			return true
-		}
-		return false
-	}
-	return true
-}
-
-// RecordFailure increases the failure count and opens the breaker if threshold is reached.
-func (cb *CircuitBreaker) RecordFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	cb.failureCount++
-	if cb.failureCount >= cb.threshold {
-		cb.open = true
-		cb.openUntil = time.Now().Add(cb.resetTimeout)
-		log.Printf("Circuit breaker opened for %v after %d failures", cb.resetTimeout, cb.failureCount)
-	}
-}
-
-// RecordSuccess resets the breaker.
-func (cb *CircuitBreaker) RecordSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	cb.failureCount = 0
-	cb.open = false
-}
-
-// retryWithCircuit retries a function using a CircuitBreaker.
-func retryWithCircuit(retryCount int, retryDelay time.Duration, cb *CircuitBreaker, fn func() error) error {
-	var err error
-	for i := 0; i < retryCount; i++ {
-		if !cb.Allow() {
-			return fmt.Errorf("circuit breaker is open")
-		}
-		err = fn()
-		if err == nil {
-			cb.RecordSuccess()
-			return nil
-		}
-		cb.RecordFailure()
-		log.Printf("Retry attempt %d failed: %v", i+1, err)
-		jitter := 0.8 + rand.Float64()*0.4
-		time.Sleep(time.Duration(float64(retryDelay) * jitter))
-		retryDelay *= 2
-	}
-	return err
-}
-
-type MultiTransformer interface {
-	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
-}
-
-func CreateKeyValueTable(db *sql.DB, tableName string, cfg config.TableMapping) error {
-	columns := []string{
-		fmt.Sprintf("%s TEXT", cfg.KeyField),
-	}
-	for extraField := range cfg.ExtraValues {
-		columns = append(columns, fmt.Sprintf("%s TEXT", extraField))
-	}
-	columns = append(columns, fmt.Sprintf("%s TEXT", cfg.ValueField))
-	columns = append(columns, "value_type TEXT")
-	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", tableName, strings.Join(columns, ", "))
-	_, err := db.Exec(createStmt)
-	if err != nil {
-		return err
-	}
-	if cfg.TruncateDestination {
-		_, err = db.Exec(fmt.Sprintf("TRUNCATE TABLE %s;", tableName))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func CreateTableFromRecord(db *sql.DB, tableName string, rec utils.Record) error {
-	var columns []string
-	var keys []string
-	for k := range rec {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		sqlType := inferSQLType(rec[k])
-		columns = append(columns, fmt.Sprintf("%s %s", k, sqlType))
-	}
-	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", tableName, strings.Join(columns, ", "))
-	_, err := db.Exec(createStmt)
-	return err
-}
-
-func inferSQLType(val interface{}) string {
-	switch val.(type) {
-	case int, int32, int64:
-		return "INTEGER"
-	case float32, float64:
-		return "REAL"
-	case bool:
-		return "BOOLEAN"
-	case string:
-		return "TEXT"
-	default:
-		return "TEXT"
-	}
-}
-
-func retry(retryCount int, retryDelay time.Duration, fn func() error) error {
-	var err error
-	for i := 0; i < retryCount; i++ {
-		err = fn()
-		if err == nil {
-			return nil
-		}
-		log.Printf("Retry attempt %d failed: %v", i+1, err)
-		jitter := 0.8 + rand.Float64()*0.4
-		time.Sleep(time.Duration(float64(retryDelay) * jitter))
-		retryDelay *= 2
-	}
-	return err
-}
-
-type Option func(*ETL) error
-
-func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
-	return func(e *ETL) error {
-		var src contract.Source
-		if utils.IsSQLType(sourceType) {
-			if sourceDB == nil {
-				return fmt.Errorf("source database is nil")
-			}
-			src = NewSQLSource(sourceDB, sourceTable, sourceQuery)
-		} else if sourceType == "csv" || sourceType == "json" {
-			file := sourceTable
-			if file == "" {
-				file = sourceFile
-			}
-			src = NewFileSource(file)
-		} else {
-			return fmt.Errorf("unsupported source type: %s", sourceType)
-		}
-		e.sources = append(e.sources, src)
-		return nil
-	}
-}
-
-func WithDestination(destType string, destDB *sql.DB, destFile string, cfg config.TableMapping) Option {
-	return func(e *ETL) error {
-		var destination contract.Loader
-		if utils.IsSQLType(destType) {
-			if destDB == nil {
-				return fmt.Errorf("destination database is nil")
-			}
-			destination = NewSQLLoader(destDB, destType, cfg)
-		} else if destType == "csv" || destType == "json" {
-			file := cfg.NewName
-			if file == "" {
-				file = destFile
-			}
-			appendMode := true
-			if cfg.TruncateDestination {
-				appendMode = false
-			}
-			destination = NewFileLoader(file, appendMode)
-		} else {
-			return fmt.Errorf("unsupported destination type: %s", destType)
-		}
-		e.loaders = append(e.loaders, destination)
-		return nil
-	}
-}
-
-func WithMapping(mapping map[string]string) Option {
-	return func(e *ETL) error {
-		var mappersList []contract.Mapper
-		if len(mapping) > 0 {
-			mappersList = append(mappersList, NewFieldMapper(mapping))
-		}
-		mappersList = append(mappersList, &LowercaseMapper{})
-		e.mappers = append(e.mappers, mappersList...)
-		return nil
-	}
-}
-
-func WithTransformers(list ...contract.Transformer) Option {
-	return func(e *ETL) error {
-		e.transformers = append(e.transformers, list...)
-		return nil
-	}
-}
-
-func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
-	return func(e *ETL) error {
-		kt := &KeyValueTransformer{
-			ExtraValues:   extraValues,
-			IncludeFields: includeFields,
-			ExcludeFields: excludeFields,
-			KeyField:      keyField,
-			ValueField:    valueField,
-		}
-		e.transformers = append(e.transformers, kt)
-		return nil
-	}
-}
-
-func WithWorkerCount(count int) Option {
-	return func(e *ETL) error {
-		e.workerCount = count
-		return nil
-	}
-}
-
-func WithBatchSize(size int) Option {
-	return func(e *ETL) error {
-		e.batchSize = size
-		return nil
-	}
-}
-
-func WithRawChanBuffer(buffer int) Option {
-	return func(e *ETL) error {
-		e.rawChanBuffer = buffer
-		return nil
-	}
-}
-
-func WithCheckpoint(store contract.CheckpointStore, cpFunc func(rec utils.Record) string) Option {
-	return func(e *ETL) error {
-		e.checkpointStore = store
-		e.checkpointFunc = cpFunc
-		return nil
-	}
-}
 
 type ETL struct {
 	sources         []contract.Source
@@ -306,7 +50,7 @@ type ETL struct {
 	maxErrorCount   int
 	errorCount      int
 	errorLock       sync.Mutex
-	circuitBreaker  *CircuitBreaker
+	circuitBreaker  *resilience.CircuitBreaker
 	cancelFunc      context.CancelFunc
 	lookupStore     map[string][]map[string]string
 	lookupInCache   sync.Map
@@ -322,7 +66,7 @@ func defaultConfig() *ETL {
 		rawChanBuffer:  100,
 		maxErrorCount:  10,
 		lookupStore:    make(map[string][]map[string]string),
-		circuitBreaker: NewCircuitBreaker(5, 5*time.Second),
+		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
 	}
 }
 
@@ -447,14 +191,14 @@ func (e *ETL) Run(ctx context.Context) error {
 						continue
 					}
 					if sqlLoader, ok := loader.(*SQLLoader); ok && sqlLoader.autoCreate && !sqlLoader.created {
-						if err := CreateTableFromRecord(sqlLoader.db, sqlLoader.table, batch[0]); err != nil {
+						if err := sqlutil.CreateTableFromRecord(sqlLoader.db, sqlLoader.table, batch[0]); err != nil {
 							e.incrementError()
 							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
 							continue
 						}
 						sqlLoader.created = true
 					}
-					if err := retryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
+					if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
 						return loader.LoadBatch(ctx, batch)
 					}); err != nil {
 						e.incrementError()
@@ -514,7 +258,7 @@ func applyTransformers(ctx context.Context, transformers []contract.Transformer,
 	for _, transformer := range transformers {
 		var nextRecords []utils.Record
 		for _, r := range records {
-			if mt, ok := transformer.(MultiTransformer); ok {
+			if mt, ok := transformer.(contract.MultiTransformer); ok {
 				recs, err := mt.TransformMany(ctx, r)
 				if err != nil {
 					log.Printf("[Worker %d] MultiTransformer error: %v", workerID, err)
@@ -844,7 +588,7 @@ func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
 		return nil
 	}
 	if l.autoCreate && !l.created {
-		if err := CreateTableFromRecord(l.db, l.table, batch[0]); err != nil {
+		if err := sqlutil.CreateTableFromRecord(l.db, l.table, batch[0]); err != nil {
 			return err
 		}
 		l.created = true
@@ -1058,7 +802,7 @@ func (fs *FileSource) Extract(_ context.Context) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)
-		_, err := utils.ProcessFile(fs.Filename, func(record utils.Record) {
+		_, err := fileutil.ProcessFile(fs.Filename, func(record utils.Record) {
 			out <- record
 		})
 		if err != nil {
@@ -1162,7 +906,10 @@ func RunETLWithConfig(cfg *config.Config) {
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
 		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
-			if err := CreateKeyValueTable(destDB, tableCfg.NewName, tableCfg); err != nil {
+			if err := sqlutil.CreateKeyValueTable(
+				destDB, tableCfg.NewName,
+				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
+			); err != nil {
 				log.Fatalf("Error creating key-value table %s: %v", tableCfg.NewName, err)
 			}
 		}
@@ -1175,12 +922,17 @@ func RunETLWithConfig(cfg *config.Config) {
 				}
 				return ""
 			}),
-			WithMapping(tableCfg.Mapping),
 			WithTransformers(),
 			WithWorkerCount(cfg.WorkerCount),
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(cfg.Buffer),
 		}
+		var mapperList []contract.Mapper
+		if len(tableCfg.Mapping) > 0 {
+			mapperList = append(mapperList, NewFieldMapper(tableCfg.Mapping))
+		}
+		mapperList = append(mapperList, &LowercaseMapper{})
+		opts = append(opts, WithMappers(mapperList...))
 		if tableCfg.KeyValueTable {
 			opts = append(opts, WithKeyValueTransformer(
 				tableCfg.ExtraValues,

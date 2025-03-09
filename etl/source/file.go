@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/sql/utils/fileutil"
 )
 
 type FileSource struct {
@@ -27,7 +28,7 @@ func (fs *FileSource) Extract(_ context.Context) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)
-		_, err := utils.ProcessFile(fs.Filename, func(record utils.Record) {
+		_, err := fileutil.ProcessFile(fs.Filename, func(record utils.Record) {
 			out <- record
 		})
 		if err != nil {

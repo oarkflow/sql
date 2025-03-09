@@ -11,14 +11,15 @@ import (
 	"github.com/oarkflow/convert"
 
 	"github.com/oarkflow/sql/utils"
+	"github.com/oarkflow/sql/utils/fileutil"
 )
 
 func (tr *TableReference) loadData() ([]utils.Record, error) {
 	switch strings.ToLower(tr.Source) {
 	case "read_file":
-		return utils.ProcessFile(tr.Name)
+		return fileutil.ProcessFile(tr.Name)
 	case "read_db":
-		return utils.ProcessFile(tr.Name)
+		return fileutil.ProcessFile(tr.Name)
 	case "read_api":
 		resp, err := http.Get(tr.Name)
 		if err != nil {

@@ -42,3 +42,7 @@ type Transactional interface {
 type Validator interface {
 	Validate(ctx context.Context, rec utils.Record) error
 }
+
+type MultiTransformer interface {
+	TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error)
+}
