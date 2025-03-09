@@ -195,7 +195,7 @@ func (fl *FileAdapter) Close() error {
 	return nil
 }
 
-func (fl *FileAdapter) LoadData() ([]map[string]string, error) {
+func (fl *FileAdapter) LoadData() ([]utils.Record, error) {
 	// Open the file in read-only mode.
 	f, err := os.Open(fl.Filename)
 	if err != nil {
@@ -215,7 +215,7 @@ func (fl *FileAdapter) LoadData() ([]map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		var result []map[string]string
+		var result []utils.Record
 		for {
 			row, err := r.Read()
 			if err != nil {
@@ -225,7 +225,7 @@ func (fl *FileAdapter) LoadData() ([]map[string]string, error) {
 			if len(row) != len(headers) {
 				continue
 			}
-			rowMap := make(map[string]string)
+			rowMap := make(map[string]any)
 			for i, header := range headers {
 				rowMap[header] = row[i]
 			}
@@ -238,9 +238,9 @@ func (fl *FileAdapter) LoadData() ([]map[string]string, error) {
 		if err := decoder.Decode(&data); err != nil {
 			return nil, err
 		}
-		result := make([]map[string]string, 0, len(data))
+		result := make([]utils.Record, 0, len(data))
 		for _, item := range data {
-			row := make(map[string]string)
+			row := make(map[string]any)
 			for k, v := range item {
 				row[k] = fmt.Sprintf("%v", v)
 			}
@@ -382,7 +382,7 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 	return err
 }
 
-func (l *SQLAdapter) LoadData() ([]map[string]string, error) {
+func (l *SQLAdapter) LoadData() ([]utils.Record, error) {
 	rows, err := l.Db.Query(l.query)
 	if err != nil {
 		return nil, err
@@ -394,7 +394,7 @@ func (l *SQLAdapter) LoadData() ([]map[string]string, error) {
 		return nil, err
 	}
 
-	var result []map[string]string
+	var result []utils.Record
 	for rows.Next() {
 		columns := make([]interface{}, len(cols))
 		columnPointers := make([]interface{}, len(cols))
@@ -404,7 +404,7 @@ func (l *SQLAdapter) LoadData() ([]map[string]string, error) {
 		if err := rows.Scan(columnPointers...); err != nil {
 			return nil, err
 		}
-		rowMap := make(map[string]string)
+		rowMap := make(map[string]any)
 		for i, colName := range cols {
 			// Format each column value as a string.
 			rowMap[colName] = fmt.Sprintf("%v", columns[i])

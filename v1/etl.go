@@ -178,7 +178,7 @@ type ETL struct {
 	errorLock       sync.Mutex
 	circuitBreaker  *resilience.CircuitBreaker
 	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]map[string]string
+	lookupStore     map[string][]utils.Record
 	lookupInCache   sync.Map
 }
 
@@ -191,7 +191,7 @@ func defaultConfig() *ETL {
 		loaderWorkers:  2,
 		rawChanBuffer:  100,
 		maxErrorCount:  10,
-		lookupStore:    make(map[string][]map[string]string),
+		lookupStore:    make(map[string][]utils.Record),
 		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
 	}
 }

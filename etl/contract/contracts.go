@@ -48,5 +48,5 @@ type MultiTransformer interface {
 }
 
 type LookupLoader interface {
-	LoadData() ([]map[string]string, error)
+	LoadData() ([]utils.Record, error)
 }
