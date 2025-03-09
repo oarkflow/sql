@@ -24,5 +24,5 @@ func RunETL(configPath string) {
 	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
-	v1.RunETLWithConfig(cfg)
+	v1.Run(cfg)
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/oarkflow/sql/adapters"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/utils"
@@ -18,13 +19,13 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 			if sourceDB == nil {
 				return fmt.Errorf("source database is nil")
 			}
-			src = NewSQLSource(sourceDB, sourceTable, sourceQuery)
+			src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
 		} else if sourceType == "csv" || sourceType == "json" {
 			file := sourceTable
 			if file == "" {
 				file = sourceFile
 			}
-			src = NewFileSource(file)
+			src = adapters.NewFileAdapter(file, "source", false)
 		} else {
 			return fmt.Errorf("unsupported source type: %s", sourceType)
 		}
@@ -40,7 +41,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = NewSQLLoader(destDB, destType, cfg)
+			destination = adapters.NewSQLAdapterAsLoader(destDB, destType, cfg)
 		} else if destType == "csv" || destType == "json" {
 			file := cfg.NewName
 			if file == "" {
@@ -50,7 +51,7 @@ func WithDestination(destType string, destDB *sql.DB, destFile string, cfg confi
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
-			destination = NewFileLoader(file, appendMode)
+			destination = adapters.NewFileAdapter(file, "loader", appendMode)
 		} else {
 			return fmt.Errorf("unsupported destination type: %s", destType)
 		}

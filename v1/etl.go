@@ -1,16 +1,10 @@
 package v1
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
-	"encoding/csv"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,741 +14,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oarkflow/expr"
 
+	"github.com/oarkflow/sql/adapters"
 	"github.com/oarkflow/sql/checkpoint"
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/etl/config"
 	"github.com/oarkflow/sql/etl/contract"
 	"github.com/oarkflow/sql/resilience"
 	"github.com/oarkflow/sql/utils"
-	"github.com/oarkflow/sql/utils/fileutil"
 	"github.com/oarkflow/sql/utils/sqlutil"
 )
 
-type ETL struct {
-	sources         []contract.Source
-	mappers         []contract.Mapper
-	validators      []contract.Validator
-	transformers    []contract.Transformer
-	loaders         []contract.Loader
-	workerCount     int
-	batchSize       int
-	retryCount      int
-	retryDelay      time.Duration
-	loaderWorkers   int
-	rawChanBuffer   int
-	checkpointStore contract.CheckpointStore
-	checkpointFunc  func(rec utils.Record) string
-	lastCheckpoint  string
-	cpMutex         sync.Mutex
-	maxErrorCount   int
-	errorCount      int
-	errorLock       sync.Mutex
-	circuitBreaker  *resilience.CircuitBreaker
-	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]map[string]string
-	lookupInCache   sync.Map
-}
-
-func defaultConfig() *ETL {
-	return &ETL{
-		workerCount:    4,
-		batchSize:      100,
-		retryCount:     3,
-		retryDelay:     100 * time.Millisecond,
-		loaderWorkers:  2,
-		rawChanBuffer:  100,
-		maxErrorCount:  10,
-		lookupStore:    make(map[string][]map[string]string),
-		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
-	}
-}
-
-func NewETL(opts ...Option) *ETL {
-	e := defaultConfig()
-	for _, opt := range opts {
-		if err := opt(e); err != nil {
-			log.Printf("Error applying option: %v", err)
-		}
-	}
-	return e
-}
-
-func (e *ETL) incrementError() {
-	e.errorLock.Lock()
-	defer e.errorLock.Unlock()
-	e.errorCount++
-	if e.errorCount >= e.maxErrorCount {
-		log.Println("Max error count reached, cancelling ETL process")
-		if e.cancelFunc != nil {
-			e.cancelFunc()
-		}
-	}
-}
-
-func (e *ETL) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	e.cancelFunc = cancel
-	defer cancel()
-
-	if e.checkpointStore != nil {
-		if cp, err := e.checkpointStore.GetCheckpoint(ctx); err != nil {
-			log.Printf("Error retrieving checkpoint: %v", err)
-		} else {
-			e.lastCheckpoint = cp
-			log.Printf("Resuming from checkpoint: %s", e.lastCheckpoint)
-		}
-	}
-	rawChan := make(chan utils.Record, e.rawChanBuffer)
-	var srcWG sync.WaitGroup
-	for _, s := range e.sources {
-		if err := s.Setup(ctx); err != nil {
-			e.incrementError()
-			return fmt.Errorf("source setup error: %v", err)
-		}
-		srcWG.Add(1)
-		go func(src contract.Source) {
-			defer srcWG.Done()
-			ch, err := src.Extract(ctx)
-			if err != nil {
-				e.incrementError()
-				log.Printf("Source extraction error: %v", err)
-				return
-			}
-			for rec := range ch {
-				rawChan <- rec
-			}
-		}(s)
-	}
-	go func() {
-		srcWG.Wait()
-		close(rawChan)
-	}()
-	processedChan := make(chan utils.Record, e.workerCount*2)
-	var procWG sync.WaitGroup
-	for i := 0; i < e.workerCount; i++ {
-		procWG.Add(1)
-		go func(workerID int) {
-			defer procWG.Done()
-			for raw := range rawChan {
-				rec, err := applyMappers(ctx, e.mappers, raw, workerID)
-				if err != nil {
-					e.incrementError()
-					continue
-				}
-				if rec == nil {
-					continue
-				}
-				outRecords, err := applyTransformers(ctx, e.transformers, rec, workerID)
-				if err != nil {
-					e.incrementError()
-					continue
-				}
-				for _, r := range outRecords {
-					processedChan <- r
-				}
-			}
-		}(i)
-	}
-	go func() {
-		procWG.Wait()
-		close(processedChan)
-	}()
-	batchChan := make(chan []utils.Record, e.loaderWorkers)
-	var batchWG sync.WaitGroup
-	batchWG.Add(1)
-	go func() {
-		defer batchWG.Done()
-		batch := make([]utils.Record, 0, e.batchSize)
-		for rec := range processedChan {
-			batch = append(batch, rec)
-			if len(batch) >= e.batchSize {
-				batchChan <- batch
-				batch = make([]utils.Record, 0, e.batchSize)
-			}
-		}
-		if len(batch) > 0 {
-			batchChan <- batch
-		}
-		close(batchChan)
-	}()
-	var loaderWG sync.WaitGroup
-	for i := 0; i < e.loaderWorkers; i++ {
-		loaderWG.Add(1)
-		go func(workerID int) {
-			defer loaderWG.Done()
-			for batch := range batchChan {
-				for _, loader := range e.loaders {
-					if err := loader.Setup(ctx); err != nil {
-						e.incrementError()
-						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
-						continue
-					}
-					if sqlLoader, ok := loader.(*SQLLoader); ok && sqlLoader.autoCreate && !sqlLoader.created {
-						if err := sqlutil.CreateTableFromRecord(sqlLoader.db, sqlLoader.table, batch[0]); err != nil {
-							e.incrementError()
-							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
-							continue
-						}
-						sqlLoader.created = true
-					}
-					if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
-						return loader.LoadBatch(ctx, batch)
-					}); err != nil {
-						e.incrementError()
-						log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
-						continue
-					}
-					if e.checkpointStore != nil && e.checkpointFunc != nil {
-						cp := e.checkpointFunc(batch[len(batch)-1])
-						e.cpMutex.Lock()
-						if cp > e.lastCheckpoint {
-							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
-								e.incrementError()
-								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
-							} else {
-								e.lastCheckpoint = cp
-							}
-						}
-						e.cpMutex.Unlock()
-					}
-				}
-			}
-		}(i)
-	}
-	batchWG.Wait()
-	loaderWG.Wait()
-	return nil
-}
-
-func (e *ETL) Close() error {
-	for _, src := range e.sources {
-		if err := src.Close(); err != nil {
-			return fmt.Errorf("error closing source: %v", err)
-		}
-	}
-	for _, loader := range e.loaders {
-		if err := loader.Close(); err != nil {
-			return fmt.Errorf("error closing loader: %v", err)
-		}
-	}
-	return nil
-}
-
-func applyMappers(ctx context.Context, mappers []contract.Mapper, rec utils.Record, workerID int) (utils.Record, error) {
-	for _, mapper := range mappers {
-		var err error
-		rec, err = mapper.Map(ctx, rec)
-		if err != nil {
-			log.Printf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
-			return nil, err
-		}
-	}
-	return rec, nil
-}
-
-func applyTransformers(ctx context.Context, transformers []contract.Transformer, rec utils.Record, workerID int) ([]utils.Record, error) {
-	records := []utils.Record{rec}
-	for _, transformer := range transformers {
-		var nextRecords []utils.Record
-		for _, r := range records {
-			if mt, ok := transformer.(contract.MultiTransformer); ok {
-				recs, err := mt.TransformMany(ctx, r)
-				if err != nil {
-					log.Printf("[Worker %d] MultiTransformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, recs...)
-			} else {
-				r2, err := transformer.Transform(ctx, r)
-				if err != nil {
-					log.Printf("[Worker %d] Transformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, r2)
-			}
-		}
-		records = nextRecords
-	}
-	return records, nil
-}
-
-type FileLoader struct {
-	fileName        string
-	extension       string
-	appendMode      bool
-	file            *os.File
-	bufWriter       *bufio.Writer
-	csvWriter       *csv.Writer
-	jsonFirstRecord bool
-	csvHeader       []string
-	headerWritten   bool
-}
-
-func NewFileLoader(fileName string, appendMode bool) *FileLoader {
-	extension := strings.TrimPrefix(filepath.Ext(fileName), ".")
-	return &FileLoader{
-		fileName:        fileName,
-		extension:       extension,
-		appendMode:      appendMode,
-		jsonFirstRecord: true,
-	}
-}
-
-func (fl *FileLoader) Setup(_ context.Context) error {
-	switch fl.extension {
-	case "json":
-		if fl.appendMode {
-			f, err := os.OpenFile(fl.fileName, os.O_RDWR|os.O_CREATE, 0644)
-			if err != nil {
-				return fmt.Errorf("open file in append mode: %w", err)
-			}
-			fl.file = f
-			info, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat file: %w", err)
-			}
-			if info.Size() == 0 {
-				if _, err := f.WriteString("[\n"); err != nil {
-					return fmt.Errorf("failed to write JSON array start: %w", err)
-				}
-				fl.jsonFirstRecord = true
-			} else {
-				if _, err := f.Seek(-2, io.SeekEnd); err != nil {
-					return fmt.Errorf("failed to seek in file: %w", err)
-				}
-				buf := make([]byte, 2)
-				if _, err := f.Read(buf); err != nil {
-					return fmt.Errorf("failed to read trailing bytes: %w", err)
-				}
-				trimSize := int64(2)
-				if buf[1] == '\n' {
-					trimSize = 3
-				}
-				if err := f.Truncate(info.Size() - trimSize); err != nil {
-					return fmt.Errorf("failed to truncate file: %w", err)
-				}
-				if _, err := f.Seek(0, io.SeekEnd); err != nil {
-					return fmt.Errorf("failed to seek to end: %w", err)
-				}
-				if info.Size()-trimSize > int64(len("[\n")) {
-					fl.jsonFirstRecord = false
-				} else {
-					fl.jsonFirstRecord = true
-				}
-			}
-			fl.bufWriter = bufio.NewWriter(fl.file)
-		} else {
-			f, err := os.Create(fl.fileName)
-			if err != nil {
-				return fmt.Errorf("create file: %w", err)
-			}
-			fl.file = f
-			fl.bufWriter = bufio.NewWriter(f)
-			if _, err := fl.bufWriter.WriteString("[\n"); err != nil {
-				return fmt.Errorf("failed to write JSON array start: %w", err)
-			}
-			fl.jsonFirstRecord = true
-		}
-	case "csv":
-		var f *os.File
-		var err error
-		if fl.appendMode {
-			f, err = os.OpenFile(fl.fileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-			if err != nil {
-				return fmt.Errorf("open CSV file in append mode: %w", err)
-			}
-			info, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat CSV file: %w", err)
-			}
-			if info.Size() > 0 {
-				fl.headerWritten = true
-			}
-		} else {
-			f, err = os.Create(fl.fileName)
-			if err != nil {
-				return fmt.Errorf("create CSV file: %w", err)
-			}
-		}
-		fl.file = f
-		fl.bufWriter = bufio.NewWriter(f)
-		fl.csvWriter = csv.NewWriter(fl.bufWriter)
-	default:
-		return fmt.Errorf("unsupported file extension: %s", fl.extension)
-	}
-	return nil
-}
-
-func (fl *FileLoader) LoadBatch(_ context.Context, records []utils.Record) error {
-	switch fl.extension {
-	case "json":
-		for _, rec := range records {
-			if !fl.jsonFirstRecord {
-				if _, err := fl.bufWriter.WriteString(",\n"); err != nil {
-					return fmt.Errorf("failed to write comma: %w", err)
-				}
-			}
-			data, err := json.Marshal(rec)
-			if err != nil {
-				return fmt.Errorf("failed to marshal JSON record: %w", err)
-			}
-			if _, err := fl.bufWriter.WriteString("\t" + string(data)); err != nil {
-				return fmt.Errorf("failed to write JSON record: %w", err)
-			}
-			fl.jsonFirstRecord = false
-		}
-	case "csv":
-		if len(records) > 0 {
-			fl.csvHeader = fileutil.ExtractCSVHeader(records[0])
-		}
-		if !fl.headerWritten && len(records) > 0 {
-			if err := fl.csvWriter.Write(fl.csvHeader); err != nil {
-				return fmt.Errorf("failed to write CSV header: %w", err)
-			}
-			fl.headerWritten = true
-		}
-		for _, rec := range records {
-			row, err := fileutil.BuildCSVRow(fl.csvHeader, rec)
-			if err != nil {
-				return fmt.Errorf("failed to build CSV row: %w", err)
-			}
-			if err := fl.csvWriter.Write(row); err != nil {
-				return fmt.Errorf("failed to write CSV row: %w", err)
-			}
-		}
-		fl.csvWriter.Flush()
-		if err := fl.csvWriter.Error(); err != nil {
-			return fmt.Errorf("csv writer flush error: %w", err)
-		}
-	default:
-		return fmt.Errorf("unsupported file extension: %s", fl.extension)
-	}
-	return fl.bufWriter.Flush()
-}
-
-func (fl *FileLoader) Close() error {
-	if fl.extension == "json" {
-		if _, err := fl.bufWriter.WriteString("\n]\n"); err != nil {
-			return fmt.Errorf("failed to write JSON array close: %w", err)
-		}
-	}
-	if fl.bufWriter != nil {
-		if err := fl.bufWriter.Flush(); err != nil {
-			return err
-		}
-	}
-	if fl.file != nil {
-		return fl.file.Close()
-	}
-	return nil
-}
-
-type SQLLoader struct {
-	db             *sql.DB
-	table          string
-	truncate       bool
-	updateSequence bool
-	destType       string
-	update         bool
-	delete         bool
-	query          string
-	autoCreate     bool
-	created        bool
-}
-
-func NewSQLLoader(db *sql.DB, destType string, cfg config.TableMapping) *SQLLoader {
-	autoCreate := false
-	if !cfg.KeyValueTable && cfg.AutoCreateTable {
-		autoCreate = true
-	}
-	return &SQLLoader{
-		db:             db,
-		destType:       destType,
-		table:          cfg.NewName,
-		truncate:       cfg.TruncateDestination,
-		updateSequence: cfg.UpdateSequence,
-		update:         cfg.Update,
-		delete:         cfg.Delete,
-		query:          cfg.Query,
-		autoCreate:     autoCreate,
-		created:        false,
-	}
-}
-
-func (l *SQLLoader) Setup(ctx context.Context) error {
-	if l.truncate {
-		_, err := l.db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", l.table))
-		if err != nil {
-			log.Printf("Truncate error for table %s: %v", l.table, err)
-		}
-	}
-	return nil
-}
-
-func (l *SQLLoader) LoadBatch(ctx context.Context, batch []utils.Record) error {
-	if l.update {
-		for _, rec := range batch {
-			var q string
-			var args []any
-			if l.query != "" {
-				q = l.query
-			} else {
-				q, args = sqlutil.BuildUpdateStatement(l.table, rec)
-			}
-			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if l.delete {
-		for _, rec := range batch {
-			var q string
-			var args []any
-			if l.query != "" {
-				q = l.query
-			} else {
-				q, args = sqlutil.BuildDeleteStatement(l.table, rec)
-			}
-			if _, err := l.db.ExecContext(ctx, q, args...); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if len(batch) == 0 {
-		return nil
-	}
-	if l.autoCreate && !l.created {
-		if err := sqlutil.CreateTableFromRecord(l.db, l.table, batch[0]); err != nil {
-			return err
-		}
-		l.created = true
-	}
-	var keys []string
-	for k := range batch[0] {
-		keys = append(keys, k)
-	}
-	var placeholders []string
-	var args []any
-	argCounter := 1
-	for _, rec := range batch {
-		var valPlaceholders []string
-		for _, k := range keys {
-			valPlaceholders = append(valPlaceholders, fmt.Sprintf("$%d", argCounter))
-			args = append(args, rec[k])
-			argCounter++
-		}
-		placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(valPlaceholders, ", ")))
-	}
-	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
-		l.table,
-		strings.Join(keys, ", "),
-		strings.Join(placeholders, ", "),
-	)
-	_, err := l.db.ExecContext(ctx, q, args...)
-	return err
-}
-
-func (l *SQLLoader) Close() error {
-	if l.destType == "postgresql" && l.updateSequence {
-		return sqlutil.UpdateSequence(l.db, l.table)
-	}
-	return nil
-}
-
-type FieldMapper struct {
-	mapping map[string]string
-}
-
-func NewFieldMapper(mapping map[string]string) *FieldMapper {
-	return &FieldMapper{mapping: mapping}
-}
-
-func (fm *FieldMapper) Name() string {
-	return "FieldMapper"
-}
-
-func (fm *FieldMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	newRec := make(utils.Record)
-	for destField, expr := range fm.mapping {
-		_, val := utils.GetValue(ctx, expr, rec)
-		newRec[destField] = val
-	}
-	return newRec, nil
-}
-
-type LowercaseMapper struct{}
-
-func (lm *LowercaseMapper) Name() string {
-	return "LowercaseMapper"
-}
-
-func (lm *LowercaseMapper) Map(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	newRec := make(utils.Record)
-	for k, v := range rec {
-		newRec[strings.ToLower(k)] = v
-	}
-	return newRec, nil
-}
-
-type KeyValueTransformer struct {
-	ExtraValues   map[string]any
-	IncludeFields []string
-	ExcludeFields []string
-	KeyField      string
-	ValueField    string
-}
-
-func (kt *KeyValueTransformer) Name() string {
-	return "KeyValueTransformer"
-}
-
-func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
-	recs, err := kt.TransformMany(ctx, rec)
-	if err != nil {
-		return nil, err
-	}
-	if len(recs) > 0 {
-		return recs[0], nil
-	}
-	return nil, fmt.Errorf("no output from KeyValueTransformer")
-}
-
-func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
-	base := make(map[string]any)
-	for newField, srcFieldRaw := range kt.ExtraValues {
-		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
-		if val, ok := rec[srcField]; ok {
-			base[newField] = val
-		}
-	}
-	ignore := make(map[string]struct{})
-	for _, v := range kt.ExtraValues {
-		ignore[strings.ToLower(fmt.Sprintf("%v", v))] = struct{}{}
-	}
-	for _, f := range kt.IncludeFields {
-		ignore[strings.ToLower(f)] = struct{}{}
-	}
-	for _, f := range kt.ExcludeFields {
-		ignore[strings.ToLower(f)] = struct{}{}
-	}
-	var candidates []string
-	for k := range rec {
-		kl := strings.ToLower(k)
-		if _, found := ignore[kl]; !found {
-			candidates = append(candidates, kl)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no candidate fields found for key-value conversion")
-	}
-	var out []utils.Record
-	for _, cand := range candidates {
-		newRec := make(utils.Record)
-		for k, v := range base {
-			newRec[k] = v
-		}
-		newRec[kt.KeyField] = cand
-		if val, ok := rec[cand]; ok {
-			newRec[kt.ValueField] = val
-			newRec["value_type"] = utils.GetDataType(val)
-		}
-		out = append(out, newRec)
-	}
-	return out, nil
-}
-
-type FileSource struct {
-	Filename string
-}
-
-func (fs *FileSource) Close() error {
-	return nil
-}
-
-func (fs *FileSource) Setup(_ context.Context) error {
-	return nil
-}
-
-func NewFileSource(filename string) *FileSource {
-	return &FileSource{Filename: filename}
-}
-
-func (fs *FileSource) Extract(_ context.Context) (<-chan utils.Record, error) {
-	out := make(chan utils.Record)
-	go func() {
-		defer close(out)
-		_, err := fileutil.ProcessFile(fs.Filename, func(record utils.Record) {
-			out <- record
-		})
-		if err != nil {
-			log.Printf("File extraction error: %v", err)
-		}
-	}()
-	return out, nil
-}
-
-type SQLSource struct {
-	db    *sql.DB
-	table string
-	query string
-}
-
-func NewSQLSource(db *sql.DB, table, query string) *SQLSource {
-	return &SQLSource{db: db, table: table, query: query}
-}
-
-func (s *SQLSource) Setup(ctx context.Context) error {
-	return nil
-}
-
-func (s *SQLSource) Extract(ctx context.Context) (<-chan utils.Record, error) {
-	out := make(chan utils.Record, 100)
-	go func() {
-		defer close(out)
-		var q string
-		if s.query != "" {
-			q = s.query
-		} else {
-			q = fmt.Sprintf("SELECT * FROM %s", s.table)
-		}
-		rows, err := s.db.QueryContext(ctx, q)
-		if err != nil {
-			log.Printf("SQL query error: %v", err)
-			return
-		}
-		defer rows.Close()
-		cols, err := rows.Columns()
-		if err != nil {
-			log.Printf("Error getting columns: %v", err)
-			return
-		}
-		for rows.Next() {
-			columns := make([]any, len(cols))
-			columnPointers := make([]any, len(cols))
-			for i := range columns {
-				columnPointers[i] = &columns[i]
-			}
-			if err := rows.Scan(columnPointers...); err != nil {
-				log.Printf("Scan error: %v", err)
-				continue
-			}
-			rec := make(utils.Record)
-			for i, colName := range cols {
-				rec[colName] = columns[i]
-			}
-			out <- rec
-		}
-	}()
-	return out, nil
-}
-
-func (s *SQLSource) Close() error {
-	return nil
-}
-
-func RunETLWithConfig(cfg *config.Config) {
+func Run(cfg *config.Config) {
 	var sourceDB *sql.DB
 	var destDB *sql.DB
 	var err error
@@ -872,4 +142,253 @@ func RunETLWithConfig(cfg *config.Config) {
 		log.Printf("Migration for %s complete", tableCfg.OldName)
 	}
 	log.Println("All migrations complete.")
+}
+
+type ETL struct {
+	sources         []contract.Source
+	mappers         []contract.Mapper
+	validators      []contract.Validator
+	transformers    []contract.Transformer
+	loaders         []contract.Loader
+	workerCount     int
+	batchSize       int
+	retryCount      int
+	retryDelay      time.Duration
+	loaderWorkers   int
+	rawChanBuffer   int
+	checkpointStore contract.CheckpointStore
+	checkpointFunc  func(rec utils.Record) string
+	lastCheckpoint  string
+	cpMutex         sync.Mutex
+	maxErrorCount   int
+	errorCount      int
+	errorLock       sync.Mutex
+	circuitBreaker  *resilience.CircuitBreaker
+	cancelFunc      context.CancelFunc
+	lookupStore     map[string][]map[string]string
+	lookupInCache   sync.Map
+}
+
+func defaultConfig() *ETL {
+	return &ETL{
+		workerCount:    4,
+		batchSize:      100,
+		retryCount:     3,
+		retryDelay:     100 * time.Millisecond,
+		loaderWorkers:  2,
+		rawChanBuffer:  100,
+		maxErrorCount:  10,
+		lookupStore:    make(map[string][]map[string]string),
+		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
+	}
+}
+
+func NewETL(opts ...Option) *ETL {
+	e := defaultConfig()
+	for _, opt := range opts {
+		if err := opt(e); err != nil {
+			log.Printf("Error applying option: %v", err)
+		}
+	}
+	return e
+}
+
+func (e *ETL) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	e.cancelFunc = cancel
+	defer cancel()
+
+	if e.checkpointStore != nil {
+		if cp, err := e.checkpointStore.GetCheckpoint(ctx); err != nil {
+			log.Printf("Error retrieving checkpoint: %v", err)
+		} else {
+			e.lastCheckpoint = cp
+			log.Printf("Resuming from checkpoint: %s", e.lastCheckpoint)
+		}
+	}
+	rawChan := make(chan utils.Record, e.rawChanBuffer)
+	var srcWG sync.WaitGroup
+	for _, s := range e.sources {
+		if err := s.Setup(ctx); err != nil {
+			e.incrementError()
+			return fmt.Errorf("source setup error: %v", err)
+		}
+		srcWG.Add(1)
+		go func(src contract.Source) {
+			defer srcWG.Done()
+			ch, err := src.Extract(ctx)
+			if err != nil {
+				e.incrementError()
+				log.Printf("Source extraction error: %v", err)
+				return
+			}
+			for rec := range ch {
+				rawChan <- rec
+			}
+		}(s)
+	}
+	go func() {
+		srcWG.Wait()
+		close(rawChan)
+	}()
+	processedChan := make(chan utils.Record, e.workerCount*2)
+	var procWG sync.WaitGroup
+	for i := 0; i < e.workerCount; i++ {
+		procWG.Add(1)
+		go func(workerID int) {
+			defer procWG.Done()
+			for raw := range rawChan {
+				rec, err := e.applyMappers(ctx, raw, workerID)
+				if err != nil {
+					e.incrementError()
+					continue
+				}
+				if rec == nil {
+					continue
+				}
+				outRecords, err := e.applyTransformers(ctx, rec, workerID)
+				if err != nil {
+					e.incrementError()
+					continue
+				}
+				for _, r := range outRecords {
+					processedChan <- r
+				}
+			}
+		}(i)
+	}
+	go func() {
+		procWG.Wait()
+		close(processedChan)
+	}()
+	batchChan := make(chan []utils.Record, e.loaderWorkers)
+	var batchWG sync.WaitGroup
+	batchWG.Add(1)
+	go func() {
+		defer batchWG.Done()
+		batch := make([]utils.Record, 0, e.batchSize)
+		for rec := range processedChan {
+			batch = append(batch, rec)
+			if len(batch) >= e.batchSize {
+				batchChan <- batch
+				batch = make([]utils.Record, 0, e.batchSize)
+			}
+		}
+		if len(batch) > 0 {
+			batchChan <- batch
+		}
+		close(batchChan)
+	}()
+	var loaderWG sync.WaitGroup
+	for i := 0; i < e.loaderWorkers; i++ {
+		loaderWG.Add(1)
+		go func(workerID int) {
+			defer loaderWG.Done()
+			for batch := range batchChan {
+				for _, loader := range e.loaders {
+					if err := loader.Setup(ctx); err != nil {
+						e.incrementError()
+						log.Printf("[Loader Worker %d] Loader setup error: %v", workerID, err)
+						continue
+					}
+
+					if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+						if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Table, batch[0]); err != nil {
+							e.incrementError()
+							log.Printf("[Loader Worker %d] Error auto-creating table: %v", workerID, err)
+							continue
+						}
+						sqlLoader.Created = true
+					}
+					if err := resilience.RetryWithCircuit(e.retryCount, e.retryDelay, e.circuitBreaker, func() error {
+						return loader.LoadBatch(ctx, batch)
+					}); err != nil {
+						e.incrementError()
+						log.Printf("[Loader Worker %d] Error loading batch: %v", workerID, err)
+						continue
+					}
+					if e.checkpointStore != nil && e.checkpointFunc != nil {
+						cp := e.checkpointFunc(batch[len(batch)-1])
+						e.cpMutex.Lock()
+						if cp > e.lastCheckpoint {
+							if err := e.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
+								e.incrementError()
+								log.Printf("[Loader Worker %d] Error saving checkpoint: %v", workerID, err)
+							} else {
+								e.lastCheckpoint = cp
+							}
+						}
+						e.cpMutex.Unlock()
+					}
+				}
+			}
+		}(i)
+	}
+	batchWG.Wait()
+	loaderWG.Wait()
+	return nil
+}
+
+func (e *ETL) Close() error {
+	for _, src := range e.sources {
+		if err := src.Close(); err != nil {
+			return fmt.Errorf("error closing source: %v", err)
+		}
+	}
+	for _, loader := range e.loaders {
+		if err := loader.Close(); err != nil {
+			return fmt.Errorf("error closing loader: %v", err)
+		}
+	}
+	return nil
+}
+
+func (e *ETL) applyMappers(ctx context.Context, rec utils.Record, workerID int) (utils.Record, error) {
+	for _, mapper := range e.mappers {
+		var err error
+		rec, err = mapper.Map(ctx, rec)
+		if err != nil {
+			log.Printf("[Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
+			return nil, err
+		}
+	}
+	return rec, nil
+}
+
+func (e *ETL) applyTransformers(ctx context.Context, rec utils.Record, workerID int) ([]utils.Record, error) {
+	records := []utils.Record{rec}
+	for _, transformer := range e.transformers {
+		var nextRecords []utils.Record
+		for _, r := range records {
+			if mt, ok := transformer.(contract.MultiTransformer); ok {
+				recs, err := mt.TransformMany(ctx, r)
+				if err != nil {
+					log.Printf("[Worker %d] MultiTransformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, recs...)
+			} else {
+				r2, err := transformer.Transform(ctx, r)
+				if err != nil {
+					log.Printf("[Worker %d] Transformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, r2)
+			}
+		}
+		records = nextRecords
+	}
+	return records, nil
+}
+
+func (e *ETL) incrementError() {
+	e.errorLock.Lock()
+	defer e.errorLock.Unlock()
+	e.errorCount++
+	if e.errorCount >= e.maxErrorCount {
+		log.Println("Max error count reached, cancelling ETL process")
+		if e.cancelFunc != nil {
+			e.cancelFunc()
+		}
+	}
 }
