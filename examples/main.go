@@ -3,15 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/oarkflow/etl/sql"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go \"<SQL query string>\"")
-		os.Exit(1)
+	data, err := os.ReadFile("query.sql")
+	if err != nil {
+		panic(err)
 	}
-	queryStr := os.Args[1]
+	queryStr := string(data)
+	start := time.Now()
 	fmt.Println(sql.Query(queryStr))
+	fmt.Println(fmt.Sprintf("Latency %s", time.Since(start)))
 }
