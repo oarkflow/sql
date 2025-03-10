@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/pkg/utils"
 )
 
 func Query(query string) ([]utils.Record, error) {

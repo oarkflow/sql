@@ -14,11 +14,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/oarkflow/etl/config"
-	"github.com/oarkflow/etl/contract"
-	"github.com/oarkflow/etl/utils"
-	"github.com/oarkflow/etl/utils/fileutil"
-	"github.com/oarkflow/etl/utils/sqlutil"
+	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/etl/pkg/contract"
+	"github.com/oarkflow/etl/pkg/utils"
+	fileutil2 "github.com/oarkflow/etl/pkg/utils/fileutil"
+	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
 func NewLookupLoader(lkup config.DataConfig) (contract.LookupLoader, error) {
@@ -168,7 +168,7 @@ func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) err
 		}
 	case "csv":
 		if len(records) > 0 {
-			fl.csvHeader = fileutil.ExtractCSVHeader(records[0])
+			fl.csvHeader = fileutil2.ExtractCSVHeader(records[0])
 		}
 		if !fl.headerWritten && len(records) > 0 {
 			if err := fl.csvWriter.Write(fl.csvHeader); err != nil {
@@ -177,7 +177,7 @@ func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) err
 			fl.headerWritten = true
 		}
 		for _, rec := range records {
-			row, err := fileutil.BuildCSVRow(fl.csvHeader, rec)
+			row, err := fileutil2.BuildCSVRow(fl.csvHeader, rec)
 			if err != nil {
 				return fmt.Errorf("failed to build CSV row: %w", err)
 			}
@@ -228,7 +228,7 @@ func (fl *FileAdapter) Extract(_ context.Context) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)
-		_, err := fileutil.ProcessFile(fl.Filename, func(record utils.Record) {
+		_, err := fileutil2.ProcessFile(fl.Filename, func(record utils.Record) {
 			out <- record
 		})
 		if err != nil {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oarkflow/etl/utils/sqlutil"
+	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
 func main() {

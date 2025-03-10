@@ -10,8 +10,8 @@ import (
 
 	"github.com/oarkflow/convert"
 
-	"github.com/oarkflow/etl/utils"
-	"github.com/oarkflow/etl/utils/fileutil"
+	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/etl/pkg/utils/fileutil"
 )
 
 func (tr *TableReference) loadData() ([]utils.Record, error) {

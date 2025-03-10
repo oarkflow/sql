@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oarkflow/etl/adapters"
-	"github.com/oarkflow/etl/config"
-	"github.com/oarkflow/etl/contract"
-	"github.com/oarkflow/etl/transformers"
-	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/etl/pkg/contract"
+	"github.com/oarkflow/etl/pkg/transformers"
+	utils2 "github.com/oarkflow/etl/pkg/utils"
 )
 
 type Option func(*ETL) error
@@ -30,7 +30,7 @@ func WithPipelineConfig(pc *PipelineConfig) Option {
 
 func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) (contract.Source, error) {
 	var src contract.Source
-	if utils.IsSQLType(sourceType) {
+	if utils2.IsSQLType(sourceType) {
 		if sourceDB == nil {
 			return nil, fmt.Errorf("source database is nil")
 		}
@@ -70,7 +70,7 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contract.Loader
-		if utils.IsSQLType(dest.Type) {
+		if utils2.IsSQLType(dest.Type) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
@@ -137,7 +137,7 @@ func WithRawChanBuffer(buffer int) Option {
 	}
 }
 
-func WithCheckpoint(store contract.CheckpointStore, cpFunc func(rec utils.Record) string) Option {
+func WithCheckpoint(store contract.CheckpointStore, cpFunc func(rec utils2.Record) string) Option {
 	return func(e *ETL) error {
 		e.checkpointStore = store
 		e.checkpointFunc = cpFunc

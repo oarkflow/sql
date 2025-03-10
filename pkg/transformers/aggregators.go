@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/pkg/utils"
 )
 
 // AggregationDefinition defines one aggregation on a source field.

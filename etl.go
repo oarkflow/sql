@@ -15,22 +15,22 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oarkflow/expr"
 
-	"github.com/oarkflow/etl/adapters"
-	"github.com/oarkflow/etl/checkpoint"
-	"github.com/oarkflow/etl/config"
-	"github.com/oarkflow/etl/contract"
-	"github.com/oarkflow/etl/mappers"
-	"github.com/oarkflow/etl/resilience"
-	"github.com/oarkflow/etl/transactions"
-	"github.com/oarkflow/etl/transformers"
-	"github.com/oarkflow/etl/utils"
-	"github.com/oarkflow/etl/utils/sqlutil"
+	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/checkpoint"
+	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/etl/pkg/contract"
+	"github.com/oarkflow/etl/pkg/mappers"
+	"github.com/oarkflow/etl/pkg/resilience"
+	"github.com/oarkflow/etl/pkg/transactions"
+	"github.com/oarkflow/etl/pkg/transformers"
+	utils2 "github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
 func Run(cfg *config.Config) {
 	var destDB *sql.DB
 	var err error
-	if utils.IsSQLType(cfg.Destination.Type) {
+	if utils2.IsSQLType(cfg.Destination.Type) {
 		destDB, err = config.OpenDB(cfg.Destination)
 		if err != nil {
 			log.Fatalf("Error connecting to destination DB: %v", err)
@@ -51,7 +51,7 @@ func Run(cfg *config.Config) {
 	var sourceFile string
 	var sources []contract.Source
 	var sourcesToMigrate []string
-	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
+	if len(cfg.Sources) == 0 && !utils2.IsEmpty(cfg.Source) {
 		cfg.Sources = append(cfg.Sources, cfg.Source)
 	}
 	for _, sourceCfg := range cfg.Sources {
@@ -72,7 +72,7 @@ func Run(cfg *config.Config) {
 			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
 		}
 		var sourceDB *sql.DB
-		if utils.IsSQLType(sourceCfg.Type) {
+		if utils2.IsSQLType(sourceCfg.Type) {
 			sourceDB, err = config.OpenDB(sourceCfg)
 			if err != nil {
 				log.Fatalf("Error connecting to source DB: %v", err)
@@ -85,7 +85,7 @@ func Run(cfg *config.Config) {
 		sources = append(sources, src)
 	}
 	for _, tableCfg := range cfg.Tables {
-		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+		if utils2.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
 		}
 		if tableCfg.OldName == "" && sourceFile != "" {
@@ -95,7 +95,7 @@ func Run(cfg *config.Config) {
 			tableCfg.NewName = cfg.Destination.File
 		}
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+		if utils2.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
 			if err := sqlutil.CreateKeyValueTable(
 				destDB, tableCfg.NewName,
 				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
@@ -106,7 +106,7 @@ func Run(cfg *config.Config) {
 		opts := []Option{
 			WithSources(sources...),
 			WithDestination(cfg.Destination, destDB, tableCfg),
-			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
+			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils2.Record) string {
 				name, _ := rec["name"].(string)
 				return name
 			}),
@@ -181,8 +181,8 @@ type SourceNode struct {
 	rawChanBuffer int
 }
 
-func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record) (<-chan utils.Record, error) {
-	out := make(chan utils.Record, sn.rawChanBuffer)
+func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils2.Record) (<-chan utils2.Record, error) {
+	out := make(chan utils2.Record, sn.rawChanBuffer)
 	var wg sync.WaitGroup
 	for _, src := range sn.sources {
 		if err := src.Setup(ctx); err != nil {
@@ -218,8 +218,8 @@ type NormalizeNode struct {
 	workerCount int
 }
 
-func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
-	out := make(chan utils.Record, nn.workerCount*2)
+func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils2.Record) (<-chan utils2.Record, error) {
+	out := make(chan utils2.Record, nn.workerCount*2)
 	var wg sync.WaitGroup
 	var totalNormalized int64
 	startTime := time.Now()
@@ -234,7 +234,7 @@ func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record) (<
 					localCount++
 					continue
 				}
-				nRec, err := utils.NormalizeRecord(rec, nn.schema)
+				nRec, err := utils2.NormalizeRecord(rec, nn.schema)
 				if err != nil {
 					log.Printf("[Normalize Worker %d] Error: %v", workerID, err)
 					continue
@@ -260,8 +260,8 @@ type MapNode struct {
 	workerCount int
 }
 
-func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
-	out := make(chan utils.Record, mn.workerCount*2)
+func (mn *MapNode) Process(ctx context.Context, in <-chan utils2.Record) (<-chan utils2.Record, error) {
+	out := make(chan utils2.Record, mn.workerCount*2)
 	var wg sync.WaitGroup
 	var totalMapped int64
 	startTime := time.Now()
@@ -299,8 +299,8 @@ type TransformNode struct {
 	workerCount  int
 }
 
-func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
-	out := make(chan utils.Record, tn.workerCount*2)
+func (tn *TransformNode) Process(ctx context.Context, in <-chan utils2.Record) (<-chan utils2.Record, error) {
+	out := make(chan utils2.Record, tn.workerCount*2)
 	var wg sync.WaitGroup
 	var totalTransformed int64
 	startTime := time.Now()
@@ -355,23 +355,23 @@ type LoaderNode struct {
 	retryDelay      time.Duration
 	circuitBreaker  *resilience.CircuitBreaker
 	checkpointStore contract.CheckpointStore
-	checkpointFunc  func(rec utils.Record) string
+	checkpointFunc  func(rec utils2.Record) string
 	cpMutex         *sync.Mutex
 	lastCheckpoint  string
 }
 
-func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error) {
-	done := make(chan utils.Record)
-	batchChan := make(chan []utils.Record, ln.workerCount)
+func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils2.Record) (<-chan utils2.Record, error) {
+	done := make(chan utils2.Record)
+	batchChan := make(chan []utils2.Record, ln.workerCount)
 	startTime := time.Now()
 	var totalLoaded int64
 	go func() {
-		batch := make([]utils.Record, 0, ln.batchSize)
+		batch := make([]utils2.Record, 0, ln.batchSize)
 		for rec := range in {
 			batch = append(batch, rec)
 			if len(batch) >= ln.batchSize {
 				batchChan <- batch
-				batch = make([]utils.Record, 0, ln.batchSize)
+				batch = make([]utils2.Record, 0, ln.batchSize)
 			}
 		}
 		if len(batch) > 0 {
@@ -452,7 +452,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record) (<-ch
 	return done, nil
 }
 
-func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapper, workerID int) (utils.Record, error) {
+func applyMappers(ctx context.Context, rec utils2.Record, mappers []contract.Mapper, workerID int) (utils2.Record, error) {
 	for _, mapper := range mappers {
 		var err error
 		rec, err = mapper.Map(ctx, rec)
@@ -464,10 +464,10 @@ func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapp
 	return rec, nil
 }
 
-func applyTransformers(ctx context.Context, rec utils.Record, transformers []contract.Transformer, workerID int) ([]utils.Record, error) {
-	records := []utils.Record{rec}
+func applyTransformers(ctx context.Context, rec utils2.Record, transformers []contract.Transformer, workerID int) ([]utils2.Record, error) {
+	records := []utils2.Record{rec}
 	for _, transformer := range transformers {
-		var nextRecords []utils.Record
+		var nextRecords []utils2.Record
 		if mt, ok := transformer.(contract.MultiTransformer); ok {
 			for _, r := range records {
 				recs, err := mt.TransformMany(ctx, r)
@@ -492,10 +492,10 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 	return records, nil
 }
 
-func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
+func mergeChannels(channels []<-chan utils2.Record) <-chan utils2.Record {
 	var wg sync.WaitGroup
-	out := make(chan utils.Record)
-	output := func(c <-chan utils.Record) {
+	out := make(chan utils2.Record)
+	output := func(c <-chan utils2.Record) {
 		for rec := range c {
 			out <- rec
 		}
@@ -515,8 +515,8 @@ func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
 type dagNode struct {
 	id       string
 	pn       contract.Node
-	inChs    []<-chan utils.Record
-	outCh    <-chan utils.Record
+	inChs    []<-chan utils2.Record
+	outCh    <-chan utils2.Record
 	indegree int
 }
 
@@ -553,7 +553,7 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
 		currentID := queue[0]
 		queue = queue[1:]
 		currentNode := nodes[currentID]
-		var input <-chan utils.Record
+		var input <-chan utils2.Record
 		if len(currentNode.inChs) == 0 {
 			input = nil
 		} else if len(currentNode.inChs) == 1 {
@@ -640,7 +640,7 @@ type ETL struct {
 	retryDelay      time.Duration
 	rawChanBuffer   int
 	checkpointStore contract.CheckpointStore
-	checkpointFunc  func(rec utils.Record) string
+	checkpointFunc  func(rec utils2.Record) string
 	lastCheckpoint  string
 	cpMutex         sync.Mutex
 	maxErrorCount   int
@@ -648,7 +648,7 @@ type ETL struct {
 	errorLock       sync.Mutex
 	circuitBreaker  *resilience.CircuitBreaker
 	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]utils.Record
+	lookupStore     map[string][]utils2.Record
 	lookupInCache   sync.Map
 	pipelineConfig  *PipelineConfig
 	normalizeSchema map[string]string
@@ -663,7 +663,7 @@ func defaultConfig() *ETL {
 		loaderWorkers:  2,
 		rawChanBuffer:  100,
 		maxErrorCount:  10,
-		lookupStore:    make(map[string][]utils.Record),
+		lookupStore:    make(map[string][]utils2.Record),
 		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
 	}
 }

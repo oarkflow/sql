@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oarkflow/etl/utils"
+	utils2 "github.com/oarkflow/etl/pkg/utils"
 )
 
 type KeyValueTransformer struct {
@@ -30,7 +30,7 @@ func (kt *KeyValueTransformer) Name() string {
 	return "KeyValueTransformer"
 }
 
-func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
+func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils2.Record) (utils2.Record, error) {
 	recs, err := kt.TransformMany(ctx, rec)
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) 
 	return nil, fmt.Errorf("no output from KeyValueTransformer")
 }
 
-func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
+func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils2.Record) ([]utils2.Record, error) {
 	base := make(map[string]any)
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
@@ -69,16 +69,16 @@ func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Reco
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no candidate fields found for key-value conversion")
 	}
-	var out []utils.Record
+	var out []utils2.Record
 	for _, cand := range candidates {
-		newRec := make(utils.Record)
+		newRec := make(utils2.Record)
 		for k, v := range base {
 			newRec[k] = v
 		}
 		newRec[kt.KeyField] = cand
 		if val, ok := rec[cand]; ok {
 			newRec[kt.ValueField] = val
-			newRec["value_type"] = utils.GetDataType(val)
+			newRec["value_type"] = utils2.GetDataType(val)
 		}
 		out = append(out, newRec)
 	}

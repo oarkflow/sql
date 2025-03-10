@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/oarkflow/etl"
-	"github.com/oarkflow/etl/config"
+	"github.com/oarkflow/etl/pkg/config"
 )
 
 var currentConfig config.Config

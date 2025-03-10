@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/oarkflow/etl/transformers"
+	"github.com/oarkflow/etl/pkg/transformers"
 )
 
 type DataConfig struct {

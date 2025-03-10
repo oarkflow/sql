@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/oarkflow/etl/transactions"
+	"github.com/oarkflow/etl/pkg/transactions"
 )
 
 func main() {

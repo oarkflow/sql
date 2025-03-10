@@ -3,7 +3,7 @@ package contract
 import (
 	"context"
 
-	"github.com/oarkflow/etl/utils"
+	"github.com/oarkflow/etl/pkg/utils"
 )
 
 type Source interface {

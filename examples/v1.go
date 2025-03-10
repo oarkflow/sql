@@ -8,7 +8,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/oarkflow/etl"
-	"github.com/oarkflow/etl/config"
+	"github.com/oarkflow/etl/pkg/config"
 )
 
 func main() {
