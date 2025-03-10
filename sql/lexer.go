@@ -5,125 +5,11 @@ import (
 	"unicode"
 )
 
-type TokenType string
-
-func lookupKeyword(ident string) TokenType {
-	switch strings.ToUpper(ident) {
-	case "SELECT":
-		return SELECT
-	case "FROM":
-		return FROM
-	case "WHERE":
-		return WHERE
-	case "GROUP":
-		return GROUP
-	case "BY":
-		return BY
-	case "HAVING":
-		return HAVING
-	case "IN":
-		return IN
-	case "NOT":
-		return NOT
-	case "LIKE":
-		return LIKE
-	case "COUNT":
-		return COUNT
-	case "AVG":
-		return AVG
-	case "SUM":
-		return SUM
-	case "MIN":
-		return MIN
-	case "MAX":
-		return MAX
-	case "DIFF":
-		return DIFF
-	case "AS":
-		return AS
-	case "JOIN":
-		return JOIN
-	case "INNER":
-		return INNER
-	case "LEFT":
-		return LEFT
-	case "RIGHT":
-		return RIGHT
-	case "FULL":
-		return FULL
-	case "OUTER":
-		return OUTER
-	case "CROSS":
-		return CROSS
-	case "ON":
-		return ON
-	case "COALESCE":
-		return COALESCE
-	case "CONCAT":
-		return CONCAT
-	case "IF":
-		return IF
-	case "WHEN":
-		return WHEN
-	case "THEN":
-		return THEN
-	case "ELSE":
-		return ELSE
-	case "END":
-		return END
-	case "DISTINCT":
-		return DISTINCT
-	case "ORDER":
-		return ORDER
-	case "ASC":
-		return ASC
-	case "DESC":
-		return DESC
-	case "LIMIT":
-		return LIMIT
-	case "OFFSET":
-		return OFFSET
-	case "UNION":
-		return UNION
-	case "INTERSECT":
-		return INTERSECT
-	case "EXCEPT":
-		return EXCEPT
-	case "WITH":
-		return WITH
-	case "OVER":
-		return OVER
-	case "PARTITION":
-		return PARTITION
-	case "BETWEEN":
-		return BETWEEN
-	case "AND":
-		return AND
-	case "IS":
-		return IS
-	case "NULL":
-		return NULL
-	case "EXISTS":
-		return EXISTS
-	case "ANY":
-		return ANY
-	case "ALL":
-		return ALL
-	default:
-		return IDENT
-	}
-}
-
-type Token struct {
-	Type    TokenType
-	Literal string
-}
-
 type Lexer struct {
 	input        string
-	position     int
-	readPosition int
-	ch           byte
+	position     int  // current position in input (points to current char)
+	readPosition int  // current reading position in input (after current char)
+	ch           byte // current char under examination
 }
 
 func NewLexer(input string) *Lexer {
@@ -149,13 +35,64 @@ func (l *Lexer) peekChar() byte {
 	return l.input[l.readPosition]
 }
 
+// skipWhitespaceAndComments skips spaces, tabs, newlines, and comments.
+func (l *Lexer) skipWhitespaceAndComments() {
+	for {
+		// Skip whitespace
+		if l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
+			l.readChar()
+			continue
+		}
+		// Skip single-line comments starting with --
+		if l.ch == '-' && l.peekChar() == '-' {
+			l.skipLineComment()
+			continue
+		}
+		// Skip block comments starting with /*
+		if l.ch == '/' && l.peekChar() == '*' {
+			l.skipBlockComment()
+			continue
+		}
+		break
+	}
+}
+
+func (l *Lexer) skipLineComment() {
+	for l.ch != '\n' && l.ch != 0 {
+		l.readChar()
+	}
+}
+
+func (l *Lexer) skipBlockComment() {
+	// consume "/*"
+	l.readChar() // '/'
+	l.readChar() // '*'
+	for {
+		if l.ch == 0 {
+			break
+		}
+		if l.ch == '*' && l.peekChar() == '/' {
+			l.readChar()
+			l.readChar()
+			break
+		}
+		l.readChar()
+	}
+}
+
 func isIdentifierChar(ch byte) bool {
 	return unicode.IsLetter(rune(ch)) || unicode.IsDigit(rune(ch)) || ch == '_' || ch == '.'
 }
 
+func isDigit(ch byte) bool {
+	return '0' <= ch && ch <= '9'
+}
+
 func (l *Lexer) NextToken() Token {
+	l.skipWhitespaceAndComments()
+
 	var tok Token
-	l.skipWhitespace()
+
 	switch l.ch {
 	case '=':
 		tok = newToken(ASSIGN, l.ch)
@@ -163,7 +100,7 @@ func (l *Lexer) NextToken() Token {
 		if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
-			tok = Token{Type: NOT_EQ, Literal: string(ch) + string(l.ch)}
+			tok = Token{Type: NotEq, Literal: string(ch) + string(l.ch)}
 		} else {
 			tok = newToken(ILLEGAL, l.ch)
 		}
@@ -199,6 +136,8 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(LPAREN, l.ch)
 	case ')':
 		tok = newToken(RPAREN, l.ch)
+	case '?':
+		tok = newToken(PARAM, l.ch)
 	case '\'':
 		tok.Type = STRING
 		tok.Literal = l.readString()
@@ -212,8 +151,13 @@ func (l *Lexer) NextToken() Token {
 			tok.Literal = literal
 			return tok
 		} else if isDigit(l.ch) {
-			tok.Type = INT
-			tok.Literal = l.readNumber()
+			num := l.readNumber()
+			if strings.Contains(num, ".") || strings.ContainsAny(num, "eE") {
+				tok.Type = FLOAT
+			} else {
+				tok.Type = INT
+			}
+			tok.Literal = num
 			return tok
 		} else {
 			tok = newToken(ILLEGAL, l.ch)
@@ -227,16 +171,6 @@ func newToken(tokenType TokenType, ch byte) Token {
 	return Token{Type: tokenType, Literal: string(ch)}
 }
 
-func (l *Lexer) skipWhitespace() {
-	for l.ch == ' ' || l.ch == '\t' || l.ch == '\n' || l.ch == '\r' {
-		l.readChar()
-	}
-}
-
-func isDigit(ch byte) bool {
-	return '0' <= ch && ch <= '9'
-}
-
 func (l *Lexer) readIdentifier() string {
 	start := l.position
 	for isIdentifierChar(l.ch) {
@@ -247,17 +181,59 @@ func (l *Lexer) readIdentifier() string {
 
 func (l *Lexer) readNumber() string {
 	start := l.position
+	// Integer part
 	for isDigit(l.ch) {
 		l.readChar()
+	}
+	// Fractional part
+	if l.ch == '.' {
+		l.readChar()
+		for isDigit(l.ch) {
+			l.readChar()
+		}
+	}
+	// Exponent part
+	if l.ch == 'e' || l.ch == 'E' {
+		l.readChar()
+		if l.ch == '-' || l.ch == '+' {
+			l.readChar()
+		}
+		for isDigit(l.ch) {
+			l.readChar()
+		}
 	}
 	return l.input[start:l.position]
 }
 
 func (l *Lexer) readString() string {
+	var sb strings.Builder
+	// consume starting quote
 	l.readChar()
-	start := l.position
-	for l.ch != '\'' && l.ch != 0 {
+	for {
+		if l.ch == 0 {
+			break
+		}
+		if l.ch == '\'' {
+			break
+		}
+		if l.ch == '\\' {
+			l.readChar()
+			switch l.ch {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			case '\\':
+				sb.WriteByte('\\')
+			case '\'':
+				sb.WriteByte('\'')
+			default:
+				sb.WriteByte(l.ch)
+			}
+		} else {
+			sb.WriteByte(l.ch)
+		}
 		l.readChar()
 	}
-	return l.input[start:l.position]
+	return sb.String()
 }

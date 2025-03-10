@@ -6,6 +6,24 @@ import (
 	"strings"
 )
 
+var (
+	reserved    = []string{"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN", "ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WITH", "TRUE", "FALSE"}
+	precedences = map[TokenType]int{
+		PLUS:     10,
+		MINUS:    10,
+		ASTERISK: 20,
+		SLASH:    20,
+		ASSIGN:   5,
+		NotEq:    5,
+		LT:       5,
+		GT:       5,
+		LTE:      5,
+		GTE:      5,
+		BETWEEN:  5,
+		LPAREN:   30,
+	}
+)
+
 type WithClause struct {
 	CTEs []CTE
 }
@@ -190,7 +208,7 @@ func (p *Parser) parseSelectExpression() Expression {
 	if p.curToken.Type == ASTERISK {
 		return &Star{}
 	}
-	if p.curToken.Type == "CASE" {
+	if p.curToken.Type == CASE {
 		return p.parseCaseExpression()
 	}
 	expr := p.parseExpression(0)
@@ -211,6 +229,39 @@ func (p *Parser) parseSelectExpression() Expression {
 }
 
 func (p *Parser) parseTableReference() *TableReference {
+	// Support subqueries in FROM clause:
+	if p.curToken.Type == LPAREN {
+		// Look ahead: if next token is SELECT, parse subquery
+		if p.peekToken.Type == SELECT {
+			p.nextToken() // consume LPAREN
+			subStmt := p.ParseQueryStatement()
+			if !p.expectPeek(RPAREN) {
+				p.errors = append(p.errors, "Expected closing parenthesis for subquery")
+				return nil
+			}
+			tr := &TableReference{Subquery: subStmt.Query}
+			// Check for alias
+			if p.peekToken.Type == AS {
+				p.nextToken()
+				p.nextToken()
+				if p.curToken.Type == IDENT {
+					tr.Alias = p.curToken.Literal
+				}
+			} else if p.peekToken.Type == IDENT {
+				alias := p.peekToken.Literal
+				if !isReservedAlias(alias) {
+					p.nextToken()
+					tr.Alias = p.curToken.Literal
+				}
+			}
+			return tr
+		} else {
+			p.errors = append(p.errors, "Expected SELECT after '(' in table reference")
+			return nil
+		}
+	}
+
+	// Otherwise, expect a data source function such as read_file(...)
 	tr := &TableReference{}
 	sourceFunc := strings.ToLower(p.curToken.Literal)
 	if !strings.HasPrefix(sourceFunc, "read_") {
@@ -265,7 +316,7 @@ func (p *Parser) parseJoinClause() *JoinClause {
 	p.nextToken()
 	jc.Table = p.parseTableReference()
 	if jc.Table == nil {
-		p.errors = append(p.errors, "JOIN table must be specified using a valid data source function")
+		p.errors = append(p.errors, "JOIN table must be specified using a valid data source function or subquery")
 		return nil
 	}
 	if joinType != "CROSS" && joinType != "CROSS JOIN" {
@@ -538,8 +589,16 @@ func (p *Parser) parseExpression(precedence int) Expression {
 		}
 	case INT:
 		leftExp = &Literal{Value: p.curToken.Literal}
+	case FLOAT:
+		leftExp = &Literal{Value: p.curToken.Literal}
 	case STRING:
 		leftExp = &Literal{Value: p.curToken.Literal}
+	case BOOL:
+		// Convert literal "TRUE"/"FALSE" to a boolean value.
+		val := strings.ToUpper(p.curToken.Literal) == "TRUE"
+		leftExp = &Literal{Value: val}
+	case PARAM:
+		leftExp = &Literal{Value: "?"} // Parameter placeholder; resolution can be done later.
 	default:
 		return nil
 	}
