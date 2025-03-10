@@ -30,7 +30,6 @@ tables:
           mrn: "mrn"
           status: "status"
       aggregator:
-          group_by: ["facility_id", "is_active"]
           aggregations:
               - source_field: "mrn"
                 func: "count"
@@ -42,5 +41,5 @@ tables:
                 func: "max"
                 output_field: "max_mrn"
               - source_field: "mrn"
-                func: "avg"
-                output_field: "avg_mrn"
+                func: "sum"
+                output_field: "sum_mrn"
