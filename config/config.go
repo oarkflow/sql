@@ -19,8 +19,9 @@ type DataConfig struct {
 	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
 	File          string `yaml:"file,omitempty" json:"file,omitempty"`
 	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
-	Table         string `yaml:"table"`
-	Source        string `yaml:"source"`
+	Table         string `yaml:"table" json:"table"`
+	Source        string `yaml:"source" json:"source"`
+	Format        string `yaml:"format" json:"format"`
 }
 
 type TableMapping struct {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -12,10 +13,13 @@ import (
 
 func main() {
 	paths := []string{
-		"config.yaml",
+		"assets/multiple-source.yaml",
+		"assets/std.yaml",
 	}
 	for _, path := range paths {
+		fmt.Println("Started executing", path)
 		RunETL(path)
+		fmt.Println("Execution Completed\n", path)
 	}
 }
 

@@ -79,7 +79,7 @@ func Run(cfg *config.Config) {
 				log.Fatalf("Error connecting to source DB: %v", err)
 			}
 		}
-		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source)
+		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source, sourceCfg.Format)
 		if err != nil {
 			panic(err)
 		}
@@ -106,7 +106,7 @@ func Run(cfg *config.Config) {
 		}
 		opts := []Option{
 			WithSources(sources...),
-			WithDestination(cfg.Destination.Type, destDB, cfg.Destination.Driver, cfg.Destination.File, tableCfg),
+			WithDestination(cfg.Destination, destDB, tableCfg),
 			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
 				name, _ := rec["name"].(string)
 				return name
@@ -601,6 +601,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		{Source: "map", Target: "transform"},
 		{Source: "transform", Target: "load"},
 	}
+	fmt.Println(e.loaders)
 	return &PipelineConfig{
 		Nodes: nodes,
 		Edges: edges,

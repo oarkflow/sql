@@ -3,6 +3,7 @@ package etl
 import (
 	"database/sql"
 	"fmt"
+	"os"
 
 	"github.com/oarkflow/etl/adapters"
 	"github.com/oarkflow/etl/config"
@@ -27,7 +28,7 @@ func WithPipelineConfig(pc *PipelineConfig) Option {
 	}
 }
 
-func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) (contract.Source, error) {
+func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) (contract.Source, error) {
 	var src contract.Source
 	if utils.IsSQLType(sourceType) {
 		if sourceDB == nil {
@@ -40,6 +41,8 @@ func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sou
 			file = sourceFile
 		}
 		src = adapters.NewFileAdapter(file, "source", false)
+	} else if sourceType == "stdin" {
+		return adapters.NewIOAdapterSource(os.Stdin, format), nil
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
@@ -53,9 +56,9 @@ func WithSources(sources ...contract.Source) Option {
 	}
 }
 
-func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery string) Option {
+func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) Option {
 	return func(e *ETL) error {
-		src, err := NewSource(sourceType, sourceDB, sourceFile, sourceTable, sourceQuery)
+		src, err := NewSource(sourceType, sourceDB, sourceFile, sourceTable, sourceQuery, format)
 		if err != nil {
 			return err
 		}
@@ -64,26 +67,28 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 	}
 }
 
-func WithDestination(destType string, destDB *sql.DB, driver, destFile string, cfg config.TableMapping) Option {
+func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contract.Loader
-		if utils.IsSQLType(destType) {
+		if utils.IsSQLType(dest.Type) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = adapters.NewSQLAdapterAsLoader(destDB, destType, driver, cfg, cfg.NormalizeSchema)
-		} else if destType == "csv" || destType == "json" {
+			destination = adapters.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
+		} else if dest.Type == "csv" || dest.Type == "json" {
 			file := cfg.NewName
 			if file == "" {
-				file = destFile
+				file = dest.File
 			}
 			appendMode := true
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
 			destination = adapters.NewFileAdapter(file, "loader", appendMode)
+		} else if dest.Type == "stdout" {
+			destination = adapters.NewIOAdapterLoader(os.Stdout, dest.Format)
 		} else {
-			return fmt.Errorf("unsupported destination type: %s", destType)
+			return fmt.Errorf("unsupported destination type: %s", dest.Type)
 		}
 		e.loaders = append(e.loaders, destination)
 		return nil
@@ -106,14 +111,7 @@ func WithTransformers(list ...contract.Transformer) Option {
 
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
-		kt := &transformers.KeyValueTransformer{
-			ExtraValues:   extraValues,
-			IncludeFields: includeFields,
-			ExcludeFields: excludeFields,
-			KeyField:      keyField,
-			ValueField:    valueField,
-		}
-		e.transformers = append(e.transformers, kt)
+		e.transformers = append(e.transformers, transformers.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
 		return nil
 	}
 }

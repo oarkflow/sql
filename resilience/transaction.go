@@ -26,7 +26,6 @@ func (t *Transaction) Begin(ctx context.Context) error {
 		return fmt.Errorf("transaction already committed")
 	}
 	t.rollbackActions = make([]func(ctx context.Context) error, 0)
-	log.Println("Transaction begun")
 	return nil
 }
 
@@ -49,7 +48,6 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	}
 	t.committed = true
 	t.rollbackActions = nil
-	log.Println("Transaction committed")
 	return nil
 }
 

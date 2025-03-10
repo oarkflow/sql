@@ -16,6 +16,16 @@ type KeyValueTransformer struct {
 	ValueField    string
 }
 
+func NewKeyValue(keyField, valueField string, includeFields, excludeFields []string, extraValues map[string]any) *KeyValueTransformer {
+	return &KeyValueTransformer{
+		ExtraValues:   extraValues,
+		IncludeFields: includeFields,
+		ExcludeFields: excludeFields,
+		KeyField:      keyField,
+		ValueField:    valueField,
+	}
+}
+
 func (kt *KeyValueTransformer) Name() string {
 	return "KeyValueTransformer"
 }
