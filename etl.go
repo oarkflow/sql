@@ -22,6 +22,7 @@ import (
 	"github.com/oarkflow/etl/mappers"
 	"github.com/oarkflow/etl/resilience"
 	"github.com/oarkflow/etl/transactions"
+	"github.com/oarkflow/etl/transformers"
 	"github.com/oarkflow/etl/utils"
 	"github.com/oarkflow/etl/utils/sqlutil"
 )
@@ -67,11 +68,9 @@ func Run(cfg *config.Config) {
 		if sourceCfg.Source != "" {
 			tmp = append(tmp, sourceCfg.Source)
 		}
-
 		if len(tmp) > 0 {
 			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
 		}
-
 		var sourceDB *sql.DB
 		if utils.IsSQLType(sourceCfg.Type) {
 			sourceDB, err = config.OpenDB(sourceCfg)
@@ -124,6 +123,13 @@ func Run(cfg *config.Config) {
 		}
 		mapperList = append(mapperList, &mappers.LowercaseMapper{})
 		opts = append(opts, WithMappers(mapperList...))
+		if tableCfg.Aggregator != nil {
+			aggTransformer := transformers.NewAggregatorTransformer(
+				tableCfg.Aggregator.GroupBy,
+				tableCfg.Aggregator.Aggregations,
+			)
+			opts = append(opts, WithTransformers(aggTransformer))
+		}
 		if tableCfg.KeyValueTable {
 			opts = append(opts, WithKeyValueTransformer(
 				tableCfg.ExtraValues,
@@ -310,8 +316,10 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<
 					continue
 				}
 				for _, r := range transformed {
-					out <- r
-					localCount++
+					if r != nil {
+						out <- r
+						localCount++
+					}
 				}
 			}
 			atomic.AddInt64(&totalTransformed, int64(localCount))
@@ -320,6 +328,18 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record) (<
 	}
 	go func() {
 		wg.Wait()
+		for _, t := range tn.transformers {
+			if flushable, ok := t.(contract.Flushable); ok {
+				flushRecords, err := flushable.Flush(ctx)
+				if err != nil {
+					log.Printf("[Transformer] Flush error: %v", err)
+					continue
+				}
+				for _, r := range flushRecords {
+					out <- r
+				}
+			}
+		}
 		close(out)
 		elapsed := time.Since(startTime)
 		log.Printf("[Transformer] Total transformed records: %d in %v", totalTransformed, elapsed)

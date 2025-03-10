@@ -13,8 +13,9 @@ import (
 
 func main() {
 	paths := []string{
-		"assets/multiple-source.yaml",
-		"assets/std.yaml",
+		"assets/aggregator.yaml",
+		// "assets/multiple-source.yaml",
+		// "assets/std.yaml",
 	}
 	for _, path := range paths {
 		fmt.Println("Started executing", path)

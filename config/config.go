@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/oarkflow/etl/transformers"
 )
 
 type DataConfig struct {
@@ -44,6 +46,7 @@ type TableMapping struct {
 	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty" json:"auto_create_table,omitempty"`
 	Update              bool              `yaml:"update" json:"update"`
 	Delete              bool              `yaml:"delete" json:"delete"`
+	Aggregator          *AggregatorConfig `yaml:"aggregator" json:"aggregator"`
 	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
 }
 
@@ -55,6 +58,11 @@ type Config struct {
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
 	Buffer      int            `json:"buffer" yaml:"buffer"`
+}
+
+type AggregatorConfig struct {
+	GroupBy      []string                             `yaml:"group_by"`
+	Aggregations []transformers.AggregationDefinition `yaml:"aggregations"`
 }
 
 func Load(path string) (*Config, error) {

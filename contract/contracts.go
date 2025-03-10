@@ -54,3 +54,7 @@ type LookupLoader interface {
 type Node interface {
 	Process(ctx context.Context, in <-chan utils.Record) (<-chan utils.Record, error)
 }
+
+type Flushable interface {
+	Flush(ctx context.Context) ([]utils.Record, error)
+}
