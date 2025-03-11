@@ -1,0 +1,37 @@
+sources:
+    -   type: "mysql"
+        key: "prod-db"
+        host: "localhost"
+        port: 3306
+        driver: "mysql"
+        username: "flyway"
+        password: "test"
+        database: "cleardb"
+        disablelogger: true
+
+destination:
+    type: "json"
+    file: "suspend_master.json"
+
+tables:
+    -   old_name: "tbl_suspend_master"
+        migrate: true
+        clone_source: false
+        batch_size: 1000
+        update_sequence: true
+        skip_store_error: true
+        truncate_destination: true
+        mapping:
+            work_item_id: "work_item_uid"
+            reason_code: "reason_code"
+            reason_description: "reason_description"
+            require_note: "require_note"
+            used_when: "used_when"
+            trauma_only: "trauma_only"
+            fac_only: "fac_only"
+            provider_resolves: "provider_resolves"
+            internal_use: "eval.{{internal_use == 1 ? true:false}}"
+            created_at: "eval.{{now()}}"
+            updated_at: "eval.{{now()}}"
+            status: "eval.{{'ACTIVE'}}"
+            is_active: "eval.{{true}}"

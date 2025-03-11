@@ -1,0 +1,27 @@
+sources:
+    -   type: "stdin"
+        format: "csv"
+
+destination:
+    type: "stdout"
+    format: "csv"
+    
+lookups:
+    -   type: "csv"
+        file: "users.csv"
+        key: "users"
+    -   type: "csv"
+        file: "facilities.csv"
+        key: "facilities"
+
+tables:
+    -   normalize_schema:
+            id: "int"
+            facility_id: "int"
+            user_id: "int"
+            is_active: "bool"
+        mapping:
+            id: "id"
+            facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
+            user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
+            is_active: "is_active"

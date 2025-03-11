@@ -1,0 +1,44 @@
+sources:
+    -   type: "mysql"
+        host: "localhost"
+        port: 3306
+        username: "root"
+        password: "root"
+        driver: "mysql"
+        database: "cleardb"
+
+destination:
+    type: "postgresql"
+    host: "localhost"
+    port: 5432
+    username: "postgres"
+    password: "postgres"
+    driver: "postgres"
+    database: "mydb"
+
+lookups:
+    -   type: "csv"
+        file: "users.csv"
+        key: "users"
+    -   type: "csv"
+        file: "facilities.csv"
+        key: "facilities"
+
+tables:
+    -   new_name: "my_providers"
+        old_name: "providers"
+        clone_source: true
+        migrate: true
+        batch_size: 100
+        truncate_destination: true
+        auto_create_table: true
+        normalize_schema:
+            id: "int"
+            facility_id: "int"
+            user_id: "int"
+            is_active: "bool"
+        mapping:
+            id: "id"
+            facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
+            user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
+            is_active: "is_active"
