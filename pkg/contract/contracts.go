@@ -83,3 +83,9 @@ type Node interface {
 type Flushable interface {
 	Flush(ctx context.Context) ([]utils.Record, error)
 }
+
+type Appender[T any] interface {
+	Append(record T) error
+	AppendBatch(records []T) error
+	Close() error
+}

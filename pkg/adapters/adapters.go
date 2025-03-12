@@ -44,12 +44,9 @@ type FileAdapter struct {
 	extension       string
 	appendMode      bool
 	file            *os.File
-	bufWriter       *bufio.Writer
-	csvWriter       *csv.Writer
 	jsonFirstRecord bool
 	csvHeader       []string
-	jsonAppender    *fileutil.JSONAppender[utils.Record]
-	csvAppender     *fileutil.CSVAppender[utils.Record]
+	appender        contract.Appender[utils.Record]
 	headerWritten   bool
 }
 
@@ -69,60 +66,31 @@ func (fl *FileAdapter) Setup(_ context.Context) error {
 		_, err := os.Stat(fl.Filename)
 		return err
 	}
-	switch fl.extension {
-	case "json":
-		appender, err := fileutil.NewJSONAppender[utils.Record](fl.Filename)
-		if err != nil {
-			return err
-		}
-		fl.jsonAppender = appender
-	case "csv":
-		appender, err := fileutil.NewCSVAppender[utils.Record](fl.Filename, fl.appendMode)
-		if err != nil {
-			return err
-		}
-		fl.csvAppender = appender
-	default:
-		return fmt.Errorf("unsupported file extension: %s", fl.extension)
+	appender, err := fileutil.NewAppender[utils.Record](fl.Filename, fl.extension, fl.appendMode)
+	if err != nil {
+		return err
 	}
+	fl.appender = appender
 	return nil
 }
 
 func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) error {
 	switch fl.extension {
-	case "json":
-		err := fl.jsonAppender.AppendBatch(records)
-		if err != nil {
-			return err
-		}
-	case "csv":
-		err := fl.csvAppender.AppendBatch(records)
+	case "csv", "json":
+		err := fl.appender.AppendBatch(records)
 		if err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unsupported file extension: %s", fl.extension)
 	}
-	if fl.bufWriter != nil {
-		return fl.bufWriter.Flush()
-	}
 	return nil
 }
 
 func (fl *FileAdapter) Close() error {
-	if fl.jsonAppender != nil {
-		err := fl.jsonAppender.Close()
+	if fl.appender != nil {
+		err := fl.appender.Close()
 		if err != nil {
-			return err
-		}
-	}
-	if fl.extension == "json" && fl.bufWriter != nil {
-		if _, err := fl.bufWriter.WriteString("\n]\n"); err != nil {
-			return fmt.Errorf("failed to write JSON array close: %w", err)
-		}
-	}
-	if fl.bufWriter != nil {
-		if err := fl.bufWriter.Flush(); err != nil {
 			return err
 		}
 	}
@@ -343,7 +311,9 @@ func (l *SQLAdapter) Extract(ctx context.Context, opts ...contract.Option) (<-ch
 			log.Printf("SQL query error: %v", err)
 			return
 		}
-		defer rows.Close()
+		defer func() {
+			_ = rows.Close()
+		}()
 		cols, err := rows.Columns()
 		if err != nil {
 			log.Printf("Error getting columns: %v", err)
@@ -465,7 +435,7 @@ func (ioa *IOAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan u
 		case "csv":
 			var data string
 			if isInteractive(ioa.reader) {
-				fmt.Fprintln(os.Stdout, "Enter CSV data (press Enter twice to finish):")
+				_, _ = fmt.Fprintln(os.Stdout, "Enter CSV data (press Enter twice to finish):")
 				data = readUntilDoubleEnter(ioa.reader)
 			} else {
 
@@ -499,7 +469,7 @@ func (ioa *IOAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan u
 		case "json":
 			var data string
 			if isInteractive(ioa.reader) {
-				fmt.Fprintln(os.Stdout, "Enter JSON data (press Enter to finish):")
+				_, _ = fmt.Fprintln(os.Stdout, "Enter JSON data (press Enter to finish):")
 				data = readUntilDoubleEnter(ioa.reader)
 			} else {
 				b, err := io.ReadAll(ioa.reader)

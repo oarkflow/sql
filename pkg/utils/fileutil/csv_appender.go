@@ -8,7 +8,6 @@ import (
 	"sync"
 )
 
-// CSVAppender appends elements of type T as CSV rows to a file.
 type CSVAppender[T any] struct {
 	file          *os.File
 	bufWriter     *bufio.Writer
@@ -18,8 +17,6 @@ type CSVAppender[T any] struct {
 	mu            sync.Mutex
 }
 
-// NewCSVAppender creates a new CSVAppender for elements of type T.
-// If appendMode is true, it opens the file in append mode; otherwise it creates a new file.
 func NewCSVAppender[T any](filePath string, appendMode bool) (*CSVAppender[T], error) {
 	var f *os.File
 	var err error
@@ -55,13 +52,10 @@ func NewCSVAppender[T any](filePath string, appendMode bool) (*CSVAppender[T], e
 	}, nil
 }
 
-// Append appends a single record of type T.
 func (ca *CSVAppender[T]) Append(record T) error {
 	return ca.AppendBatch([]T{record})
 }
 
-// AppendBatch appends a batch of records of type T as CSV rows.
-// It writes a header row (extracted from the first record) if not already written.
 func (ca *CSVAppender[T]) AppendBatch(records []T) error {
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
@@ -70,7 +64,6 @@ func (ca *CSVAppender[T]) AppendBatch(records []T) error {
 		return nil
 	}
 
-	// Write header if not already written.
 	if !ca.headerWritten {
 		ca.header = ExtractCSVHeader(records[0])
 		if err := ca.csvWriter.Write(ca.header); err != nil {
@@ -79,7 +72,6 @@ func (ca *CSVAppender[T]) AppendBatch(records []T) error {
 		ca.headerWritten = true
 	}
 
-	// Write each record as a CSV row.
 	for _, rec := range records {
 		row, err := BuildCSVRow(ca.header, rec)
 		if err != nil {
@@ -96,7 +88,6 @@ func (ca *CSVAppender[T]) AppendBatch(records []T) error {
 	return ca.bufWriter.Flush()
 }
 
-// Close flushes and closes the CSVAppender.
 func (ca *CSVAppender[T]) Close() error {
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
