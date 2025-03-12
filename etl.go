@@ -94,7 +94,6 @@ func Run(cfg *config.Config) error {
 		if tableCfg.NewName == "" && cfg.Destination.File != "" {
 			tableCfg.NewName = cfg.Destination.File
 		}
-		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
 		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
 			if err := sqlutil.CreateKeyValueTable(
 				destDB, tableCfg.NewName,
@@ -163,6 +162,14 @@ func Run(cfg *config.Config) error {
 			}
 		}
 		expr.AddFunction("lookupIn", etlJob.lookupIn)
+		for _, loader := range etlJob.loaders {
+			err = loader.Setup(ctx)
+			if err != nil {
+				log.Printf("Setting up loader failed: %v", err)
+				return err
+			}
+		}
+		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
 		if err := etlJob.Run(ctx, tableCfg); err != nil {
 			log.Printf("ETL DAG job failed: %v", err)
 			return err
@@ -402,11 +409,11 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 		go func(workerID int) {
 			defer wg.Done()
 			localLoaded := 0
+			batchID := 1
 			for batch := range batchChan {
+				ctx = context.WithValue(ctx, "batch", batchID)
+				batchID++
 				for _, loader := range ln.loaders {
-					if err := loader.Setup(ctx); err != nil {
-						log.Printf("[Loader Worker %d] Setup error: %v", workerID, err)
-					}
 					if txnLoader, ok := loader.(contract.Transactional); ok {
 						if err := txnLoader.Begin(ctx); err != nil {
 							log.Printf("[Loader Worker %d] Begin transaction error: %v", workerID, err)

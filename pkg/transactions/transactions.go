@@ -56,9 +56,10 @@ func NewTransaction() *Transaction {
 	}
 }
 
-func (t *Transaction) Begin(_ context.Context) error {
+func (t *Transaction) Begin(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	batch := ctx.Value("batch")
 	if t.state != StateInitialized {
 		return fmt.Errorf("cannot begin transaction in state %s", t.state)
 	}
@@ -66,7 +67,9 @@ func (t *Transaction) Begin(_ context.Context) error {
 	t.rollbackActions = make([]func(ctx context.Context) error, 0)
 	t.commitActions = make([]func(ctx context.Context) error, 0)
 	t.resources = make([]TransactionalResource, 0)
-	log.Println("Transaction begun")
+	if batch != nil {
+		log.Printf("Transaction begun for batch %v\n", batch)
+	}
 	return nil
 }
 
@@ -110,12 +113,12 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		return fmt.Errorf("cannot commit transaction in state %s", t.state)
 	}
 
+	batch := ctx.Value("batch")
 	if err := ctx.Err(); err != nil {
 		t.mu.Unlock()
 		return err
 	}
 	t.mu.Unlock()
-
 	for i, action := range t.commitActions {
 		if err := safeAction(ctx, action, fmt.Sprintf("commit action %d", i)); err != nil {
 			t.mu.Lock()
@@ -130,7 +133,6 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			return fmt.Errorf("commit action failed: %v", err)
 		}
 	}
-
 	for i, res := range t.resources {
 		if err := safeResourceCommit(ctx, res, i); err != nil {
 			t.mu.Lock()
@@ -144,13 +146,13 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			return fmt.Errorf("resource commit failed: %v", err)
 		}
 	}
-
 	t.mu.Lock()
 	t.state = StateCommitted
-
 	t.rollbackActions = nil
 	t.mu.Unlock()
-	log.Println("Transaction committed successfully")
+	if batch != nil {
+		log.Printf("Transaction committed successfully for batch %v\n", batch)
+	}
 	return nil
 }
 

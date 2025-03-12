@@ -1,12 +1,12 @@
 sources:
-    -   type: "mysql"
+    -   type: "postgres"
         key: "prod-db"
         host: "localhost"
-        port: 3306
-        driver: "mysql"
-        username: "root"
-        password: "Password123"
-        database: "datav"
+        port: 5432
+        driver: "postgres"
+        username: "postgres"
+        password: "postgres"
+        database: "clear_dev"
         disablelogger: true
 
 destination:
@@ -14,7 +14,7 @@ destination:
     file: "suspend_master.json"
 
 tables:
-    -   old_name: "dashboard"
+    -   old_name: "charge_master"
         migrate: true
         clone_source: false
         batch_size: 1000
@@ -22,7 +22,7 @@ tables:
         skip_store_error: true
         truncate_destination: true
         mapping:
-            work_item_id: "work_item_uid"
+            work_item_id: "work_item_id"
             reason_code: "reason_code"
             reason_description: "reason_description"
             require_note: "require_note"
