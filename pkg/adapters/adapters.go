@@ -48,6 +48,8 @@ type FileAdapter struct {
 	csvWriter       *csv.Writer
 	jsonFirstRecord bool
 	csvHeader       []string
+	jsonAppender    *fileutil.JSONAppender[utils.Record]
+	csvAppender     *fileutil.CSVAppender[utils.Record]
 	headerWritten   bool
 }
 
@@ -69,82 +71,17 @@ func (fl *FileAdapter) Setup(_ context.Context) error {
 	}
 	switch fl.extension {
 	case "json":
-		if fl.appendMode {
-			f, err := os.OpenFile(fl.Filename, os.O_RDWR|os.O_CREATE, 0644)
-			if err != nil {
-				return fmt.Errorf("open file in append mode: %w", err)
-			}
-			fl.file = f
-			info, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat file: %w", err)
-			}
-			if info.Size() == 0 {
-				if _, err := f.WriteString("[\n"); err != nil {
-					return fmt.Errorf("failed to write JSON array start: %w", err)
-				}
-				fl.jsonFirstRecord = true
-			} else {
-				if _, err := f.Seek(-2, io.SeekEnd); err != nil {
-					return fmt.Errorf("failed to seek in file: %w", err)
-				}
-				buf := make([]byte, 2)
-				if _, err := f.Read(buf); err != nil {
-					return fmt.Errorf("failed to read trailing bytes: %w", err)
-				}
-				trimSize := int64(2)
-				if buf[1] == '\n' {
-					trimSize = 3
-				}
-				if err := f.Truncate(info.Size() - trimSize); err != nil {
-					return fmt.Errorf("failed to truncate file: %w", err)
-				}
-				if _, err := f.Seek(0, io.SeekEnd); err != nil {
-					return fmt.Errorf("failed to seek to end: %w", err)
-				}
-				if info.Size()-trimSize > int64(len("[\n")) {
-					fl.jsonFirstRecord = false
-				} else {
-					fl.jsonFirstRecord = true
-				}
-			}
-			fl.bufWriter = bufio.NewWriter(fl.file)
-		} else {
-			f, err := os.Create(fl.Filename)
-			if err != nil {
-				return fmt.Errorf("create file: %w", err)
-			}
-			fl.file = f
-			fl.bufWriter = bufio.NewWriter(f)
-			if _, err := fl.bufWriter.WriteString("[\n"); err != nil {
-				return fmt.Errorf("failed to write JSON array start: %w", err)
-			}
-			fl.jsonFirstRecord = true
+		appender, err := fileutil.NewJSONAppender[utils.Record](fl.Filename)
+		if err != nil {
+			return err
 		}
+		fl.jsonAppender = appender
 	case "csv":
-		var f *os.File
-		var err error
-		if fl.appendMode {
-			f, err = os.OpenFile(fl.Filename, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-			if err != nil {
-				return fmt.Errorf("open CSV file in append mode: %w", err)
-			}
-			info, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat CSV file: %w", err)
-			}
-			if info.Size() > 0 {
-				fl.headerWritten = true
-			}
-		} else {
-			f, err = os.Create(fl.Filename)
-			if err != nil {
-				return fmt.Errorf("create CSV file: %w", err)
-			}
+		appender, err := fileutil.NewCSVAppender[utils.Record](fl.Filename, fl.appendMode)
+		if err != nil {
+			return err
 		}
-		fl.file = f
-		fl.bufWriter = bufio.NewWriter(f)
-		fl.csvWriter = csv.NewWriter(fl.bufWriter)
+		fl.csvAppender = appender
 	default:
 		return fmt.Errorf("unsupported file extension: %s", fl.extension)
 	}
@@ -154,51 +91,31 @@ func (fl *FileAdapter) Setup(_ context.Context) error {
 func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) error {
 	switch fl.extension {
 	case "json":
-		for _, rec := range records {
-			if !fl.jsonFirstRecord {
-				if _, err := fl.bufWriter.WriteString(",\n"); err != nil {
-					return fmt.Errorf("failed to write comma: %w", err)
-				}
-			}
-			data, err := json.Marshal(rec)
-			if err != nil {
-				return fmt.Errorf("failed to marshal JSON record: %w", err)
-			}
-			if _, err := fl.bufWriter.WriteString("\t" + string(data)); err != nil {
-				return fmt.Errorf("failed to write JSON record: %w", err)
-			}
-			fl.jsonFirstRecord = false
+		err := fl.jsonAppender.AppendBatch(records)
+		if err != nil {
+			return err
 		}
 	case "csv":
-		if len(records) > 0 {
-			fl.csvHeader = fileutil.ExtractCSVHeader(records[0])
-		}
-		if !fl.headerWritten && len(records) > 0 {
-			if err := fl.csvWriter.Write(fl.csvHeader); err != nil {
-				return fmt.Errorf("failed to write CSV header: %w", err)
-			}
-			fl.headerWritten = true
-		}
-		for _, rec := range records {
-			row, err := fileutil.BuildCSVRow(fl.csvHeader, rec)
-			if err != nil {
-				return fmt.Errorf("failed to build CSV row: %w", err)
-			}
-			if err := fl.csvWriter.Write(row); err != nil {
-				return fmt.Errorf("failed to write CSV row: %w", err)
-			}
-		}
-		fl.csvWriter.Flush()
-		if err := fl.csvWriter.Error(); err != nil {
-			return fmt.Errorf("csv writer flush error: %w", err)
+		err := fl.csvAppender.AppendBatch(records)
+		if err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unsupported file extension: %s", fl.extension)
 	}
-	return fl.bufWriter.Flush()
+	if fl.bufWriter != nil {
+		return fl.bufWriter.Flush()
+	}
+	return nil
 }
 
 func (fl *FileAdapter) Close() error {
+	if fl.jsonAppender != nil {
+		err := fl.jsonAppender.Close()
+		if err != nil {
+			return err
+		}
+	}
 	if fl.extension == "json" && fl.bufWriter != nil {
 		if _, err := fl.bufWriter.WriteString("\n]\n"); err != nil {
 			return fmt.Errorf("failed to write JSON array close: %w", err)

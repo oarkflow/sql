@@ -10,8 +10,8 @@ sources:
         disablelogger: true
 
 destination:
-    type: "json"
-    file: "charge_master.json"
+    type: "csv"
+    file: "charge_master.csv"
 
 checkpoint:
     file: "checkpoint.txt"
