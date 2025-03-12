@@ -3,9 +3,20 @@ package fileutil
 import (
 	"fmt"
 	"strconv"
+
+	"github.com/oarkflow/etl/pkg/contract"
 )
 
-// --- Helper functions ---
+func NewAppender[T any](file, extension string, appendMode bool) (contract.Appender[T], error) {
+	switch extension {
+	case "json":
+		return NewJSONAppender[T](file, appendMode)
+	case "csv":
+		return NewCSVAppender[T](file, appendMode)
+	default:
+		return nil, fmt.Errorf("unsupported file extension: %s", extension)
+	}
+}
 
 func ExtractCSVHeader(rec any) []string {
 	switch rec := rec.(type) {

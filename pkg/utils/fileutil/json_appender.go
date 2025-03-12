@@ -12,16 +12,6 @@ import (
 	"github.com/oarkflow/json"
 )
 
-// Option is a functional option for JSONAppender.
-type Option[T any] func(*JSONAppender[T])
-
-// WithDedup enables de-duplication so that duplicate records are not appended.
-func WithDedup[T any]() Option[T] {
-	return func(ja *JSONAppender[T]) {
-		ja.dedup = true
-	}
-}
-
 // JSONAppender appends elements of type T to a JSON array stored in a file.
 type JSONAppender[T any] struct {
 	filePath       string
@@ -30,15 +20,12 @@ type JSONAppender[T any] struct {
 	mu             sync.Mutex
 	tailBufferSize int
 	syncOnAppend   bool
-
-	// Deduplication fields.
-	dedup    bool
-	dedupMap map[string]struct{}
+	appendMode     bool
 }
 
 // NewJSONAppender creates a new JSONAppender for elements of type T.
 // Additional options (such as WithDedup) can be provided to change the appender’s behavior.
-func NewJSONAppender[T any](filePath string, opts ...Option[T]) (*JSONAppender[T], error) {
+func NewJSONAppender[T any](filePath string, appendMode bool) (*JSONAppender[T], error) {
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, err
@@ -49,23 +36,11 @@ func NewJSONAppender[T any](filePath string, opts ...Option[T]) (*JSONAppender[T
 		fileLock:       flock.New(filePath + ".lock"),
 		tailBufferSize: 1024,
 		syncOnAppend:   true,
-		dedup:          false,
-		dedupMap:       make(map[string]struct{}),
-	}
-	// Apply options.
-	for _, opt := range opts {
-		opt(ja)
+		appendMode:     appendMode,
 	}
 	if err := ja.validateOrInitialize(); err != nil {
 		_ = f.Close()
 		return nil, err
-	}
-	// If deduplication is enabled, load existing records into memory.
-	if ja.dedup {
-		if err := ja.loadDedupMap(); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
 	}
 	return ja, nil
 }
@@ -114,30 +89,6 @@ func (ja *JSONAppender[T]) validateOrInitialize() error {
 	return nil
 }
 
-// loadDedupMap reads the entire file, unmarshals the JSON array,
-// and loads each record (using its marshaled string) into the dedup map.
-func (ja *JSONAppender[T]) loadDedupMap() error {
-	if _, err := ja.file.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	content, err := io.ReadAll(ja.file)
-	if err != nil {
-		return err
-	}
-	var arr []T
-	if err := json.Unmarshal(content, &arr); err != nil {
-		return err
-	}
-	for _, v := range arr {
-		keyBytes, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		ja.dedupMap[string(keyBytes)] = struct{}{}
-	}
-	return nil
-}
-
 // Append appends a single element of type T.
 func (ja *JSONAppender[T]) Append(element T) error {
 	return ja.AppendBatch([]T{element})
@@ -155,27 +106,6 @@ func (ja *JSONAppender[T]) AppendBatch(elements []T) error {
 	defer func() {
 		_ = ja.fileLock.Unlock()
 	}()
-
-	// Deduplication: filter out elements that already exist.
-	if ja.dedup {
-		var newElements []T
-		for _, element := range elements {
-			keyBytes, err := json.Marshal(element)
-			if err != nil {
-				return err
-			}
-			key := string(keyBytes)
-			if _, exists := ja.dedupMap[key]; exists {
-				continue
-			}
-			newElements = append(newElements, element)
-		}
-		// If all provided elements are duplicates, nothing to do.
-		if len(newElements) == 0 {
-			return nil
-		}
-		elements = newElements
-	}
 
 	fi, err := ja.file.Stat()
 	if err != nil {
@@ -204,16 +134,7 @@ func (ja *JSONAppender[T]) AppendBatch(elements []T) error {
 		if _, err := ja.file.Write(content); err != nil {
 			return err
 		}
-		// Update dedup map.
-		if ja.dedup {
-			for _, element := range elements {
-				keyBytes, err := json.Marshal(element)
-				if err != nil {
-					return err
-				}
-				ja.dedupMap[string(keyBytes)] = struct{}{}
-			}
-		}
+
 		if ja.syncOnAppend {
 			return ja.file.Sync()
 		}
@@ -275,16 +196,7 @@ func (ja *JSONAppender[T]) AppendBatch(elements []T) error {
 	if _, err := ja.file.Write(dataToWrite); err != nil {
 		return err
 	}
-	// Update dedup map.
-	if ja.dedup {
-		for _, element := range elements {
-			keyBytes, err := json.Marshal(element)
-			if err != nil {
-				return err
-			}
-			ja.dedupMap[string(keyBytes)] = struct{}{}
-		}
-	}
+
 	if ja.syncOnAppend {
 		return ja.file.Sync()
 	}
