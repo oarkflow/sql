@@ -5,12 +5,16 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/oarkflow/convert"
 	"github.com/oarkflow/expr"
 
 	"github.com/oarkflow/etl/pkg/adapters"
@@ -25,7 +29,22 @@ import (
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
+func Shutdown(cancel context.CancelFunc) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Listen for the signal in a separate goroutine.
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal: %v. Initiating graceful shutdown...", sig)
+		cancel() // This will signal the ETL job to shutdown.
+	}()
+}
+
 func Run(cfg *config.Config) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Shutdown(cancel)
 	var destDB *sql.DB
 	var err error
 	if utils.IsSQLType(cfg.Destination.Type) {
@@ -84,6 +103,14 @@ func Run(cfg *config.Config) error {
 		}
 		sources = append(sources, src)
 	}
+	checkpointFile := cfg.Checkpoint.File
+	checkpointField := cfg.Checkpoint.Field
+	if checkpointFile == "" {
+		checkpointFile = "checkpoint.txt"
+	}
+	if checkpointField == "" {
+		checkpointField = "id"
+	}
 	for _, tableCfg := range cfg.Tables {
 		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
@@ -106,9 +133,13 @@ func Run(cfg *config.Config) error {
 		opts := []Option{
 			WithSources(sources...),
 			WithDestination(cfg.Destination, destDB, tableCfg),
-			WithCheckpoint(checkpoint.NewFileCheckpointStore("checkpoint.txt"), func(rec utils.Record) string {
-				name, _ := rec["name"].(string)
-				return name
+			WithCheckpoint(checkpoint.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
+				val, ok := rec[checkpointField]
+				if !ok {
+					return ""
+				}
+				v, _ := convert.ToString(val)
+				return v
 			}),
 			WithWorkerCount(cfg.WorkerCount),
 			WithBatchSize(tableCfg.BatchSize),
@@ -140,7 +171,7 @@ func Run(cfg *config.Config) error {
 			))
 		}
 		etlJob := NewETL(opts...)
-		ctx := context.Background()
+		var lookups []contract.LookupLoader
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
 				lookup, err := adapters.NewLookupLoader(lkup)
@@ -158,9 +189,11 @@ func Run(cfg *config.Config) error {
 					log.Printf("Failed to load lookup data for %s: %v", lkup.Key, err)
 					return err
 				}
+				lookups = append(lookups, lookup)
 				etlJob.lookupStore[lkup.Key] = data
 			}
 		}
+		etlJob.lookups = append(etlJob.lookups, lookups...)
 		expr.AddFunction("lookupIn", etlJob.lookupIn)
 		for _, loader := range etlJob.loaders {
 			err = loader.Setup(ctx)
@@ -411,11 +444,17 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 			localLoaded := 0
 			batchID := 1
 			for batch := range batchChan {
-				ctx = context.WithValue(ctx, "batch", batchID)
+				// Associate a batch ID with the context.
+				batchCtx := context.WithValue(ctx, "batch", batchID)
 				batchID++
+				// If the parent context is cancelled, use a background context for the final operations.
+				storeCtx := batchCtx
+				if batchCtx.Err() != nil {
+					storeCtx = context.Background()
+				}
 				for _, loader := range ln.loaders {
 					if txnLoader, ok := loader.(contract.Transactional); ok {
-						if err := txnLoader.Begin(ctx); err != nil {
+						if err := txnLoader.Begin(storeCtx); err != nil {
 							log.Printf("[Loader Worker %d] Begin transaction error: %v", workerID, err)
 							continue
 						}
@@ -427,20 +466,20 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 							sqlLoader.Created = true
 						}
 						err := resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
-							return loader.StoreBatch(ctx, batch)
+							return loader.StoreBatch(storeCtx, batch)
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Batch load error (transaction): %v", workerID, err)
 							continue
 						}
-						if err := txnLoader.Commit(ctx); err != nil {
+						if err := txnLoader.Commit(storeCtx); err != nil {
 							log.Printf("[Loader Worker %d] Commit error: %v", workerID, err)
 							continue
 						}
 					} else {
-						err := transactions.RunInTransaction(ctx, func(tx *transactions.Transaction) error {
+						err := transactions.RunInTransaction(storeCtx, func(tx *transactions.Transaction) error {
 							return resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
-								return loader.StoreBatch(ctx, batch)
+								return loader.StoreBatch(storeCtx, batch)
 							})
 						})
 						if err != nil {
@@ -453,7 +492,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 						cp := ln.checkpointFunc(batch[len(batch)-1])
 						ln.cpMutex.Lock()
 						if cp > ln.lastCheckpoint {
-							if err := ln.checkpointStore.SaveCheckpoint(ctx, cp); err != nil {
+							if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
 								log.Printf("[Loader Worker %d] Checkpoint error: %v", workerID, err)
 							} else {
 								ln.lastCheckpoint = cp
@@ -656,6 +695,7 @@ type ETL struct {
 	mappers         []contract.Mapper
 	transformers    []contract.Transformer
 	loaders         []contract.Loader
+	lookups         []contract.LookupLoader
 	workerCount     int
 	loaderWorkers   int
 	batchSize       int
@@ -716,6 +756,11 @@ func (e *ETL) Close() error {
 	for _, src := range e.sources {
 		if err := src.Close(); err != nil {
 			return fmt.Errorf("error closing source: %v", err)
+		}
+	}
+	for _, src := range e.lookups {
+		if err := src.Close(); err != nil {
+			return fmt.Errorf("error closing lookups: %v", err)
 		}
 	}
 	for _, loader := range e.loaders {

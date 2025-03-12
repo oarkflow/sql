@@ -53,6 +53,11 @@ type TableMapping struct {
 	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
 }
 
+type Checkpoint struct {
+	File  string `json:"file" yaml:"file"`
+	Field string `json:"field" yaml:"field"`
+}
+
 type Config struct {
 	Source      DataConfig     `yaml:"source" json:"source"`
 	Sources     []DataConfig   `yaml:"sources" json:"sources"`
@@ -61,6 +66,7 @@ type Config struct {
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
 	Buffer      int            `json:"buffer" yaml:"buffer"`
+	Checkpoint  Checkpoint     `json:"checkpoint" yaml:"checkpoint"`
 }
 
 type AggregatorConfig struct {

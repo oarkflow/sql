@@ -2,34 +2,48 @@ package checkpoint
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 )
 
 type FileCheckpointStore struct {
-	fileName string
-	mu       sync.Mutex
+	filename   string
+	mu         sync.Mutex
+	checkpoint string
 }
 
-func NewFileCheckpointStore(fileName string) *FileCheckpointStore {
-	return &FileCheckpointStore{fileName: fileName}
-}
-
-func (cs *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	return os.WriteFile(cs.fileName, []byte(cp), 0644)
-}
-
-func (cs *FileCheckpointStore) GetCheckpoint(context.Context) (string, error) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	data, err := os.ReadFile(cs.fileName)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
+func NewFileCheckpointStore(filename string) *FileCheckpointStore {
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	ext := filepath.Ext(filename)
+	baseName := filename[:len(filename)-len(ext)]
+	newFilename := fmt.Sprintf("%s-%s%s", baseName, timestamp, ext)
+	store := &FileCheckpointStore{filename: newFilename}
+	data, err := os.ReadFile(filename)
+	if err == nil {
+		store.checkpoint = string(data)
 	}
-	return string(data), nil
+	return store
+}
+
+func (f *FileCheckpointStore) GetCheckpoint(ctx context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checkpoint, nil
+}
+
+func (f *FileCheckpointStore) SaveCheckpoint(ctx context.Context, cp string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cp <= f.checkpoint {
+		return nil
+	}
+	if err := os.WriteFile(f.filename, []byte(cp), 0644); err != nil {
+		return fmt.Errorf("failed to write checkpoint: %w", err)
+	}
+	f.checkpoint = cp
+	return nil
 }

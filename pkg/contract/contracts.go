@@ -73,6 +73,7 @@ type MultiTransformer interface {
 type LookupLoader interface {
 	Setup(ctx context.Context) error
 	LoadData(opts ...Option) ([]utils.Record, error)
+	Close() error
 }
 
 type Node interface {

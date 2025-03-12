@@ -32,4 +32,5 @@ dist
 *.json
 *.csv
 **.DS_Store**
-/examples/checkpoint.txt
+/examples/*.txt
+*.lock

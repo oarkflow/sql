@@ -11,26 +11,29 @@ sources:
 
 destination:
     type: "json"
-    file: "suspend_master.json"
+    file: "charge_master.json"
+
+checkpoint:
+    file: "checkpoint.txt"
+    field: "id"
 
 tables:
     -   old_name: "charge_master"
         migrate: true
         clone_source: false
-        batch_size: 1000
+        batch_size: 10000
         update_sequence: true
         skip_store_error: true
         truncate_destination: true
         mapping:
+            id: "charge_master_id"
             work_item_id: "work_item_id"
-            reason_code: "reason_code"
-            reason_description: "reason_description"
-            require_note: "require_note"
-            used_when: "used_when"
-            trauma_only: "trauma_only"
-            fac_only: "fac_only"
-            provider_resolves: "provider_resolves"
-            internal_use: "eval.{{internal_use == 1 ? true:false}}"
+            cpt_hcpcs_code: "cpt_hcpcs_code"
+            client_proc_esc: "client_proc_esc"
+            client_internal_code: "client_internal_code"
+            charge_amt: "charge_amt"
+            charge_type: "charge_type"
+            physician_category: "physician_category"
             created_at: "eval.{{now()}}"
             updated_at: "eval.{{now()}}"
             status: "eval.{{'ACTIVE'}}"
