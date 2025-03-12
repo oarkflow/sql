@@ -1,8 +1,6 @@
 package sql
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -16,34 +14,12 @@ import (
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
-// --- Caching and Hashing ---
-
-type cachedIndex struct {
-	index map[string][]utils.Record
-	hash  string
-}
-
-var indexCache = make(map[string]map[string]cachedIndex)
-
 type tableCacheEntry struct {
 	rows    []utils.Record
 	modTime time.Time
 }
 
 var tableCache = make(map[string]tableCacheEntry)
-
-// Compute a hash for rows based on number and content.
-func computeRowsHash(rows []utils.Record) string {
-	h := md5.New()
-	h.Write([]byte(fmt.Sprintf("%d", len(rows))))
-	for _, row := range rows {
-		for k, v := range row {
-			h.Write([]byte(k))
-			h.Write([]byte(fmt.Sprintf("%v", v)))
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // --- Regex Caching for LIKE Operator ---
 
