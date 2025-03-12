@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/oarkflow/etl/pkg/transformers"
@@ -81,8 +84,7 @@ func Load(path string) (*Config, error) {
 func OpenDB(cfg DataConfig) (*sql.DB, error) {
 	var dsn string
 	if cfg.Driver == "mysql" {
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
-			cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
 	} else if cfg.Driver == "postgres" {
 		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database)
@@ -91,7 +93,11 @@ func OpenDB(cfg DataConfig) (*sql.DB, error) {
 	}
 	db, err := sql.Open(cfg.Driver, dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 	return db, nil
 }

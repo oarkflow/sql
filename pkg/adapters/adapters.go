@@ -16,13 +16,10 @@ import (
 
 	"github.com/oarkflow/json"
 
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
-
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/contract"
 	"github.com/oarkflow/etl/pkg/utils"
-	fileutil2 "github.com/oarkflow/etl/pkg/utils/fileutil"
+	"github.com/oarkflow/etl/pkg/utils/fileutil"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
@@ -174,7 +171,7 @@ func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) err
 		}
 	case "csv":
 		if len(records) > 0 {
-			fl.csvHeader = fileutil2.ExtractCSVHeader(records[0])
+			fl.csvHeader = fileutil.ExtractCSVHeader(records[0])
 		}
 		if !fl.headerWritten && len(records) > 0 {
 			if err := fl.csvWriter.Write(fl.csvHeader); err != nil {
@@ -183,7 +180,7 @@ func (fl *FileAdapter) StoreBatch(_ context.Context, records []utils.Record) err
 			fl.headerWritten = true
 		}
 		for _, rec := range records {
-			row, err := fileutil2.BuildCSVRow(fl.csvHeader, rec)
+			row, err := fileutil.BuildCSVRow(fl.csvHeader, rec)
 			if err != nil {
 				return fmt.Errorf("failed to build CSV row: %w", err)
 			}
@@ -218,7 +215,7 @@ func (fl *FileAdapter) Close() error {
 	return nil
 }
 
-func (fl *FileAdapter) LoadData(opts ...contract.Option) ([]utils.Record, error) {
+func (fl *FileAdapter) LoadData(_ ...contract.Option) ([]utils.Record, error) {
 	ch, err := fl.Extract(context.Background())
 	if err != nil {
 		return nil, err
@@ -230,11 +227,11 @@ func (fl *FileAdapter) LoadData(opts ...contract.Option) ([]utils.Record, error)
 	return records, nil
 }
 
-func (fl *FileAdapter) Extract(_ context.Context, opts ...contract.Option) (<-chan utils.Record, error) {
+func (fl *FileAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)
-		_, err := fileutil2.ProcessFile(fl.Filename, func(record utils.Record) {
+		_, err := fileutil.ProcessFile(fl.Filename, func(record utils.Record) {
 			out <- record
 		})
 		if err != nil {
@@ -650,7 +647,7 @@ func (ioa *IOAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan u
 	return out, nil
 }
 
-func (ioa *IOAdapter) StoreBatch(ctx context.Context, records []utils.Record) error {
+func (ioa *IOAdapter) StoreBatch(_ context.Context, records []utils.Record) error {
 	if ioa.mode != "loader" {
 		return fmt.Errorf("IOAdapter not configured as loader")
 	}

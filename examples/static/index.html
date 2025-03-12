@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Interactive ETL Wizard</title>
+    <title>ETL Configuration Wizard</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Alpine.js for interactivity -->
@@ -11,25 +11,27 @@
 </head>
 <body class="bg-gray-100">
 <div class="container mx-auto p-4" x-data="etlWizard()">
-    <header class="mb-4">
-        <h1 class="text-3xl font-bold text-center">Interactive ETL Wizard</h1>
+    <header class="mb-6">
+        <h1 class="text-3xl font-bold text-center">ETL Configuration Wizard</h1>
     </header>
 
-    <!-- Wizard Navigation -->
-    <div class="bg-white shadow rounded p-6">
-        <div class="flex justify-between mb-4">
-            <button x-show="currentStep > 1" @click="prevStep()"
-                    class="px-4 py-2 bg-gray-300 rounded">Previous</button>
-            <div class="text-lg font-semibold">
-                Step <span x-text="currentStep"></span> of <span x-text="totalSteps"></span>
-            </div>
-            <button x-show="currentStep < totalSteps" @click="nextStep()"
-                    class="px-4 py-2 bg-blue-600 text-white rounded">Next</button>
-        </div>
+    <!-- Horizontal Navigation: Only show completed steps and the active one -->
+    <div class="flex justify-center space-x-4 mb-6">
+        <template x-for="(step, index) in steps" :key="index">
+            <template x-if="index < activeStep">
+                <div class="px-4 py-2 bg-green-500 text-white rounded cursor-pointer" @click="activeStep = index+1" x-text="step.name + ' (Completed)'"></div>
+            </template>
+            <template x-if="index === activeStep - 1">
+                <div class="px-4 py-2 bg-blue-500 text-white rounded" x-text="step.name + ' (Draft)'"></div>
+            </template>
+        </template>
+    </div>
 
-        <!-- Step 1: Sources Configuration -->
-        <div x-show="currentStep === 1">
-            <h2 class="text-xl font-semibold mb-4">Source Configuration</h2>
+    <!-- Accordion Content -->
+    <div class="bg-white shadow rounded p-6">
+        <!-- Step 1: Configure Sources -->
+        <div x-show="activeStep === 1" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure Sources</h2>
             <template x-for="(source, index) in sources" :key="index">
                 <div class="border p-4 rounded mb-4">
                     <div class="flex justify-between items-center mb-2">
@@ -37,7 +39,6 @@
                         <button type="button" @click="removeSource(index)" class="text-red-600 text-sm">Remove</button>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- DataConfig Fields -->
                         <div>
                             <label class="block text-gray-700">Key</label>
                             <input type="text" x-model="source.key" class="mt-1 block w-full border rounded p-2" placeholder="sourceKey" />
@@ -97,9 +98,9 @@
             <button type="button" @click="addSource()" class="bg-green-500 text-white px-4 py-2 rounded">Add Source</button>
         </div>
 
-        <!-- Step 2: Destination Configuration -->
-        <div x-show="currentStep === 2">
-            <h2 class="text-xl font-semibold mb-4">Destination Configuration</h2>
+        <!-- Step 2: Configure Destination -->
+        <div x-show="activeStep === 2" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure Destination</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-gray-700">Key</label>
@@ -157,9 +158,9 @@
             </div>
         </div>
 
-        <!-- Step 3: Lookups Configuration -->
-        <div x-show="currentStep === 3">
-            <h2 class="text-xl font-semibold mb-4">Lookups Configuration</h2>
+        <!-- Step 3: Configure Lookups -->
+        <div x-show="activeStep === 3" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure Lookups</h2>
             <template x-for="(lookup, index) in lookups" :key="index">
                 <div class="border p-4 rounded mb-4">
                     <div class="flex justify-between items-center mb-2">
@@ -167,7 +168,6 @@
                         <button type="button" @click="removeLookup(index)" class="text-red-600 text-sm">Remove</button>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- DataConfig Fields for Lookup -->
                         <div>
                             <label class="block text-gray-700">Key</label>
                             <input type="text" x-model="lookup.key" class="mt-1 block w-full border rounded p-2" placeholder="lookupKey" />
@@ -227,106 +227,65 @@
             <button type="button" @click="addLookup()" class="bg-green-500 text-white px-4 py-2 rounded">Add Lookup</button>
         </div>
 
-        <!-- Step 4: Table Mapping Configuration -->
-        <div x-show="currentStep === 4">
-            <h2 class="text-xl font-semibold mb-4">Table Mapping Configuration</h2>
-            <template x-for="(table, index) in tables" :key="index">
+        <!-- Step 4: Configure Field Mapping (Dynamic Key/Value Pairs) -->
+        <div x-show="activeStep === 4" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure Field Mapping</h2>
+            <template x-for="(pair, index) in fieldMappingPairs" :key="index">
+                <div class="border p-4 rounded mb-4 flex flex-col md:flex-row md:items-center md:space-x-4">
+                    <div class="flex-1">
+                        <label class="block text-gray-700">Key</label>
+                        <input type="text" x-model="pair.key" class="mt-1 block w-full border rounded p-2" placeholder="field name" />
+                    </div>
+                    <div class="flex-1">
+                        <label class="block text-gray-700">Value</label>
+                        <input type="text" x-model="pair.value" class="mt-1 block w-full border rounded p-2" placeholder="mapped field or expression" />
+                    </div>
+                    <div class="flex items-center mt-2 md:mt-0">
+                        <input type="checkbox" x-model="pair.useExpression" class="mr-2" />
+                        <span class="text-gray-700">Use Expression</span>
+                    </div>
+                    <button type="button" @click="removeFieldMappingPair(index)" class="mt-2 md:mt-0 text-red-600">Remove</button>
+                </div>
+            </template>
+            <button type="button" @click="addFieldMappingPair()" class="bg-green-500 text-white px-4 py-2 rounded">Add Field Mapping Pair</button>
+        </div>
+
+        <!-- Step 5: Configure Transformers -->
+        <div x-show="activeStep === 5" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure Transformers</h2>
+            <template x-for="(transformer, index) in transformers" :key="index">
                 <div class="border p-4 rounded mb-4">
                     <div class="flex justify-between items-center mb-2">
-                        <h3 class="font-bold">Table Mapping <span x-text="index + 1"></span></h3>
-                        <button type="button" @click="removeTable(index)" class="text-red-600 text-sm">Remove</button>
+                        <h3 class="font-bold">Transformer <span x-text="index + 1"></span></h3>
+                        <button type="button" @click="removeTransformer(index)" class="text-red-600 text-sm">Remove</button>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- TableMapping Fields -->
                         <div>
-                            <label class="block text-gray-700">Old Name</label>
-                            <input type="text" x-model="table.old_name" class="mt-1 block w-full border rounded p-2" placeholder="old_table_name" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">New Name</label>
-                            <input type="text" x-model="table.new_name" class="mt-1 block w-full border rounded p-2" placeholder="new_table_name" />
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.migrate" class="mr-2" />
-                            <label class="text-gray-700">Migrate</label>
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.clone_source" class="mr-2" />
-                            <label class="text-gray-700">Clone Source</label>
+                            <label class="block text-gray-700">Name</label>
+                            <input type="text" x-model="transformer.name" class="mt-1 block w-full border rounded p-2" placeholder="Transformer Name" />
                         </div>
                         <div>
-                            <label class="block text-gray-700">Batch Size</label>
-                            <input type="number" x-model="table.batch_size" class="mt-1 block w-full border rounded p-2" placeholder="100" />
+                            <label class="block text-gray-700">Type</label>
+                            <select x-model="transformer.type" class="mt-1 block w-full border rounded p-2">
+                                <option value="">Select transformer type</option>
+                                <option value="aggregator">Aggregator</option>
+                                <option value="mapper">Mapper</option>
+                                <option value="filter">Filter</option>
+                            </select>
                         </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.skip_store_error" class="mr-2" />
-                            <label class="text-gray-700">Skip Store Error</label>
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.update_sequence" class="mr-2" />
-                            <label class="text-gray-700">Update Sequence</label>
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.truncate_destination" class="mr-2" />
-                            <label class="text-gray-700">Truncate Destination</label>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Mapping (JSON)</label>
-                            <textarea x-model="table.mapping" class="mt-1 block w-full border rounded p-2" rows="3" placeholder='{"field1": "newField1"}'></textarea>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Query</label>
-                            <input type="text" x-model="table.query" class="mt-1 block w-full border rounded p-2" placeholder="SELECT ..." />
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.key_value_table" class="mr-2" />
-                            <label class="text-gray-700">Key Value Table</label>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Key Field</label>
-                            <input type="text" x-model="table.key_field" class="mt-1 block w-full border rounded p-2" placeholder="key" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Value Field</label>
-                            <input type="text" x-model="table.value_field" class="mt-1 block w-full border rounded p-2" placeholder="value" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Extra Values (JSON)</label>
-                            <textarea x-model="table.extra_values" class="mt-1 block w-full border rounded p-2" rows="3" placeholder='{"extra1": "val1"}'></textarea>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Include Fields (comma separated)</label>
-                            <input type="text" x-model="table.include_fields" class="mt-1 block w-full border rounded p-2" placeholder="field1, field2" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Exclude Fields (comma separated)</label>
-                            <input type="text" x-model="table.exclude_fields" class="mt-1 block w-full border rounded p-2" placeholder="field3, field4" />
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.auto_create_table" class="mr-2" />
-                            <label class="text-gray-700">Auto Create Table</label>
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.update" class="mr-2" />
-                            <label class="text-gray-700">Update</label>
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="table.delete" class="mr-2" />
-                            <label class="text-gray-700">Delete</label>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Normalize Schema (JSON)</label>
-                            <textarea x-model="table.normalize_schema" class="mt-1 block w-full border rounded p-2" rows="3" placeholder='{"field": "type"}'></textarea>
+                        <div class="md:col-span-2">
+                            <label class="block text-gray-700">Config (JSON)</label>
+                            <textarea x-model="transformer.config" class="mt-1 block w-full border rounded p-2" rows="3" placeholder='{"param": "value"}'></textarea>
                         </div>
                     </div>
                 </div>
             </template>
-            <button type="button" @click="addTable()" class="bg-green-500 text-white px-4 py-2 rounded">Add Table Mapping</button>
+            <button type="button" @click="addTransformer()" class="bg-green-500 text-white px-4 py-2 rounded">Add Transformer</button>
         </div>
 
-        <!-- Step 5: ETL Settings -->
-        <div x-show="currentStep === 5">
-            <h2 class="text-xl font-semibold mb-4">ETL Settings</h2>
+        <!-- Step 6: Configure ETL Level Settings -->
+        <div x-show="activeStep === 6" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configure ETL Level Settings</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-gray-700">Worker Count</label>
@@ -339,16 +298,28 @@
             </div>
         </div>
 
-        <!-- Step 6: Review & Run -->
-        <div x-show="currentStep === 6">
-            <h2 class="text-xl font-semibold mb-4">Review & Run</h2>
+        <!-- Step 7: Configuration Summary -->
+        <div x-show="activeStep === 7" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Configuration Summary</h2>
             <pre class="bg-gray-100 p-4 rounded text-sm overflow-auto" x-text="JSON.stringify(getConfig(), null, 2)"></pre>
-            <button type="button" @click="runETL()" class="mt-4 bg-green-600 text-white px-4 py-2 rounded">Run ETL</button>
+        </div>
+
+        <!-- Step 8: Test Execution -->
+        <div x-show="activeStep === 8" x-transition>
+            <h2 class="text-xl font-semibold mb-4">Test Execution</h2>
+            <p class="mb-4 text-gray-700">Click the button below to test run your ETL configuration.</p>
+            <button type="button" @click="testETL()" class="bg-green-600 text-white px-4 py-2 rounded">Run Test</button>
+        </div>
+
+        <!-- Navigation Buttons -->
+        <div class="mt-6 flex justify-between">
+            <button x-show="activeStep > 1" @click="prevStep()" class="px-4 py-2 bg-gray-300 rounded">Previous</button>
+            <button x-show="activeStep < steps.length" @click="nextStep()" class="px-4 py-2 bg-blue-600 text-white rounded">Next</button>
         </div>
     </div>
 
     <!-- ETL Status Section -->
-    <section id="statusSection" class="bg-white shadow rounded p-6 mt-6">
+    <section class="bg-white shadow rounded p-6 mt-6">
         <h2 class="text-xl font-semibold mb-2">ETL Status</h2>
         <div class="text-gray-700" x-text="statusMessage">No ETL process initiated.</div>
     </section>
@@ -357,39 +328,44 @@
 <script>
     function etlWizard() {
         return {
-            currentStep: 1,
-            totalSteps: 6,
-            // Sources: Array of DataConfig objects
+            activeStep: 1,
+            steps: [
+                { id: 'sources', name: 'Configure Sources' },
+                { id: 'destination', name: 'Configure Destination' },
+                { id: 'lookups', name: 'Configure Lookups' },
+                { id: 'fieldMapping', name: 'Configure Field Mapping' },
+                { id: 'transformers', name: 'Configure Transformers' },
+                { id: 'etlSettings', name: 'Configure ETL Level Settings' },
+                { id: 'summary', name: 'Configuration Summary' },
+                { id: 'test', name: 'Test Execution' }
+            ],
             sources: [
                 { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' }
             ],
-            // Destination: Single DataConfig object
             destination: { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' },
-            // Lookups: Array of DataConfig objects
             lookups: [
                 { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' }
             ],
-            // Tables: Array of TableMapping objects
-            tables: [
-                {
-                    old_name: '', new_name: '', migrate: false, clone_source: false, batch_size: 100,
-                    skip_store_error: false, update_sequence: false, truncate_destination: false,
-                    mapping: '{}', query: '', key_value_table: false, key_field: '', value_field: '',
-                    extra_values: '{}', include_fields: '', exclude_fields: '', auto_create_table: false,
-                    update: false, delete: false, normalize_schema: '{}'
-                }
+            // Field mapping as dynamic key-value pairs with a checkbox for expressions
+            fieldMappingPairs: [
+                { key: '', value: '', useExpression: false }
             ],
-            // ETL settings
+            transformers: [
+                { name: '', type: '', config: '{}' }
+            ],
             etlSettings: { worker_count: 4, buffer: 50 },
             statusMessage: 'No ETL process initiated.',
-            // Navigation methods
             nextStep() {
-                if (this.currentStep < this.totalSteps) this.currentStep++;
+                // You can add validation for the current step here
+                if (this.activeStep < this.steps.length) {
+                    this.activeStep++;
+                }
             },
             prevStep() {
-                if (this.currentStep > 1) this.currentStep--;
+                if (this.activeStep > 1) {
+                    this.activeStep--;
+                }
             },
-            // Methods to add/remove dynamic entries
             addSource() {
                 this.sources.push({ key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' });
             },
@@ -402,54 +378,48 @@
             removeLookup(index) {
                 if (this.lookups.length > 1) this.lookups.splice(index, 1);
             },
-            addTable() {
-                this.tables.push({
-                    old_name: '', new_name: '', migrate: false, clone_source: false, batch_size: 100,
-                    skip_store_error: false, update_sequence: false, truncate_destination: false,
-                    mapping: '{}', query: '', key_value_table: false, key_field: '', value_field: '',
-                    extra_values: '{}', include_fields: '', exclude_fields: '', auto_create_table: false,
-                    update: false, delete: false, normalize_schema: '{}'
-                });
+            addFieldMappingPair() {
+                this.fieldMappingPairs.push({ key: '', value: '', useExpression: false });
             },
-            removeTable(index) {
-                if (this.tables.length > 1) this.tables.splice(index, 1);
+            removeFieldMappingPair(index) {
+                if (this.fieldMappingPairs.length > 1) this.fieldMappingPairs.splice(index, 1);
             },
-            // Build the final configuration object
+            addTransformer() {
+                this.transformers.push({ name: '', type: '', config: '{}' });
+            },
+            removeTransformer(index) {
+                if (this.transformers.length > 1) this.transformers.splice(index, 1);
+            },
             getConfig() {
                 return {
-                    // Use the first source as the primary source
                     source: this.sources[0],
                     sources: this.sources,
                     destination: this.destination,
                     lookups: this.lookups,
-                    tables: this.tables.map(table => ({
-                        ...table,
-                        mapping: JSON.parse(table.mapping),
-                        extra_values: JSON.parse(table.extra_values),
-                        normalize_schema: JSON.parse(table.normalize_schema),
-                        include_fields: table.include_fields.split(',').map(s => s.trim()).filter(Boolean),
-                        exclude_fields: table.exclude_fields.split(',').map(s => s.trim()).filter(Boolean)
+                    field_mapping: this.fieldMappingPairs.map(pair => ({
+                        key: pair.key,
+                        value: pair.value,
+                        use_expression: pair.useExpression
                     })),
-                    worker_count: this.etlSettings.worker_count,
-                    buffer: this.etlSettings.buffer
+                    transformers: this.transformers.map(t => ({
+                        ...t,
+                        config: JSON.parse(t.config)
+                    })),
+                    etl_settings: this.etlSettings
                 };
             },
-            // Trigger the ETL process by sending the configuration to the backend
-            async runETL() {
+            async testETL() {
                 const configData = this.getConfig();
                 try {
-                    const resConfig = await fetch('/api/config', {
+                    const res = await fetch('/api/etl/test', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(configData)
                     });
-                    const configResponse = await resConfig.text();
-                    console.log('Configuration saved:', configResponse);
-                    const resRun = await fetch('/api/etl/run', { method: 'POST' });
-                    const runResponse = await resRun.text();
-                    this.statusMessage = runResponse;
+                    const result = await res.text();
+                    this.statusMessage = result;
                 } catch (err) {
-                    this.statusMessage = 'Error running ETL';
+                    this.statusMessage = 'Error testing ETL';
                 }
             }
         }

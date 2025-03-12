@@ -30,6 +30,7 @@ tables:
           mrn: "mrn"
           status: "status"
       aggregator:
+          group_by: ["facility_id", "is_active"]
           aggregations:
               - source_field: "mrn"
                 func: "count"

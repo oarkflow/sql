@@ -4,9 +4,9 @@ sources:
         host: "localhost"
         port: 3306
         driver: "mysql"
-        username: "flyway"
-        password: "test"
-        database: "cleardb"
+        username: "root"
+        password: "Password123"
+        database: "datav"
         disablelogger: true
 
 destination:
@@ -14,7 +14,7 @@ destination:
     file: "suspend_master.json"
 
 tables:
-    -   old_name: "tbl_suspend_master"
+    -   old_name: "dashboard"
         migrate: true
         clone_source: false
         batch_size: 1000
