@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oarkflow/etl/pkg/adapter"
+	"github.com/oarkflow/etl/pkg/adapters"
 	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contract"
-	"github.com/oarkflow/etl/pkg/transformer"
+	"github.com/oarkflow/etl/pkg/contracts"
+	"github.com/oarkflow/etl/pkg/transformers"
 	utils2 "github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -28,28 +28,28 @@ func WithPipelineConfig(pc *PipelineConfig) Option {
 	}
 }
 
-func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) (contract.Source, error) {
-	var src contract.Source
+func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) (contracts.Source, error) {
+	var src contracts.Source
 	if utils2.IsSQLType(sourceType) {
 		if sourceDB == nil {
 			return nil, fmt.Errorf("source database is nil")
 		}
-		src = adapter.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
+		src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
 	} else if sourceType == "csv" || sourceType == "json" {
 		file := sourceTable
 		if file == "" {
 			file = sourceFile
 		}
-		src = adapter.NewFileAdapter(file, "source", false)
+		src = adapters.NewFileAdapter(file, "source", false)
 	} else if sourceType == "stdin" {
-		return adapter.NewIOAdapterSource(os.Stdin, format), nil
+		return adapters.NewIOAdapterSource(os.Stdin, format), nil
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
 	return src, nil
 }
 
-func WithSources(sources ...contract.Source) Option {
+func WithSources(sources ...contracts.Source) Option {
 	return func(e *ETL) error {
 		e.sources = append(e.sources, sources...)
 		return nil
@@ -69,12 +69,12 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 
 func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
-		var destination contract.Loader
+		var destination contracts.Loader
 		if utils2.IsSQLType(dest.Type) {
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = adapter.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
+			destination = adapters.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
 		} else if dest.Type == "csv" || dest.Type == "json" {
 			file := cfg.NewName
 			if file == "" {
@@ -84,9 +84,9 @@ func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMap
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
-			destination = adapter.NewFileAdapter(file, "loader", appendMode)
+			destination = adapters.NewFileAdapter(file, "loader", appendMode)
 		} else if dest.Type == "stdout" {
-			destination = adapter.NewIOAdapterLoader(os.Stdout, dest.Format)
+			destination = adapters.NewIOAdapterLoader(os.Stdout, dest.Format)
 		} else {
 			return fmt.Errorf("unsupported destination type: %s", dest.Type)
 		}
@@ -95,14 +95,14 @@ func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMap
 	}
 }
 
-func WithMappers(mapperList ...contract.Mapper) Option {
+func WithMappers(mapperList ...contracts.Mapper) Option {
 	return func(e *ETL) error {
 		e.mappers = append(e.mappers, mapperList...)
 		return nil
 	}
 }
 
-func WithTransformers(list ...contract.Transformer) Option {
+func WithTransformers(list ...contracts.Transformer) Option {
 	return func(e *ETL) error {
 		e.transformers = append(e.transformers, list...)
 		return nil
@@ -111,7 +111,7 @@ func WithTransformers(list ...contract.Transformer) Option {
 
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
-		e.transformers = append(e.transformers, transformer.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
+		e.transformers = append(e.transformers, transformers.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
 		return nil
 	}
 }
@@ -137,7 +137,7 @@ func WithRawChanBuffer(buffer int) Option {
 	}
 }
 
-func WithCheckpoint(store contract.CheckpointStore, cpFunc func(rec utils2.Record) string) Option {
+func WithCheckpoint(store contracts.CheckpointStore, cpFunc func(rec utils2.Record) string) Option {
 	return func(e *ETL) error {
 		e.checkpointStore = store
 		e.checkpointFunc = cpFunc

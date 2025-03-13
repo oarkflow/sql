@@ -1,4 +1,4 @@
-package adapter
+package adapters
 
 import (
 	"bufio"
@@ -17,13 +17,13 @@ import (
 	"github.com/oarkflow/json"
 
 	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contract"
+	"github.com/oarkflow/etl/pkg/contracts"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/fileutil"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
-func NewLookupLoader(lkup config.DataConfig) (contract.LookupLoader, error) {
+func NewLookupLoader(lkup config.DataConfig) (contracts.LookupLoader, error) {
 	switch strings.ToLower(lkup.Type) {
 	case "postgresql", "mysql", "sqlite":
 		db, err := config.OpenDB(lkup)
@@ -46,7 +46,7 @@ type FileAdapter struct {
 	file            *os.File
 	jsonFirstRecord bool
 	csvHeader       []string
-	appender        contract.Appender[utils.Record]
+	appender        contracts.Appender[utils.Record]
 	headerWritten   bool
 }
 
@@ -100,7 +100,7 @@ func (fl *FileAdapter) Close() error {
 	return nil
 }
 
-func (fl *FileAdapter) LoadData(_ ...contract.Option) ([]utils.Record, error) {
+func (fl *FileAdapter) LoadData(_ ...contracts.Option) ([]utils.Record, error) {
 	ch, err := fl.Extract(context.Background())
 	if err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func (fl *FileAdapter) LoadData(_ ...contract.Option) ([]utils.Record, error) {
 	return records, nil
 }
 
-func (fl *FileAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan utils.Record, error) {
+func (fl *FileAdapter) Extract(_ context.Context, _ ...contracts.Option) (<-chan utils.Record, error) {
 	out := make(chan utils.Record)
 	go func() {
 		defer close(out)
@@ -272,7 +272,7 @@ func (l *SQLAdapter) StoreBatch(ctx context.Context, batch []utils.Record) error
 	return err
 }
 
-func (l *SQLAdapter) LoadData(opts ...contract.Option) ([]utils.Record, error) {
+func (l *SQLAdapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
 	ch, err := l.Extract(context.Background(), opts...)
 	if err != nil {
 		return nil, err
@@ -284,8 +284,8 @@ func (l *SQLAdapter) LoadData(opts ...contract.Option) ([]utils.Record, error) {
 	return records, nil
 }
 
-func (l *SQLAdapter) Extract(ctx context.Context, opts ...contract.Option) (<-chan utils.Record, error) {
-	opt := &contract.SourceOption{Table: "", Query: ""}
+func (l *SQLAdapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan utils.Record, error) {
+	opt := &contracts.SourceOption{Table: "", Query: ""}
 	for _, op := range opts {
 		op(opt)
 	}
@@ -425,7 +425,7 @@ func (ioa *IOAdapter) Setup(_ context.Context) error {
 	return nil
 }
 
-func (ioa *IOAdapter) Extract(_ context.Context, _ ...contract.Option) (<-chan utils.Record, error) {
+func (ioa *IOAdapter) Extract(_ context.Context, _ ...contracts.Option) (<-chan utils.Record, error) {
 	if ioa.mode != "source" {
 		return nil, fmt.Errorf("IOAdapter not configured as source")
 	}

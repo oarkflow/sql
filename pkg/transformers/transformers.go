@@ -1,4 +1,4 @@
-package transformer
+package transformers
 
 import (
 	"context"
@@ -41,7 +41,7 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils2.Record)
 	return nil, fmt.Errorf("no output from KeyValueTransformer")
 }
 
-func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils2.Record) ([]utils2.Record, error) {
+func (kt *KeyValueTransformer) TransformMany(_ context.Context, rec utils2.Record) ([]utils2.Record, error) {
 	base := make(map[string]any)
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))

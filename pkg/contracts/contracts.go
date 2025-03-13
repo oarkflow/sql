@@ -1,4 +1,4 @@
-package contract
+package contracts
 
 import (
 	"context"
@@ -15,14 +15,14 @@ type SourceOption struct {
 // Option defines a function type for configuring a SQLAdapter.
 type Option func(*SourceOption)
 
-// WithTable sets the table name for the adapter.
+// WithTable sets the table name for the adapters.
 func WithTable(table string) Option {
 	return func(a *SourceOption) {
 		a.Table = table
 	}
 }
 
-// WithQuery sets a custom query for the adapter.
+// WithQuery sets a custom query for the adapters.
 func WithQuery(query string) Option {
 	return func(a *SourceOption) {
 		a.Query = query

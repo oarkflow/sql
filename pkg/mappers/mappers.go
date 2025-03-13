@@ -1,4 +1,4 @@
-package mapper
+package mappers
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func (lm *LowercaseMapper) Name() string {
 	return "LowercaseMapper"
 }
 
-func (lm *LowercaseMapper) Map(ctx context.Context, rec utils2.Record) (utils2.Record, error) {
+func (lm *LowercaseMapper) Map(_ context.Context, rec utils2.Record) (utils2.Record, error) {
 	newRec := make(utils2.Record)
 	for k, v := range rec {
 		newRec[strings.ToLower(k)] = v

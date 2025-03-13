@@ -1,4 +1,4 @@
-package transformer
+package transformers
 
 import (
 	"context"
@@ -43,7 +43,7 @@ func (at *AggregatorTransformer) Name() string {
 	return "AggregatorTransformer"
 }
 
-func (at *AggregatorTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
+func (at *AggregatorTransformer) Transform(_ context.Context, rec utils.Record) (utils.Record, error) {
 	at.aggregateRecord(rec)
 	return nil, nil
 }
@@ -111,7 +111,7 @@ func (at *AggregatorTransformer) aggregateRecord(rec utils.Record) {
 	}
 }
 
-func (at *AggregatorTransformer) Flush(ctx context.Context) ([]utils.Record, error) {
+func (at *AggregatorTransformer) Flush(_ context.Context) ([]utils.Record, error) {
 	var results []utils.Record
 	for groupKey, aggs := range at.groups {
 		rec := make(utils.Record)

@@ -1,4 +1,4 @@
-package resilience
+package transactions
 
 import (
 	"context"

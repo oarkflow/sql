@@ -17,13 +17,13 @@ import (
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/expr"
 
-	"github.com/oarkflow/etl/pkg/adapter"
-	"github.com/oarkflow/etl/pkg/checkpoint"
+	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/checkpoints"
 	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contract"
-	"github.com/oarkflow/etl/pkg/mapper"
-	"github.com/oarkflow/etl/pkg/resilience"
-	"github.com/oarkflow/etl/pkg/transformer"
+	"github.com/oarkflow/etl/pkg/contracts"
+	"github.com/oarkflow/etl/pkg/mappers"
+	"github.com/oarkflow/etl/pkg/transactions"
+	"github.com/oarkflow/etl/pkg/transformers"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
@@ -52,7 +52,9 @@ func Run(cfg *config.Config) error {
 			log.Printf("Error connecting to destination DB: %v\n", err)
 			return err
 		}
-		defer destDB.Close()
+		defer func() {
+			_ = destDB.Close()
+		}()
 	}
 	if cfg.Buffer == 0 {
 		cfg.Buffer = 50
@@ -66,7 +68,7 @@ func Run(cfg *config.Config) error {
 		}
 	}
 	var sourceFile string
-	var sources []contract.Source
+	var sources []contracts.Source
 	var sourcesToMigrate []string
 	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
 		cfg.Sources = append(cfg.Sources, cfg.Source)
@@ -105,7 +107,7 @@ func Run(cfg *config.Config) error {
 	checkpointFile := cfg.Checkpoint.File
 	checkpointField := cfg.Checkpoint.Field
 	if checkpointFile == "" {
-		checkpointFile = "checkpoint.txt"
+		checkpointFile = "checkpoints.txt"
 	}
 	if checkpointField == "" {
 		checkpointField = "id"
@@ -132,7 +134,7 @@ func Run(cfg *config.Config) error {
 		opts := []Option{
 			WithSources(sources...),
 			WithDestination(cfg.Destination, destDB, tableCfg),
-			WithCheckpoint(checkpoint.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
+			WithCheckpoint(checkpoints.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
 				val, ok := rec[checkpointField]
 				if !ok {
 					return ""
@@ -147,14 +149,14 @@ func Run(cfg *config.Config) error {
 		if tableCfg.NormalizeSchema != nil {
 			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
 		}
-		var mapperList []contract.Mapper
+		var mapperList []contracts.Mapper
 		if len(tableCfg.Mapping) > 0 {
-			mapperList = append(mapperList, mapper.NewFieldMapper(tableCfg.Mapping))
+			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
 		}
-		mapperList = append(mapperList, &mapper.LowercaseMapper{})
+		mapperList = append(mapperList, &mappers.LowercaseMapper{})
 		opts = append(opts, WithMappers(mapperList...))
 		if tableCfg.Aggregator != nil {
-			aggTransformer := transformer.NewAggregatorTransformer(
+			aggTransformer := transformers.NewAggregatorTransformer(
 				tableCfg.Aggregator.GroupBy,
 				tableCfg.Aggregator.Aggregations,
 			)
@@ -170,10 +172,10 @@ func Run(cfg *config.Config) error {
 			))
 		}
 		etlJob := NewETL(opts...)
-		var lookups []contract.LookupLoader
+		var lookups []contracts.LookupLoader
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
-				lookup, err := adapter.NewLookupLoader(lkup)
+				lookup, err := adapters.NewLookupLoader(lkup)
 				if err != nil {
 					log.Printf("Unsupported lookup type: %s", lkup.Type)
 					return err
@@ -227,7 +229,7 @@ func Run(cfg *config.Config) error {
 }
 
 type SourceNode struct {
-	sources       []contract.Source
+	sources       []contracts.Source
 	rawChanBuffer int
 }
 
@@ -239,15 +241,15 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			return nil, fmt.Errorf("source setup error: %v", err)
 		}
 		wg.Add(1)
-		go func(source contract.Source) {
+		go func(source contracts.Source) {
 			defer wg.Done()
 			startTime := time.Now()
 			recordCount := 0
-			var opts []contract.Option
+			var opts []contracts.Option
 			if tableCfg.OldName != "" {
-				opts = append(opts, contract.WithTable(tableCfg.OldName))
+				opts = append(opts, contracts.WithTable(tableCfg.OldName))
 			} else if tableCfg.Query != "" {
-				opts = append(opts, contract.WithQuery(tableCfg.Query))
+				opts = append(opts, contracts.WithQuery(tableCfg.Query))
 			}
 			ch, err := source.Extract(ctx, opts...)
 			if err != nil {
@@ -312,7 +314,7 @@ func (nn *NormalizeNode) Process(_ context.Context, in <-chan utils.Record, _ co
 }
 
 type MapNode struct {
-	mappers     []contract.Mapper
+	mappers     []contracts.Mapper
 	workerCount int
 }
 
@@ -351,7 +353,7 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 }
 
 type TransformNode struct {
-	transformers []contract.Transformer
+	transformers []contracts.Transformer
 	workerCount  int
 }
 
@@ -385,7 +387,7 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 	go func() {
 		wg.Wait()
 		for _, t := range tn.transformers {
-			if flushable, ok := t.(contract.Flushable); ok {
+			if flushable, ok := t.(contracts.Flushable); ok {
 				flushRecords, err := flushable.Flush(ctx)
 				if err != nil {
 					log.Printf("[Transformer] Flush error: %v", err)
@@ -404,13 +406,13 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 }
 
 type LoaderNode struct {
-	loaders         []contract.Loader
+	loaders         []contracts.Loader
 	workerCount     int
 	batchSize       int
 	retryCount      int
 	retryDelay      time.Duration
-	circuitBreaker  *resilience.CircuitBreaker
-	checkpointStore contract.CheckpointStore
+	circuitBreaker  *transactions.CircuitBreaker
+	checkpointStore contracts.CheckpointStore
 	checkpointFunc  func(rec utils.Record) string
 	cpMutex         *sync.Mutex
 	lastCheckpoint  string
@@ -452,19 +454,19 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 					storeCtx = context.Background()
 				}
 				for _, loader := range ln.loaders {
-					if txnLoader, ok := loader.(contract.Transactional); ok {
+					if txnLoader, ok := loader.(contracts.Transactional); ok {
 						if err := txnLoader.Begin(storeCtx); err != nil {
 							log.Printf("[Loader Worker %d] Begin transaction error: %v", workerID, err)
 							continue
 						}
-						if sqlLoader, ok := loader.(*adapter.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
 							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
 								log.Printf("[Loader Worker %d] Table creation error: %v", workerID, err)
 								continue
 							}
 							sqlLoader.Created = true
 						}
-						err := resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+						err := transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
 							return loader.StoreBatch(storeCtx, batch)
 						})
 						if err != nil {
@@ -476,8 +478,8 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 							continue
 						}
 					} else {
-						err := resilience.RunInTransaction(storeCtx, func(tx *resilience.Transaction) error {
-							return resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+						err := transactions.RunInTransaction(storeCtx, func(tx *transactions.Transaction) error {
+							return transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
 								return loader.StoreBatch(storeCtx, batch)
 							})
 						})
@@ -514,7 +516,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 	return done, nil
 }
 
-func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapper, workerID int) (utils.Record, error) {
+func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
 	for _, mapper := range mappers {
 		var err error
 		rec, err = mapper.Map(ctx, rec)
@@ -526,11 +528,11 @@ func applyMappers(ctx context.Context, rec utils.Record, mappers []contract.Mapp
 	return rec, nil
 }
 
-func applyTransformers(ctx context.Context, rec utils.Record, transformers []contract.Transformer, workerID int) ([]utils.Record, error) {
+func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int) ([]utils.Record, error) {
 	records := []utils.Record{rec}
 	for _, transformer := range transformers {
 		var nextRecords []utils.Record
-		if mt, ok := transformer.(contract.MultiTransformer); ok {
+		if mt, ok := transformer.(contracts.MultiTransformer); ok {
 			for _, r := range records {
 				recs, err := mt.TransformMany(ctx, r)
 				if err != nil {
@@ -576,7 +578,7 @@ func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
 
 type dagNode struct {
 	id       string
-	pn       contract.Node
+	pn       contracts.Node
 	inChs    []<-chan utils.Record
 	outCh    <-chan utils.Record
 	indegree int
@@ -588,7 +590,7 @@ type dagEdge struct {
 }
 
 type PipelineConfig struct {
-	Nodes map[string]contract.Node
+	Nodes map[string]contracts.Node
 	Edges []dagEdge
 }
 
@@ -647,7 +649,7 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, tableCfg conf
 }
 
 func (e *ETL) buildDefaultPipeline() *PipelineConfig {
-	nodes := map[string]contract.Node{
+	nodes := map[string]contracts.Node{
 		"source": &SourceNode{
 			sources:       e.sources,
 			rawChanBuffer: e.rawChanBuffer,
@@ -690,25 +692,25 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 }
 
 type ETL struct {
-	sources         []contract.Source
-	mappers         []contract.Mapper
-	transformers    []contract.Transformer
-	loaders         []contract.Loader
-	lookups         []contract.LookupLoader
+	sources         []contracts.Source
+	mappers         []contracts.Mapper
+	transformers    []contracts.Transformer
+	loaders         []contracts.Loader
+	lookups         []contracts.LookupLoader
 	workerCount     int
 	loaderWorkers   int
 	batchSize       int
 	retryCount      int
 	retryDelay      time.Duration
 	rawChanBuffer   int
-	checkpointStore contract.CheckpointStore
+	checkpointStore contracts.CheckpointStore
 	checkpointFunc  func(rec utils.Record) string
 	lastCheckpoint  string
 	cpMutex         sync.Mutex
 	maxErrorCount   int
 	errorCount      int
 	errorLock       sync.Mutex
-	circuitBreaker  *resilience.CircuitBreaker
+	circuitBreaker  *transactions.CircuitBreaker
 	cancelFunc      context.CancelFunc
 	lookupStore     map[string][]utils.Record
 	lookupInCache   sync.Map
@@ -726,7 +728,7 @@ func defaultConfig() *ETL {
 		rawChanBuffer:  100,
 		maxErrorCount:  10,
 		lookupStore:    make(map[string][]utils.Record),
-		circuitBreaker: resilience.NewCircuitBreaker(5, 5*time.Second),
+		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/oarkflow/etl/pkg/transformer"
+	"github.com/oarkflow/etl/pkg/transformers"
 )
 
 type DataConfig struct {
@@ -66,12 +66,12 @@ type Config struct {
 	Tables      []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
 	Buffer      int            `json:"buffer" yaml:"buffer"`
-	Checkpoint  Checkpoint     `json:"checkpoint" yaml:"checkpoint"`
+	Checkpoint  Checkpoint     `json:"checkpoints" yaml:"checkpoints"`
 }
 
 type AggregatorConfig struct {
-	GroupBy      []string                            `yaml:"group_by"`
-	Aggregations []transformer.AggregationDefinition `yaml:"aggregations"`
+	GroupBy      []string                             `yaml:"group_by"`
+	Aggregations []transformers.AggregationDefinition `yaml:"aggregations"`
 }
 
 func Load(path string) (*Config, error) {

@@ -885,6 +885,6 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		}
 		return NewRedisProvider(redisCfg), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %s", cfg.Type)
+		return nil, fmt.Errorf("unsupported providers type: %s", cfg.Type)
 	}
 }

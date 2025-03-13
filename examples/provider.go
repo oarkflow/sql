@@ -14,7 +14,7 @@ import (
 
 	goccy "github.com/goccy/go-json"
 
-	"github.com/oarkflow/etl/pkg/provider/data"
+	"github.com/oarkflow/etl/pkg/providers/data"
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -82,7 +82,7 @@ func startRESTServerWithConfig(config RESTServerConfig) {
 			}
 			restMu.RUnlock()
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(items)
+			_ = json.NewEncoder(w).Encode(items)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -105,7 +105,7 @@ func startRESTServerWithConfig(config RESTServerConfig) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(item)
+			_ = json.NewEncoder(w).Encode(item)
 		case "PUT":
 			var item utils.Record
 			if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
@@ -137,7 +137,9 @@ func startRESTServerWithConfig(config RESTServerConfig) {
 	})
 
 	log.Printf("Starting REST server on :8081 with resourcePath %s and idField %s", resourcePath, idField)
-	go http.ListenAndServe(":8081", nil)
+	go func() {
+		_ = http.ListenAndServe(":8081", nil)
+	}()
 }
 
 func testDataProvider(ctx context.Context, name string, provider data.Provider) {
@@ -228,7 +230,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("SQLProvider error: %v", err)
 	}
-	defer sqlProvider.Close()
+	defer func() {
+		_ = sqlProvider.Close()
+	}()
 	testDataProvider(ctx, "SQLProvider", sqlProvider)
 
 	restConfig := data.ProviderConfig{
@@ -289,7 +293,7 @@ func main() {
 	} else {
 		testDataProvider(ctx, "RedisProvider", redisProvider)
 	}
-	redisProvider.Close()
+	_ = redisProvider.Close()
 
 	log.Println("Populating SQLProvider with data for streaming test...")
 	if err := populateProvider(ctx, sqlProvider, sqlConfig.IDColumn, 5); err != nil {

@@ -1,4 +1,4 @@
-package checkpoint
+package checkpoints
 
 import (
 	"context"
@@ -29,20 +29,20 @@ func NewFileCheckpointStore(filename string) *FileCheckpointStore {
 	return store
 }
 
-func (f *FileCheckpointStore) GetCheckpoint(ctx context.Context) (string, error) {
+func (f *FileCheckpointStore) GetCheckpoint(_ context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.checkpoint, nil
 }
 
-func (f *FileCheckpointStore) SaveCheckpoint(ctx context.Context, cp string) error {
+func (f *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if cp <= f.checkpoint {
 		return nil
 	}
 	if err := os.WriteFile(f.filename, []byte(cp), 0644); err != nil {
-		return fmt.Errorf("failed to write checkpoint: %w", err)
+		return fmt.Errorf("failed to write checkpoints: %w", err)
 	}
 	f.checkpoint = cp
 	return nil

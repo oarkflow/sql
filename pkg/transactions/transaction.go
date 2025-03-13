@@ -1,4 +1,4 @@
-package resilience
+package transactions
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/etl/pkg/logs"
-	"github.com/oarkflow/etl/pkg/metric"
+	"github.com/oarkflow/etl/pkg/metrics"
 )
 
 type contextKey string
@@ -103,9 +103,9 @@ type TransactionOptions struct {
 	LifecycleHooks         *LifecycleHooks
 	DistributedCoordinator DistributedCoordinator
 	Logger                 logs.Logger
-	Metrics                metric.Collector
+	Metrics                metrics.Collector
 	CaptureStackTrace      bool
-	Tracer                 metric.Tracer
+	Tracer                 metrics.Tracer
 	AuditLogger            logs.AuditLogger
 }
 
@@ -170,12 +170,12 @@ type Transaction struct {
 	lifecycleHooks            *LifecycleHooks
 	distributedCoordinator    DistributedCoordinator
 	logger                    logs.Logger
-	metrics                   metric.Collector
+	metrics                   metrics.Collector
 	testHooks                 *TestHooks
 	savepoints                map[string]int
 	abortCalled               bool
 	captureStackTrace         bool
-	tracer                    metric.Tracer
+	tracer                    metrics.Tracer
 	auditLogger               logs.AuditLogger
 }
 
@@ -206,9 +206,9 @@ func LoadTransactionConfig() TransactionOptions {
 		BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond },
 	}
 	opts.Logger = &logs.DefaultLogger{Fields: make(map[string]any), Level: logs.InfoLevel}
-	opts.Metrics = &metric.PrometheusMetricsCollector{}
+	opts.Metrics = &metrics.PrometheusMetricsCollector{}
 	opts.CaptureStackTrace = true
-	opts.Tracer = &metric.NoopTracer{}
+	opts.Tracer = &metrics.NoopTracer{}
 	opts.AuditLogger = &logs.SimpleAuditLogger{}
 	return opts
 }
@@ -252,11 +252,11 @@ func (tb *TransactionBuilder) SetLogger(l logs.Logger) *TransactionBuilder {
 	tb.opts.Logger = l
 	return tb
 }
-func (tb *TransactionBuilder) SetMetrics(m metric.Collector) *TransactionBuilder {
+func (tb *TransactionBuilder) SetMetrics(m metrics.Collector) *TransactionBuilder {
 	tb.opts.Metrics = m
 	return tb
 }
-func (tb *TransactionBuilder) SetTracer(tr metric.Tracer) *TransactionBuilder {
+func (tb *TransactionBuilder) SetTracer(tr metrics.Tracer) *TransactionBuilder {
 	tb.opts.Tracer = tr
 	return tb
 }
@@ -274,9 +274,9 @@ func NewTransaction() *Transaction {
 		Timeout:           0,
 		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
 		Logger:            &logs.DefaultLogger{Fields: make(map[string]any), Level: logs.InfoLevel},
-		Metrics:           &metric.NoopMetricsCollector{},
+		Metrics:           &metrics.NoopMetricsCollector{},
 		CaptureStackTrace: true,
-		Tracer:            &metric.NoopTracer{},
+		Tracer:            &metrics.NoopTracer{},
 		AuditLogger:       &logs.SimpleAuditLogger{},
 	})
 }
@@ -319,7 +319,7 @@ func (t *Transaction) SetLogger(l logs.Logger) {
 	t.logger = l
 }
 
-func (t *Transaction) SetMetricsCollector(m metric.Collector) {
+func (t *Transaction) SetMetricsCollector(m metrics.Collector) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.metrics = m
@@ -392,7 +392,7 @@ func (t *Transaction) SetDistributedCoordinator(dc DistributedCoordinator) {
 	t.distributedCoordinator = dc
 }
 
-func (t *Transaction) SetTracer(tr metric.Tracer) {
+func (t *Transaction) SetTracer(tr metrics.Tracer) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tracer = tr
@@ -462,7 +462,7 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	}
 
 	if t.tracer != nil {
-		var span metric.Span
+		var span metrics.Span
 		ctx, span = t.tracer.StartSpan(ctx, fmt.Sprintf("Transaction-%d-Begin", t.id))
 		span.End()
 	}
@@ -577,7 +577,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		commitCtx = ctx
 	}
 
-	var span metric.Span
+	var span metrics.Span
 	if t.tracer != nil {
 		commitCtx, span = t.tracer.StartSpan(commitCtx, fmt.Sprintf("Transaction-%d-Commit", t.id))
 		defer span.End()
@@ -891,7 +891,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		rbCtx = ctx
 	}
 
-	var span metric.Span
+	var span metrics.Span
 	if t.tracer != nil {
 		rbCtx, span = t.tracer.StartSpan(rbCtx, fmt.Sprintf("Transaction-%d-Rollback", t.id))
 		defer span.End()

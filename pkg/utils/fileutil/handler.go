@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/oarkflow/etl/pkg/contract"
+	"github.com/oarkflow/etl/pkg/contracts"
 )
 
-func NewAppender[T any](file, extension string, appendMode bool, size ...int) (contract.Appender[T], error) {
+func NewAppender[T any](file, extension string, appendMode bool, size ...int) (contracts.Appender[T], error) {
 	batchSize := 1000
 	if len(size) > 0 && size[0] > 0 {
 		batchSize = size[0]
