@@ -7,12 +7,16 @@ import (
 	"github.com/oarkflow/etl/pkg/contract"
 )
 
-func NewAppender[T any](file, extension string, appendMode bool) (contract.Appender[T], error) {
+func NewAppender[T any](file, extension string, appendMode bool, size ...int) (contract.Appender[T], error) {
+	batchSize := 1000
+	if len(size) > 0 && size[0] > 0 {
+		batchSize = size[0]
+	}
 	switch extension {
 	case "json":
-		return NewJSONAppender[T](file, appendMode)
+		return NewJSONAppender[T](file, appendMode, batchSize)
 	case "csv":
-		return NewCSVAppender[T](file, appendMode)
+		return NewCSVAppender[T](file, appendMode, batchSize)
 	default:
 		return nil, fmt.Errorf("unsupported file extension: %s", extension)
 	}

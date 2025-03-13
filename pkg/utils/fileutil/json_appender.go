@@ -17,15 +17,23 @@ type JSONAppender[T any] struct {
 	filePath       string
 	file           *os.File
 	fileLock       *flock.Flock
-	mu             sync.Mutex
+	mu             sync.Mutex // protects file operations
 	tailBufferSize int
 	syncOnAppend   bool
 	appendMode     bool
+
+	// New fields for batch buffering.
+	batchSize int        // predefined batch size
+	pending   []T        // pending elements waiting to be flushed
+	batchMu   sync.Mutex // protects the pending slice
 }
 
 // NewJSONAppender creates a new JSONAppender for elements of type T.
-// Additional options (such as WithDedup) can be provided to change the appender’s behavior.
-func NewJSONAppender[T any](filePath string, appendMode bool) (*JSONAppender[T], error) {
+// The batchSize parameter defines how many items are accumulated before a flush.
+func NewJSONAppender[T any](filePath string, appendMode bool, batchSize int) (*JSONAppender[T], error) {
+	if batchSize <= 0 {
+		return nil, errors.New("batchSize must be greater than zero")
+	}
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, err
@@ -37,6 +45,8 @@ func NewJSONAppender[T any](filePath string, appendMode bool) (*JSONAppender[T],
 		tailBufferSize: 1024,
 		syncOnAppend:   true,
 		appendMode:     appendMode,
+		batchSize:      batchSize,
+		pending:        make([]T, 0, batchSize),
 	}
 	if err := ja.validateOrInitialize(); err != nil {
 		_ = f.Close()
@@ -90,8 +100,29 @@ func (ja *JSONAppender[T]) validateOrInitialize() error {
 }
 
 // Append appends a single element of type T.
+// It accumulates elements until the batchSize is reached, then flushes them using AppendBatch.
+// In case of error during flush, the batch is requeued.
 func (ja *JSONAppender[T]) Append(element T) error {
-	return ja.AppendBatch([]T{element})
+	ja.batchMu.Lock()
+	ja.pending = append(ja.pending, element)
+	if len(ja.pending) >= ja.batchSize {
+		// Copy and clear pending records.
+		batch := make([]T, len(ja.pending))
+		copy(batch, ja.pending)
+		ja.pending = nil
+		ja.batchMu.Unlock()
+		// Flush the batch.
+		if err := ja.AppendBatch(batch); err != nil {
+			// On error, requeue the batch so no records are lost.
+			ja.batchMu.Lock()
+			ja.pending = append(batch, ja.pending...)
+			ja.batchMu.Unlock()
+			return err
+		}
+		return nil
+	}
+	ja.batchMu.Unlock()
+	return nil
 }
 
 // AppendBatch appends a batch of elements while ensuring the file remains a valid JSON array.
@@ -203,8 +234,19 @@ func (ja *JSONAppender[T]) AppendBatch(elements []T) error {
 	return nil
 }
 
-// Close closes the underlying file.
+// Close flushes any remaining pending records and closes the underlying file.
 func (ja *JSONAppender[T]) Close() error {
+	// Flush any remaining pending records.
+	ja.batchMu.Lock()
+	batch := make([]T, len(ja.pending))
+	copy(batch, ja.pending)
+	ja.pending = nil
+	ja.batchMu.Unlock()
+	if len(batch) > 0 {
+		if err := ja.AppendBatch(batch); err != nil {
+			return err
+		}
+	}
 	ja.mu.Lock()
 	defer ja.mu.Unlock()
 	return ja.file.Close()
