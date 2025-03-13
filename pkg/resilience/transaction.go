@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,6 +225,30 @@ func (n *NoopMetricsCollector) IncErrorCount()                                 {
 func (n *NoopMetricsCollector) IncRetryCount()                                 {}
 func (n *NoopMetricsCollector) RecordActionDuration(_ string, _ time.Duration) {}
 
+type PrometheusMetricsCollector struct{}
+
+func (p *PrometheusMetricsCollector) IncCommitCount() {
+	log.Println("Prometheus: commit count incremented")
+}
+func (p *PrometheusMetricsCollector) IncRollbackCount() {
+	log.Println("Prometheus: rollback count incremented")
+}
+func (p *PrometheusMetricsCollector) RecordCommitDuration(d time.Duration) {
+	log.Printf("Prometheus: commit duration %v", d)
+}
+func (p *PrometheusMetricsCollector) RecordRollbackDuration(d time.Duration) {
+	log.Printf("Prometheus: rollback duration %v", d)
+}
+func (p *PrometheusMetricsCollector) IncErrorCount() {
+	log.Println("Prometheus: error count incremented")
+}
+func (p *PrometheusMetricsCollector) IncRetryCount() {
+	log.Println("Prometheus: retry count incremented")
+}
+func (p *PrometheusMetricsCollector) RecordActionDuration(action string, d time.Duration) {
+	log.Printf("Prometheus: action %s duration %v", action, d)
+}
+
 type TransactionError struct {
 	TxID       int64
 	Err        error
@@ -291,6 +317,15 @@ type LifecycleHooks struct {
 	OnClose          func(txID int64, ctx context.Context)
 }
 
+type AuditLogger interface {
+	LogEvent(event string, attrs map[string]any)
+}
+type SimpleAuditLogger struct{}
+
+func (sal *SimpleAuditLogger) LogEvent(event string, attrs map[string]any) {
+	log.Printf("Audit Event: %s, attrs: %v", event, attrs)
+}
+
 type TransactionOptions struct {
 	IsolationLevel         string
 	Timeout                time.Duration
@@ -306,6 +341,7 @@ type TransactionOptions struct {
 	Metrics                MetricsCollector
 	CaptureStackTrace      bool
 	Tracer                 Tracer
+	AuditLogger            AuditLogger
 }
 
 type TxState int
@@ -375,14 +411,96 @@ type Transaction struct {
 	abortCalled               bool
 	captureStackTrace         bool
 	tracer                    Tracer
+	auditLogger               AuditLogger
 }
 
 var txCounter int64
 
 var txPool = sync.Pool{
-	New: func() any {
-		return &Transaction{}
-	},
+	New: func() any { return &Transaction{} },
+}
+
+func LoadTransactionConfig() TransactionOptions {
+	var opts TransactionOptions
+	opts.IsolationLevel = os.Getenv("TX_ISOLATION_LEVEL")
+	timeoutStr := os.Getenv("TX_TIMEOUT")
+	if t, err := strconv.Atoi(timeoutStr); err == nil {
+		opts.Timeout = time.Duration(t) * time.Millisecond
+	} else {
+		opts.Timeout = 5000 * time.Millisecond
+	}
+	opts.PrepareTimeout = opts.Timeout / 2
+	opts.CommitTimeout = opts.Timeout / 2
+	opts.RollbackTimeout = opts.Timeout / 2
+	opts.ParallelCommit = os.Getenv("TX_PARALLEL_COMMIT") == "true"
+	opts.ParallelRollback = os.Getenv("TX_PARALLEL_ROLLBACK") == "true"
+	opts.RetryPolicy = RetryPolicy{
+		MaxRetries:      3,
+		Delay:           200 * time.Millisecond,
+		ShouldRetry:     func(err error) bool { return true },
+		BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond },
+	}
+	opts.Logger = &DefaultLogger{fields: make(map[string]any), Level: InfoLevel}
+	opts.Metrics = &PrometheusMetricsCollector{}
+	opts.CaptureStackTrace = true
+	opts.Tracer = &NoopTracer{}
+	opts.AuditLogger = &SimpleAuditLogger{}
+	return opts
+}
+
+type TransactionBuilder struct {
+	opts TransactionOptions
+}
+
+func NewTransactionBuilder() *TransactionBuilder {
+	return &TransactionBuilder{opts: LoadTransactionConfig()}
+}
+func (tb *TransactionBuilder) SetIsolationLevel(level string) *TransactionBuilder {
+	tb.opts.IsolationLevel = level
+	return tb
+}
+func (tb *TransactionBuilder) SetTimeout(d time.Duration) *TransactionBuilder {
+	tb.opts.Timeout = d
+	return tb
+}
+func (tb *TransactionBuilder) SetParallelCommit(parallel bool) *TransactionBuilder {
+	tb.opts.ParallelCommit = parallel
+	return tb
+}
+func (tb *TransactionBuilder) SetParallelRollback(parallel bool) *TransactionBuilder {
+	tb.opts.ParallelRollback = parallel
+	return tb
+}
+func (tb *TransactionBuilder) SetRetryPolicy(rp RetryPolicy) *TransactionBuilder {
+	tb.opts.RetryPolicy = rp
+	return tb
+}
+func (tb *TransactionBuilder) SetLifecycleHooks(hooks *LifecycleHooks) *TransactionBuilder {
+	tb.opts.LifecycleHooks = hooks
+	return tb
+}
+func (tb *TransactionBuilder) SetDistributedCoordinator(dc DistributedCoordinator) *TransactionBuilder {
+	tb.opts.DistributedCoordinator = dc
+	return tb
+}
+func (tb *TransactionBuilder) SetLogger(l Logger) *TransactionBuilder {
+	tb.opts.Logger = l
+	return tb
+}
+func (tb *TransactionBuilder) SetMetrics(m MetricsCollector) *TransactionBuilder {
+	tb.opts.Metrics = m
+	return tb
+}
+func (tb *TransactionBuilder) SetTracer(tr Tracer) *TransactionBuilder {
+	tb.opts.Tracer = tr
+	return tb
+}
+func (tb *TransactionBuilder) SetAuditLogger(a AuditLogger) *TransactionBuilder {
+	tb.opts.AuditLogger = a
+	return tb
+}
+func (tb *TransactionBuilder) Build() *Transaction {
+	return NewTransactionWithOptions(tb.opts)
 }
 
 func NewTransaction() *Transaction {
@@ -390,10 +508,11 @@ func NewTransaction() *Transaction {
 		IsolationLevel:    "default",
 		Timeout:           0,
 		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
-		Logger:            &DefaultLogger{Level: InfoLevel},
+		Logger:            &DefaultLogger{fields: make(map[string]any), Level: InfoLevel},
 		Metrics:           &NoopMetricsCollector{},
 		CaptureStackTrace: true,
 		Tracer:            &NoopTracer{},
+		AuditLogger:       &SimpleAuditLogger{},
 	})
 }
 
@@ -581,6 +700,9 @@ func (t *Transaction) Begin(ctx context.Context) error {
 		var span Span
 		ctx, span = t.tracer.StartSpan(ctx, fmt.Sprintf("Transaction-%d-Begin", t.id))
 		span.End()
+	}
+	if t.auditLogger != nil {
+		t.auditLogger.LogEvent("Begin", map[string]any{"tx_id": t.id})
 	}
 	return nil
 }
@@ -963,6 +1085,9 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnAfterCommit != nil {
 		t.lifecycleHooks.OnAfterCommit(t.id, commitCtx)
 	}
+	if t.auditLogger != nil {
+		t.auditLogger.LogEvent("Commit", map[string]any{"tx_id": t.id, "state": t.state.String()})
+	}
 	return nil
 }
 
@@ -1129,6 +1254,9 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 	}
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnAfterRollback != nil {
 		t.lifecycleHooks.OnAfterRollback(t.id, rbCtx)
+	}
+	if t.auditLogger != nil {
+		t.auditLogger.LogEvent("Rollback", map[string]any{"tx_id": t.id, "state": t.state.String()})
 	}
 	return nil
 }
