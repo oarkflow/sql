@@ -11,28 +11,54 @@ import (
 	"time"
 )
 
+type contextKey string
+
+const (
+	contextKeyBatch         contextKey = "batch"
+	ContextKeyCorrelationID contextKey = "correlation_id"
+)
+
+type LogLevel int
+
+const (
+	DebugLevel LogLevel = iota
+	InfoLevel
+	WarnLevel
+	ErrorLevel
+)
+
 type Logger interface {
 	Info(msg string, args ...interface{})
 	Error(msg string, args ...interface{})
 	Debug(msg string, args ...interface{})
 	WithFields(fields map[string]interface{}) Logger
+	SetLevel(level LogLevel)
+	GetLevel() LogLevel
 }
 
 type DefaultLogger struct {
 	fields map[string]interface{}
+	Level  LogLevel
 }
 
 func (l *DefaultLogger) Info(msg string, args ...interface{}) {
+	if l.Level > InfoLevel {
+		return
+	}
 	msg = l.prependFields(msg)
 	log.Printf("[INFO] "+msg, args...)
 }
 
 func (l *DefaultLogger) Error(msg string, args ...interface{}) {
+
 	msg = l.prependFields(msg)
 	log.Printf("[ERROR] "+msg, args...)
 }
 
 func (l *DefaultLogger) Debug(msg string, args ...interface{}) {
+	if l.Level > DebugLevel {
+		return
+	}
 	msg = l.prependFields(msg)
 	log.Printf("[DEBUG] "+msg, args...)
 }
@@ -45,7 +71,15 @@ func (l *DefaultLogger) WithFields(fields map[string]interface{}) Logger {
 	for k, v := range fields {
 		newFields[k] = v
 	}
-	return &DefaultLogger{fields: newFields}
+	return &DefaultLogger{fields: newFields, Level: l.Level}
+}
+
+func (l *DefaultLogger) SetLevel(level LogLevel) {
+	l.Level = level
+}
+
+func (l *DefaultLogger) GetLevel() LogLevel {
+	return l.Level
 }
 
 func (l *DefaultLogger) prependFields(msg string) string {
@@ -71,25 +105,30 @@ type MetricsCollector interface {
 	RecordCommitDuration(d time.Duration)
 	RecordRollbackDuration(d time.Duration)
 	IncErrorCount()
+	IncRetryCount()
+	RecordActionDuration(action string, d time.Duration)
 }
 
 type NoopMetricsCollector struct{}
 
-func (n *NoopMetricsCollector) IncCommitCount()                        {}
-func (n *NoopMetricsCollector) IncRollbackCount()                      {}
-func (n *NoopMetricsCollector) RecordCommitDuration(_ time.Duration)   {}
-func (n *NoopMetricsCollector) RecordRollbackDuration(_ time.Duration) {}
-func (n *NoopMetricsCollector) IncErrorCount()                         {}
+func (n *NoopMetricsCollector) IncCommitCount()                                {}
+func (n *NoopMetricsCollector) IncRollbackCount()                              {}
+func (n *NoopMetricsCollector) RecordCommitDuration(_ time.Duration)           {}
+func (n *NoopMetricsCollector) RecordRollbackDuration(_ time.Duration)         {}
+func (n *NoopMetricsCollector) IncErrorCount()                                 {}
+func (n *NoopMetricsCollector) IncRetryCount()                                 {}
+func (n *NoopMetricsCollector) RecordActionDuration(_ string, _ time.Duration) {}
 
 type TransactionError struct {
 	TxID       int64
 	Err        error
+	Code       string
 	Action     string
 	StackTrace string
 }
 
 func (te TransactionError) Error() string {
-	return fmt.Sprintf("transaction %d [%s]: %v\nStackTrace:\n%s", te.TxID, te.Action, te.Err, te.StackTrace)
+	return fmt.Sprintf("transaction %d [%s, code %s]: %v\nStackTrace:\n%s", te.TxID, te.Action, te.Code, te.Err, te.StackTrace)
 }
 
 type TransactionalResource interface {
@@ -121,6 +160,23 @@ type DistributedCoordinator interface {
 	RollbackDistributed(tx *Transaction) error
 }
 
+type TwoPhaseCoordinator struct{}
+
+func (c *TwoPhaseCoordinator) BeginDistributed(tx *Transaction) error {
+	log.Printf("TwoPhaseCoordinator: Begin distributed transaction %d", tx.GetID())
+	return nil
+}
+
+func (c *TwoPhaseCoordinator) CommitDistributed(tx *Transaction) error {
+	log.Printf("TwoPhaseCoordinator: Commit distributed transaction %d", tx.GetID())
+	return nil
+}
+
+func (c *TwoPhaseCoordinator) RollbackDistributed(tx *Transaction) error {
+	log.Printf("TwoPhaseCoordinator: Rollback distributed transaction %d", tx.GetID())
+	return nil
+}
+
 type LifecycleHooks struct {
 	OnBegin          func(txID int64, ctx context.Context)
 	OnBeforeCommit   func(txID int64, ctx context.Context)
@@ -143,6 +199,7 @@ type TransactionOptions struct {
 	DistributedCoordinator DistributedCoordinator
 	Logger                 Logger
 	Metrics                MetricsCollector
+	CaptureStackTrace      bool
 }
 
 type TxState int
@@ -203,21 +260,19 @@ type Transaction struct {
 	testHooks              *TestHooks
 	savepoints             map[string]int
 	abortCalled            bool
+	captureStackTrace      bool
 }
 
 var txCounter int64
 
 func NewTransaction() *Transaction {
 	return NewTransactionWithOptions(TransactionOptions{
-		IsolationLevel: "default",
-		Timeout:        0,
-		RetryPolicy: RetryPolicy{
-			MaxRetries:  0,
-			Delay:       0,
-			ShouldRetry: func(err error) bool { return false },
-		},
-		Logger:  &DefaultLogger{},
-		Metrics: &NoopMetricsCollector{},
+		IsolationLevel:    "default",
+		Timeout:           0,
+		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
+		Logger:            &DefaultLogger{Level: InfoLevel},
+		Metrics:           &NoopMetricsCollector{},
+		CaptureStackTrace: true,
 	})
 }
 
@@ -242,6 +297,7 @@ func NewTransactionWithOptions(opts TransactionOptions) *Transaction {
 		lifecycleHooks:         opts.LifecycleHooks,
 		distributedCoordinator: opts.DistributedCoordinator,
 		savepoints:             make(map[string]int),
+		captureStackTrace:      opts.CaptureStackTrace,
 	}
 	return tx
 }
@@ -328,7 +384,11 @@ func (t *Transaction) SetDistributedCoordinator(dc DistributedCoordinator) {
 func (t *Transaction) Begin(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	batch := ctx.Value("batch")
+	batch := ctx.Value(contextKeyBatch)
+
+	if cid, ok := ctx.Value(ContextKeyCorrelationID).(string); ok {
+		t.logger = t.logger.WithFields(map[string]interface{}{"correlation_id": cid})
+	}
 	if t.state != StateInitialized {
 		return fmt.Errorf("cannot begin transaction %d in state %s", t.id, t.state)
 	}
@@ -348,7 +408,6 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	if batch != nil {
 		t.logger.Info("Transaction %d begun for batch %v", t.id, batch)
 	}
-
 	if t.distributedCoordinator != nil {
 		if err := t.distributedCoordinator.BeginDistributed(t); err != nil {
 			return err
@@ -414,7 +473,6 @@ func (t *Transaction) RegisterResource(res TransactionalResource) error {
 }
 
 func (t *Transaction) prepareResources(ctx context.Context) error {
-
 	var prepareCtx context.Context
 	var cancel context.CancelFunc
 	t.mu.RLock()
@@ -469,10 +527,15 @@ func (t *Transaction) Commit(ctx context.Context) error {
 
 	t.mu.Lock()
 	if t.state != StateInProgress {
+
+		if t.state == StateCommitted || t.state == StateRolledBack {
+			t.mu.Unlock()
+			return nil
+		}
 		t.mu.Unlock()
 		return fmt.Errorf("cannot commit transaction %d in state %s", t.id, t.state)
 	}
-	batch := commitCtx.Value("batch")
+	batch := commitCtx.Value(contextKeyBatch)
 	if err := commitCtx.Err(); err != nil {
 		t.mu.Unlock()
 		t.logger.Error("Transaction %d: Context error during commit: %v", t.id, err)
@@ -485,7 +548,11 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		t.logger.Error("Transaction %d: %v", t.id, err)
 		t.metrics.IncErrorCount()
 		_ = t.Rollback(commitCtx)
-		return TransactionError{TxID: t.id, Err: err, Action: "commit", StackTrace: string(debug.Stack())}
+		stack := ""
+		if t.captureStackTrace {
+			stack = string(debug.Stack())
+		}
+		return TransactionError{TxID: t.id, Err: err, Code: "SIM_COMMIT_FAIL", Action: "commit", StackTrace: stack}
 	}
 
 	if err := t.prepareResources(commitCtx); err != nil {
@@ -495,7 +562,11 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		t.logger.Error("Transaction %d: Prepare phase failed: %v", t.id, err)
 		t.metrics.IncErrorCount()
 		_ = t.Rollback(commitCtx)
-		return TransactionError{TxID: t.id, Err: err, Action: "prepare", StackTrace: string(debug.Stack())}
+		stack := ""
+		if t.captureStackTrace {
+			stack = string(debug.Stack())
+		}
+		return TransactionError{TxID: t.id, Err: err, Code: "PREP_FAIL", Action: "prepare", StackTrace: stack}
 	}
 
 	handleError := func(err error) {
@@ -512,10 +583,14 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			go func(i int, action func(ctx context.Context) error) {
 				defer wg.Done()
 				desc := fmt.Sprintf("commit action %d in transaction %d", i, t.id)
+				start := time.Now()
 				if err := retryAction(commitCtx, func(ctx context.Context) error {
 					return safeAction(ctx, action, desc)
 				}, desc, t.retryPolicy); err != nil {
 					errCh <- err
+					t.metrics.IncRetryCount()
+				} else {
+					t.metrics.RecordActionDuration("commit_action", time.Since(start))
 				}
 			}(i, action)
 		}
@@ -532,15 +607,24 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			rbErr := t.Rollback(commitCtx)
 			if rbErr != nil {
 				handleError(rbErr)
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v; rollback failed: %v", errList, rbErr), Action: "commit", StackTrace: string(debug.Stack())}
+				stack := ""
+				if t.captureStackTrace {
+					stack = string(debug.Stack())
+				}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v; rollback failed: %v", errList, rbErr), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
 			}
 			handleError(fmt.Errorf("commit errors: %v", errList))
 			t.metrics.IncErrorCount()
-			return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v", errList), Action: "commit", StackTrace: string(debug.Stack())}
+			stack := ""
+			if t.captureStackTrace {
+				stack = string(debug.Stack())
+			}
+			return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v", errList), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
 		}
 	} else {
 		for i, action := range t.commitActions {
 			desc := fmt.Sprintf("commit action %d in transaction %d", i, t.id)
+			start := time.Now()
 			if err := retryAction(commitCtx, func(ctx context.Context) error {
 				return safeAction(ctx, action, desc)
 			}, desc, t.retryPolicy); err != nil {
@@ -551,10 +635,20 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				handleError(err)
 				rbErr := t.Rollback(commitCtx)
 				if rbErr != nil {
-					return TransactionError{TxID: t.id, Err: fmt.Errorf("commit failed: %v; rollback failed: %v", err, rbErr), Action: "commit", StackTrace: string(debug.Stack())}
+					stack := ""
+					if t.captureStackTrace {
+						stack = string(debug.Stack())
+					}
+					return TransactionError{TxID: t.id, Err: fmt.Errorf("commit failed: %v; rollback failed: %v", err, rbErr), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
 				}
 				t.metrics.IncErrorCount()
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit action failed: %v", err), Action: "commit", StackTrace: string(debug.Stack())}
+				stack := ""
+				if t.captureStackTrace {
+					stack = string(debug.Stack())
+				}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit action failed: %v", err), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
+			} else {
+				t.metrics.RecordActionDuration("commit_action", time.Since(start))
 			}
 		}
 	}
@@ -567,10 +661,14 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			go func(i int, res TransactionalResource) {
 				defer wg.Done()
 				desc := fmt.Sprintf("resource commit %d for transaction %d", i, t.id)
+				start := time.Now()
 				if err := retryAction(commitCtx, func(ctx context.Context) error {
 					return safeResourceCommit(ctx, res, i, t.id)
 				}, desc, t.retryPolicy); err != nil {
 					errCh <- err
+					t.metrics.IncRetryCount()
+				} else {
+					t.metrics.RecordActionDuration("resource_commit", time.Since(start))
 				}
 			}(i, res)
 		}
@@ -587,15 +685,24 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			rbErr := t.Rollback(commitCtx)
 			if rbErr != nil {
 				handleError(rbErr)
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v; rollback failed: %v", errList, rbErr), Action: "commit", StackTrace: string(debug.Stack())}
+				stack := ""
+				if t.captureStackTrace {
+					stack = string(debug.Stack())
+				}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v; rollback failed: %v", errList, rbErr), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
 			}
 			handleError(fmt.Errorf("resource commit errors: %v", errList))
 			t.metrics.IncErrorCount()
-			return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v", errList), Action: "commit", StackTrace: string(debug.Stack())}
+			stack := ""
+			if t.captureStackTrace {
+				stack = string(debug.Stack())
+			}
+			return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v", errList), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
 		}
 	} else {
 		for i, res := range t.resources {
 			desc := fmt.Sprintf("resource commit %d for transaction %d", i, t.id)
+			start := time.Now()
 			if err := retryAction(commitCtx, func(ctx context.Context) error {
 				return safeResourceCommit(ctx, res, i, t.id)
 			}, desc, t.retryPolicy); err != nil {
@@ -606,10 +713,20 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				handleError(err)
 				rbErr := t.Rollback(commitCtx)
 				if rbErr != nil {
-					return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v; rollback failed: %v", err, rbErr), Action: "commit", StackTrace: string(debug.Stack())}
+					stack := ""
+					if t.captureStackTrace {
+						stack = string(debug.Stack())
+					}
+					return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v; rollback failed: %v", err, rbErr), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
 				}
 				t.metrics.IncErrorCount()
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v", err), Action: "commit", StackTrace: string(debug.Stack())}
+				stack := ""
+				if t.captureStackTrace {
+					stack = string(debug.Stack())
+				}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v", err), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
+			} else {
+				t.metrics.RecordActionDuration("resource_commit", time.Since(start))
 			}
 		}
 	}
@@ -623,7 +740,6 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	} else {
 		t.logger.Info("Transaction %d committed successfully", t.id)
 	}
-
 	if t.distributedCoordinator != nil {
 		if err := t.distributedCoordinator.CommitDistributed(t); err != nil {
 			return err
@@ -632,11 +748,14 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	if err := t.runCleanup(commitCtx); err != nil {
 		handleError(err)
 		t.metrics.IncErrorCount()
-		return TransactionError{TxID: t.id, Err: fmt.Errorf("commit cleanup error: %v", err), Action: "cleanup", StackTrace: string(debug.Stack())}
+		stack := ""
+		if t.captureStackTrace {
+			stack = string(debug.Stack())
+		}
+		return TransactionError{TxID: t.id, Err: fmt.Errorf("commit cleanup error: %v", err), Code: "CLEANUP_ERR", Action: "cleanup", StackTrace: stack}
 	}
 	t.metrics.RecordCommitDuration(time.Since(startTime))
 	t.metrics.IncCommitCount()
-
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnAfterCommit != nil {
 		t.lifecycleHooks.OnAfterCommit(t.id, commitCtx)
 	}
@@ -703,7 +822,11 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		err := fmt.Errorf("simulated rollback failure")
 		t.logger.Error("Transaction %d: %v", t.id, err)
 		t.metrics.IncErrorCount()
-		return TransactionError{TxID: t.id, Err: err, Action: "rollback", StackTrace: string(debug.Stack())}
+		stack := ""
+		if t.captureStackTrace {
+			stack = string(debug.Stack())
+		}
+		return TransactionError{TxID: t.id, Err: err, Code: "SIM_RB_FAIL", Action: "rollback", StackTrace: stack}
 	}
 
 	var errs []error
@@ -781,17 +904,19 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 
 	if len(errs) > 0 {
 		t.metrics.IncErrorCount()
-		return TransactionError{TxID: t.id, Err: fmt.Errorf("rollback encountered errors: %v", errs), Action: "rollback", StackTrace: string(debug.Stack())}
+		stack := ""
+		if t.captureStackTrace {
+			stack = string(debug.Stack())
+		}
+		return TransactionError{TxID: t.id, Err: fmt.Errorf("rollback encountered errors: %v", errs), Code: "RB_ERR", Action: "rollback", StackTrace: stack}
 	}
 	t.metrics.RecordRollbackDuration(time.Since(startTime))
 	t.metrics.IncRollbackCount()
-
 	if t.distributedCoordinator != nil {
 		if err := t.distributedCoordinator.RollbackDistributed(t); err != nil {
 			return err
 		}
 	}
-
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnAfterRollback != nil {
 		t.lifecycleHooks.OnAfterRollback(t.id, rbCtx)
 	}
@@ -830,7 +955,6 @@ func (t *Transaction) Close() error {
 	t.mu.RLock()
 	currentState := t.state
 	t.mu.RUnlock()
-
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnClose != nil {
 		t.lifecycleHooks.OnClose(t.id, context.Background())
 	}
@@ -1005,7 +1129,11 @@ func RunInTransaction(ctx context.Context, fn func(tx *Transaction) error) error
 	}()
 	if err := fn(tx); err != nil {
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Action: "rollback", StackTrace: string(debug.Stack())}
+			stack := ""
+			if tx.captureStackTrace {
+				stack = string(debug.Stack())
+			}
+			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Code: "RUNINTRANS_RB_ERR", Action: "rollback", StackTrace: stack}
 		}
 		return err
 	}
@@ -1041,7 +1169,6 @@ func retryAction(ctx context.Context, action func(ctx context.Context) error, de
 	for attempt := 0; attempt <= rp.MaxRetries; attempt++ {
 		if err = action(ctx); err != nil {
 			if rp.ShouldRetry != nil && rp.ShouldRetry(err) {
-
 				var delay time.Duration
 				if rp.BackoffStrategy != nil {
 					delay = rp.BackoffStrategy(attempt)
