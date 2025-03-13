@@ -17,13 +17,13 @@ import (
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/expr"
 
-	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/adapter"
 	"github.com/oarkflow/etl/pkg/checkpoint"
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/contract"
-	"github.com/oarkflow/etl/pkg/mappers"
+	"github.com/oarkflow/etl/pkg/mapper"
 	"github.com/oarkflow/etl/pkg/resilience"
-	"github.com/oarkflow/etl/pkg/transformers"
+	"github.com/oarkflow/etl/pkg/transformer"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
@@ -149,12 +149,12 @@ func Run(cfg *config.Config) error {
 		}
 		var mapperList []contract.Mapper
 		if len(tableCfg.Mapping) > 0 {
-			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
+			mapperList = append(mapperList, mapper.NewFieldMapper(tableCfg.Mapping))
 		}
-		mapperList = append(mapperList, &mappers.LowercaseMapper{})
+		mapperList = append(mapperList, &mapper.LowercaseMapper{})
 		opts = append(opts, WithMappers(mapperList...))
 		if tableCfg.Aggregator != nil {
-			aggTransformer := transformers.NewAggregatorTransformer(
+			aggTransformer := transformer.NewAggregatorTransformer(
 				tableCfg.Aggregator.GroupBy,
 				tableCfg.Aggregator.Aggregations,
 			)
@@ -173,7 +173,7 @@ func Run(cfg *config.Config) error {
 		var lookups []contract.LookupLoader
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
-				lookup, err := adapters.NewLookupLoader(lkup)
+				lookup, err := adapter.NewLookupLoader(lkup)
 				if err != nil {
 					log.Printf("Unsupported lookup type: %s", lkup.Type)
 					return err
@@ -457,7 +457,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 							log.Printf("[Loader Worker %d] Begin transaction error: %v", workerID, err)
 							continue
 						}
-						if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+						if sqlLoader, ok := loader.(*adapter.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
 							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
 								log.Printf("[Loader Worker %d] Table creation error: %v", workerID, err)
 								continue

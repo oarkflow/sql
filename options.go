@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/adapter"
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/contract"
-	"github.com/oarkflow/etl/pkg/transformers"
+	"github.com/oarkflow/etl/pkg/transformer"
 	utils2 "github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -34,15 +34,15 @@ func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sou
 		if sourceDB == nil {
 			return nil, fmt.Errorf("source database is nil")
 		}
-		src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
+		src = adapter.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
 	} else if sourceType == "csv" || sourceType == "json" {
 		file := sourceTable
 		if file == "" {
 			file = sourceFile
 		}
-		src = adapters.NewFileAdapter(file, "source", false)
+		src = adapter.NewFileAdapter(file, "source", false)
 	} else if sourceType == "stdin" {
-		return adapters.NewIOAdapterSource(os.Stdin, format), nil
+		return adapter.NewIOAdapterSource(os.Stdin, format), nil
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
@@ -74,7 +74,7 @@ func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMap
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = adapters.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
+			destination = adapter.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
 		} else if dest.Type == "csv" || dest.Type == "json" {
 			file := cfg.NewName
 			if file == "" {
@@ -84,9 +84,9 @@ func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMap
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
-			destination = adapters.NewFileAdapter(file, "loader", appendMode)
+			destination = adapter.NewFileAdapter(file, "loader", appendMode)
 		} else if dest.Type == "stdout" {
-			destination = adapters.NewIOAdapterLoader(os.Stdout, dest.Format)
+			destination = adapter.NewIOAdapterLoader(os.Stdout, dest.Format)
 		} else {
 			return fmt.Errorf("unsupported destination type: %s", dest.Type)
 		}
@@ -111,7 +111,7 @@ func WithTransformers(list ...contract.Transformer) Option {
 
 func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
-		e.transformers = append(e.transformers, transformers.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
+		e.transformers = append(e.transformers, transformer.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
 		return nil
 	}
 }

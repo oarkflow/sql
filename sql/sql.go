@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/adapter"
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/fileutil"
@@ -62,7 +62,7 @@ func readService(identifier string) ([]utils.Record, error) {
 			return nil, err
 		}
 		defer db.Close()
-		src := adapters.NewSQLAdapterAsSource(db, source, "")
+		src := adapter.NewSQLAdapterAsSource(db, source, "")
 		ctx := context.Background()
 		err = src.Setup(ctx)
 		if err != nil {

@@ -14,7 +14,7 @@ import (
 
 	goccy "github.com/goccy/go-json"
 
-	"github.com/oarkflow/etl/pkg/providers/data"
+	"github.com/oarkflow/etl/pkg/provider/data"
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -233,7 +233,7 @@ func main() {
 
 	restConfig := data.ProviderConfig{
 		Type:         "rest",
-		BaseURL:      "http:/-/localhost:8081",
+		BaseURL:      "http://localhost:8081",
 		Timeout:      5 * time.Second,
 		ResourcePath: "items",
 		IDField:      "id",

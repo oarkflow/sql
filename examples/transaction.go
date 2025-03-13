@@ -1,4 +1,3 @@
-// File: example_all_cases.go
 package main
 
 import (
@@ -8,14 +7,11 @@ import (
 	"log"
 	"time"
 
+	"github.com/oarkflow/etl/pkg/logs"
+	"github.com/oarkflow/etl/pkg/metric"
 	"github.com/oarkflow/etl/pkg/resilience"
 )
 
-// -----------------------------
-// Dummy Resource Implementations
-// -----------------------------
-
-// DummyResource implements TransactionalResource and can simulate failures.
 type DummyResource struct {
 	Name         string
 	FailCommit   bool
@@ -38,7 +34,6 @@ func (dr *DummyResource) Rollback(ctx context.Context) error {
 	return nil
 }
 
-// DummyPreparableResource implements PreparableResource.
 type DummyPreparableResource struct {
 	Name        string
 	FailPrepare bool
@@ -62,18 +57,13 @@ func (dpr *DummyPreparableResource) Rollback(ctx context.Context) error {
 	return nil
 }
 
-// -----------------------------
-// Dummy Tracer Implementation
-// -----------------------------
-
-// DummyTracer implements the Tracer interface.
 type DummyTracer struct{}
 
 type DummySpan struct {
 	name string
 }
 
-func (dt *DummyTracer) StartSpan(ctx context.Context, name string) (context.Context, resilience.Span) {
+func (dt *DummyTracer) StartSpan(ctx context.Context, name string) (context.Context, metric.Span) {
 	log.Printf("Starting span: %s", name)
 	return ctx, &DummySpan{name: name}
 }
@@ -85,10 +75,6 @@ func (ds *DummySpan) End() {
 func (ds *DummySpan) SetAttributes(attrs map[string]interface{}) {
 	log.Printf("Span %s attributes: %v", ds.name, attrs)
 }
-
-// -----------------------------
-// Dummy Distributed Coordinator
-// -----------------------------
 
 type DummyDistributedCoordinator struct{}
 
@@ -106,10 +92,6 @@ func (ddc *DummyDistributedCoordinator) RollbackDistributed(tx *resilience.Trans
 	log.Printf("DistributedCoordinator: Rollback transaction %d", tx.GetID())
 	return nil
 }
-
-// -----------------------------
-// Custom Lifecycle Hooks
-// -----------------------------
 
 var lifecycleHooks = &resilience.LifecycleHooks{
 	OnBegin: func(txID int64, ctx context.Context) {
@@ -132,10 +114,6 @@ var lifecycleHooks = &resilience.LifecycleHooks{
 	},
 }
 
-// -----------------------------
-// Custom Retry Policy for Per-Action Usage
-// -----------------------------
-
 var customRetryPolicy = resilience.RetryPolicy{
 	MaxRetries: 2,
 	Delay:      200 * time.Millisecond,
@@ -147,11 +125,6 @@ var customRetryPolicy = resilience.RetryPolicy{
 	},
 }
 
-// -----------------------------
-// Example Functions
-// -----------------------------
-
-// Example 1: Basic Successful Transaction
 func exampleBasicTransaction() {
 	log.Println("=== Example 1: Basic Successful Transaction ===")
 	tx := resilience.NewTransaction()
@@ -173,7 +146,6 @@ func exampleBasicTransaction() {
 	}
 }
 
-// Example 2: Simulated Commit Failure
 func exampleSimulatedCommitFailure() {
 	log.Println("=== Example 2: Simulated Commit Failure ===")
 	tx := resilience.NewTransaction()
@@ -193,7 +165,6 @@ func exampleSimulatedCommitFailure() {
 	}
 }
 
-// Example 3: Simulated Prepare Failure
 func exampleSimulatedPrepareFailure() {
 	log.Println("=== Example 3: Simulated Prepare Failure ===")
 	tx := resilience.NewTransaction()
@@ -212,7 +183,6 @@ func exampleSimulatedPrepareFailure() {
 	}
 }
 
-// Example 4: Simulated Rollback Failure
 func exampleSimulatedRollbackFailure() {
 	log.Println("=== Example 4: Simulated Rollback Failure ===")
 	tx := resilience.NewTransaction()
@@ -221,7 +191,7 @@ func exampleSimulatedRollbackFailure() {
 		log.Printf("Begin error: %v", err)
 		return
 	}
-	// Force a commit action error to trigger rollback.
+
 	tx.RegisterCommit(func(ctx context.Context) error {
 		return errors.New("simulated commit error to trigger rollback")
 	})
@@ -231,7 +201,6 @@ func exampleSimulatedRollbackFailure() {
 	}
 }
 
-// Example 5: Nested Transactions and Savepoints
 func exampleNestedTransactions() {
 	log.Println("=== Example 5: Nested Transactions and Savepoints ===")
 	tx := resilience.NewTransaction()
@@ -240,18 +209,18 @@ func exampleNestedTransactions() {
 		log.Printf("Begin error: %v", err)
 		return
 	}
-	// Create an unnamed savepoint.
+
 	sp, err := tx.CreateSavepoint(ctx)
 	if err != nil {
 		log.Printf("Error creating savepoint: %v", err)
 		return
 	}
 	log.Printf("Created unnamed savepoint at index %d", sp)
-	// Create a named savepoint.
+
 	if err := tx.CreateNamedSavepoint("namedSP"); err != nil {
 		log.Printf("Error creating named savepoint: %v", err)
 	}
-	// Begin a nested transaction.
+
 	nestedTx, err := tx.BeginNested(ctx)
 	if err != nil {
 		log.Printf("Error beginning nested transaction: %v", err)
@@ -266,7 +235,7 @@ func exampleNestedTransactions() {
 	} else {
 		log.Println("Nested transaction committed")
 	}
-	// Rollback to the named savepoint.
+
 	if err := tx.RollbackToNamedSavepoint(ctx, "namedSP"); err != nil {
 		log.Printf("Error rolling back to named savepoint: %v", err)
 	} else {
@@ -279,10 +248,9 @@ func exampleNestedTransactions() {
 	}
 }
 
-// Example 6: Asynchronous Commit and Rollback
 func exampleAsyncOperations() {
 	log.Println("=== Example 6: Asynchronous Operations ===")
-	// Asynchronous Commit
+
 	tx := resilience.NewTransaction()
 	ctx := context.Background()
 	if err := tx.Begin(ctx); err != nil {
@@ -302,7 +270,7 @@ func exampleAsyncOperations() {
 	} else {
 		log.Printf("Async commit succeeded, state: %s", result.State.String())
 	}
-	// Asynchronous Rollback Example
+
 	tx2 := resilience.NewTransaction()
 	if err := tx2.Begin(ctx); err != nil {
 		log.Printf("Begin error: %v", err)
@@ -320,7 +288,6 @@ func exampleAsyncOperations() {
 	}
 }
 
-// Example 7: RunInTransaction Helper
 func exampleRunInTransaction() {
 	log.Println("=== Example 7: RunInTransaction Helper ===")
 	ctx := context.Background()
@@ -340,10 +307,9 @@ func exampleRunInTransaction() {
 	}
 }
 
-// Example 8: Custom Logger with Correlation ID
 func exampleCustomLoggerWithCorrelation() {
 	log.Println("=== Example 8: Custom Logger with Correlation ID ===")
-	// Create a context with a correlation id.
+
 	ctx := context.WithValue(context.Background(), resilience.ContextKeyCorrelationID, "corr-12345")
 	tx := resilience.NewTransaction()
 	if err := tx.Begin(ctx); err != nil {
@@ -361,15 +327,14 @@ func exampleCustomLoggerWithCorrelation() {
 	}
 }
 
-// Example 9: Distributed Coordinator Usage and Dynamic Tracing
 func exampleDistributedCoordinator() {
 	log.Println("=== Example 9: Distributed Coordinator and Tracing ===")
 	opts := resilience.TransactionOptions{
 		IsolationLevel:         "distributed",
 		Timeout:                5 * time.Second,
 		RetryPolicy:            resilience.RetryPolicy{MaxRetries: 2, Delay: 100 * time.Millisecond, ShouldRetry: func(err error) bool { return true }, BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond }},
-		Logger:                 &resilience.DefaultLogger{Level: resilience.InfoLevel},
-		Metrics:                &resilience.NoopMetricsCollector{},
+		Logger:                 &logs.DefaultLogger{Level: logs.InfoLevel},
+		Metrics:                &metric.NoopMetricsCollector{},
 		DistributedCoordinator: &DummyDistributedCoordinator{},
 		CaptureStackTrace:      true,
 		Tracer:                 &DummyTracer{},
@@ -394,7 +359,6 @@ func exampleDistributedCoordinator() {
 	}
 }
 
-// Example 10: Per-Action Retry Policies
 func examplePerActionRetryPolicies() {
 	log.Println("=== Example 10: Per-Action Retry Policies ===")
 	tx := resilience.NewTransaction()
@@ -403,7 +367,7 @@ func examplePerActionRetryPolicies() {
 		log.Printf("Begin error: %v", err)
 		return
 	}
-	// Register a commit action with a custom retry policy.
+
 	err := tx.RegisterCommitWithRetryPolicy(func(ctx context.Context) error {
 		log.Println("Custom retry commit action executed")
 		return nil
@@ -452,10 +416,10 @@ func transactionBuilder() {
 			},
 		}).
 		SetDistributedCoordinator(&resilience.TwoPhaseCoordinator{}).
-		SetLogger(&resilience.DefaultLogger{Fields: map[string]interface{}{"app": "transactionBuilderExample"}, Level: resilience.InfoLevel}).
-		SetMetrics(&resilience.NoopMetricsCollector{}).
-		SetTracer(&resilience.NoopTracer{}).
-		SetAuditLogger(&resilience.SimpleAuditLogger{})
+		SetLogger(&logs.DefaultLogger{Fields: map[string]interface{}{"app": "transactionBuilderExample"}, Level: logs.InfoLevel}).
+		SetMetrics(&metric.NoopMetricsCollector{}).
+		SetTracer(&metric.NoopTracer{}).
+		SetAuditLogger(&logs.SimpleAuditLogger{})
 
 	tx := tb.Build()
 	ctx := context.Background()
@@ -470,10 +434,6 @@ func transactionBuilder() {
 		log.Fatalf("Commit error: %v", err)
 	}
 }
-
-// -----------------------------
-// Main: Run All Examples
-// -----------------------------
 
 func main() {
 	exampleBasicTransaction()

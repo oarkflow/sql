@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/oarkflow/etl/pkg/transformers"
+	"github.com/oarkflow/etl/pkg/transformer"
 )
 
 type DataConfig struct {
@@ -70,8 +70,8 @@ type Config struct {
 }
 
 type AggregatorConfig struct {
-	GroupBy      []string                             `yaml:"group_by"`
-	Aggregations []transformers.AggregationDefinition `yaml:"aggregations"`
+	GroupBy      []string                            `yaml:"group_by"`
+	Aggregations []transformer.AggregationDefinition `yaml:"aggregations"`
 }
 
 func Load(path string) (*Config, error) {

@@ -1,4 +1,4 @@
-package transformers
+package transformer
 
 import (
 	"context"
@@ -10,16 +10,12 @@ import (
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
-// AggregationDefinition defines one aggregation on a source field.
 type AggregationDefinition struct {
 	SourceField string `json:"source_field" yaml:"source_field"`
 	Func        string `json:"func" yaml:"func"`
 	OutputField string `json:"output_field" yaml:"output_field"`
 }
 
-// AggregatorTransformer groups incoming records by one or more fields (GroupBy)
-// and computes aggregations defined in Aggregations.
-// It buffers input and produces output only when Flush is called.
 type AggregatorTransformer struct {
 	GroupBy      []string                `json:"group_by" yaml:"group_by"`
 	Aggregations []AggregationDefinition `json:"aggregations" yaml:"aggregations"`
@@ -27,16 +23,14 @@ type AggregatorTransformer struct {
 	groups map[string]map[string]*aggValue
 }
 
-// aggValue holds intermediate aggregation values.
 type aggValue struct {
 	sum   float64
 	count int
 	min   float64
 	max   float64
-	set   bool // indicates if min/max has been set
+	set   bool
 }
 
-// NewAggregatorTransformer creates a new aggregator transformer.
 func NewAggregatorTransformer(groupBy []string, aggs []AggregationDefinition) *AggregatorTransformer {
 	return &AggregatorTransformer{
 		GroupBy:      groupBy,
@@ -45,18 +39,15 @@ func NewAggregatorTransformer(groupBy []string, aggs []AggregationDefinition) *A
 	}
 }
 
-// Name returns the transformer name.
 func (at *AggregatorTransformer) Name() string {
 	return "AggregatorTransformer"
 }
 
-// Transform buffers the record into the aggregator. No output is produced immediately.
 func (at *AggregatorTransformer) Transform(ctx context.Context, rec utils.Record) (utils.Record, error) {
 	at.aggregateRecord(rec)
 	return nil, nil
 }
 
-// TransformMany behaves similarly.
 func (at *AggregatorTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
 	_, err := at.Transform(ctx, rec)
 	if err != nil {
@@ -65,7 +56,6 @@ func (at *AggregatorTransformer) TransformMany(ctx context.Context, rec utils.Re
 	return []utils.Record{}, nil
 }
 
-// aggregateRecord computes a group key from the GroupBy fields and updates the aggregation state.
 func (at *AggregatorTransformer) aggregateRecord(rec utils.Record) {
 	var groupKeyBuilder strings.Builder
 	for _, key := range at.GroupBy {
@@ -121,7 +111,6 @@ func (at *AggregatorTransformer) aggregateRecord(rec utils.Record) {
 	}
 }
 
-// Flush computes and returns the aggregated records. For "avg", the value is rounded to the nearest integer.
 func (at *AggregatorTransformer) Flush(ctx context.Context) ([]utils.Record, error) {
 	var results []utils.Record
 	for groupKey, aggs := range at.groups {
@@ -146,7 +135,7 @@ func (at *AggregatorTransformer) Flush(ctx context.Context) ([]utils.Record, err
 				case "avg":
 					if value.count > 0 {
 						avg := value.sum / float64(value.count)
-						// Rounding average to nearest integer.
+
 						rec[aggKey] = int(mathRound(avg))
 					} else {
 						rec[aggKey] = nil
@@ -163,7 +152,6 @@ func (at *AggregatorTransformer) Flush(ctx context.Context) ([]utils.Record, err
 	return results, nil
 }
 
-// toFloat converts a value to float64.
 func toFloat(val interface{}) (float64, error) {
 	switch v := val.(type) {
 	case int:
@@ -183,7 +171,6 @@ func toFloat(val interface{}) (float64, error) {
 	}
 }
 
-// splitGroupKey splits a group key using "|" as delimiter.
 func splitGroupKey(key string) []string {
 	parts := strings.Split(key, "|")
 	if len(parts) > 0 && parts[len(parts)-1] == "" {
@@ -192,7 +179,6 @@ func splitGroupKey(key string) []string {
 	return parts
 }
 
-// mathRound rounds a float64 to the nearest integer.
 func mathRound(f float64) float64 {
 	return float64(int(f + 0.5))
 }
