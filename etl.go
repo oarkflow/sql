@@ -23,7 +23,6 @@ import (
 	"github.com/oarkflow/etl/pkg/contract"
 	"github.com/oarkflow/etl/pkg/mappers"
 	"github.com/oarkflow/etl/pkg/resilience"
-	"github.com/oarkflow/etl/pkg/transactions"
 	"github.com/oarkflow/etl/pkg/transformers"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
@@ -477,7 +476,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 							continue
 						}
 					} else {
-						err := transactions.RunInTransaction(storeCtx, func(tx *transactions.Transaction) error {
+						err := resilience.RunInTransaction(storeCtx, func(tx *resilience.Transaction) error {
 							return resilience.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
 								return loader.StoreBatch(storeCtx, batch)
 							})
