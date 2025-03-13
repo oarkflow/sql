@@ -11,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/oarkflow/etl/pkg/logs"
+	"github.com/oarkflow/etl/pkg/metrics"
 )
 
 type contextKey string
@@ -19,235 +22,6 @@ const (
 	contextKeyBatch         contextKey = "batch"
 	ContextKeyCorrelationID contextKey = "correlation_id"
 )
-
-type Tracer interface {
-	StartSpan(ctx context.Context, name string) (context.Context, Span)
-}
-
-type Span interface {
-	End()
-	SetAttributes(attrs map[string]any)
-}
-
-type NoopTracer struct{}
-
-func (nt *NoopTracer) StartSpan(ctx context.Context, _ string) (context.Context, Span) {
-	return ctx, &NoopSpan{}
-}
-
-type NoopSpan struct{}
-
-func (ns *NoopSpan) End()                           {}
-func (ns *NoopSpan) SetAttributes(_ map[string]any) {}
-
-type LogLevel int
-
-const (
-	DebugLevel LogLevel = iota
-	InfoLevel
-	WarnLevel
-	ErrorLevel
-)
-
-type Logger interface {
-	Info(msg string, args ...any)
-	Error(msg string, args ...any)
-	Debug(msg string, args ...any)
-	WithFields(fields map[string]any) Logger
-	SetLevel(level LogLevel)
-	GetLevel() LogLevel
-}
-
-type DefaultLogger struct {
-	Fields map[string]any
-	Level  LogLevel
-}
-
-func (l *DefaultLogger) Info(msg string, args ...any) {
-	if l.Level > InfoLevel {
-		return
-	}
-	msg = l.prependFields(msg)
-	log.Printf("[INFO] "+msg, args...)
-}
-
-func (l *DefaultLogger) Debug(msg string, args ...any) {
-	if l.Level > DebugLevel {
-		return
-	}
-	msg = l.prependFields(msg)
-	log.Printf("[DEBUG] "+msg, args...)
-}
-
-func (l *DefaultLogger) Warn(msg string, args ...any) {
-	if l.Level > WarnLevel {
-		return
-	}
-	msg = l.prependFields(msg)
-	log.Printf("[WARN] "+msg, args...)
-}
-
-func (l *DefaultLogger) Error(msg string, args ...any) {
-	if l.Level > ErrorLevel {
-		return
-	}
-	msg = l.prependFields(msg)
-	log.Printf("[ERROR] "+msg, args...)
-}
-
-func (l *DefaultLogger) WithFields(fields map[string]any) Logger {
-	newFields := make(map[string]any)
-	for k, v := range l.Fields {
-		newFields[k] = v
-	}
-	for k, v := range fields {
-		newFields[k] = v
-	}
-	return &DefaultLogger{Fields: newFields, Level: l.Level}
-}
-
-func (l *DefaultLogger) SetLevel(level LogLevel) {
-	l.Level = level
-}
-
-func (l *DefaultLogger) GetLevel() LogLevel {
-	return l.Level
-}
-
-func (l *DefaultLogger) prependFields(msg string) string {
-	if len(l.Fields) == 0 {
-		return msg
-	}
-	fieldStr := "[FIELDS: "
-	first := true
-	for k, v := range l.Fields {
-		if !first {
-			fieldStr += ", "
-		}
-		fieldStr += fmt.Sprintf("%s=%v", k, v)
-		first = false
-	}
-	fieldStr += "] "
-	return fieldStr + msg
-}
-
-type AsyncLogger struct {
-	underlying Logger
-	logCh      chan logEntry
-	done       chan struct{}
-	level      LogLevel
-}
-
-type logEntry struct {
-	level string
-	msg   string
-	args  []any
-}
-
-func NewAsyncLogger(underlying Logger) *AsyncLogger {
-	al := &AsyncLogger{
-		underlying: underlying,
-		logCh:      make(chan logEntry, 100),
-		done:       make(chan struct{}),
-		level:      underlying.GetLevel(),
-	}
-	go al.processLogs()
-	return al
-}
-
-func (al *AsyncLogger) processLogs() {
-	for entry := range al.logCh {
-		switch entry.level {
-		case "INFO":
-			al.underlying.Info(entry.msg, entry.args...)
-		case "ERROR":
-			al.underlying.Error(entry.msg, entry.args...)
-		case "DEBUG":
-			al.underlying.Debug(entry.msg, entry.args...)
-		}
-	}
-	close(al.done)
-}
-
-func (al *AsyncLogger) Info(msg string, args ...any) {
-	if al.level > InfoLevel {
-		return
-	}
-	al.logCh <- logEntry{"INFO", msg, args}
-}
-
-func (al *AsyncLogger) Error(msg string, args ...any) {
-	al.logCh <- logEntry{"ERROR", msg, args}
-}
-
-func (al *AsyncLogger) Debug(msg string, args ...any) {
-	if al.level > DebugLevel {
-		return
-	}
-	al.logCh <- logEntry{"DEBUG", msg, args}
-}
-
-func (al *AsyncLogger) WithFields(fields map[string]any) Logger {
-	return NewAsyncLogger(al.underlying.WithFields(fields))
-}
-
-func (al *AsyncLogger) SetLevel(level LogLevel) {
-	al.level = level
-	al.underlying.SetLevel(level)
-}
-
-func (al *AsyncLogger) GetLevel() LogLevel {
-	return al.level
-}
-
-func (al *AsyncLogger) Close() {
-	close(al.logCh)
-	<-al.done
-}
-
-type MetricsCollector interface {
-	IncCommitCount()
-	IncRollbackCount()
-	RecordCommitDuration(d time.Duration)
-	RecordRollbackDuration(d time.Duration)
-	IncErrorCount()
-	IncRetryCount()
-	RecordActionDuration(action string, d time.Duration)
-}
-
-type NoopMetricsCollector struct{}
-
-func (n *NoopMetricsCollector) IncCommitCount()                                {}
-func (n *NoopMetricsCollector) IncRollbackCount()                              {}
-func (n *NoopMetricsCollector) RecordCommitDuration(_ time.Duration)           {}
-func (n *NoopMetricsCollector) RecordRollbackDuration(_ time.Duration)         {}
-func (n *NoopMetricsCollector) IncErrorCount()                                 {}
-func (n *NoopMetricsCollector) IncRetryCount()                                 {}
-func (n *NoopMetricsCollector) RecordActionDuration(_ string, _ time.Duration) {}
-
-type PrometheusMetricsCollector struct{}
-
-func (p *PrometheusMetricsCollector) IncCommitCount() {
-	log.Println("Prometheus: commit count incremented")
-}
-func (p *PrometheusMetricsCollector) IncRollbackCount() {
-	log.Println("Prometheus: rollback count incremented")
-}
-func (p *PrometheusMetricsCollector) RecordCommitDuration(d time.Duration) {
-	log.Printf("Prometheus: commit duration %v", d)
-}
-func (p *PrometheusMetricsCollector) RecordRollbackDuration(d time.Duration) {
-	log.Printf("Prometheus: rollback duration %v", d)
-}
-func (p *PrometheusMetricsCollector) IncErrorCount() {
-	log.Println("Prometheus: error count incremented")
-}
-func (p *PrometheusMetricsCollector) IncRetryCount() {
-	log.Println("Prometheus: retry count incremented")
-}
-func (p *PrometheusMetricsCollector) RecordActionDuration(action string, d time.Duration) {
-	log.Printf("Prometheus: action %s duration %v", action, d)
-}
 
 type TransactionError struct {
 	TxID       int64
@@ -317,15 +91,6 @@ type LifecycleHooks struct {
 	OnClose          func(txID int64, ctx context.Context)
 }
 
-type AuditLogger interface {
-	LogEvent(event string, attrs map[string]any)
-}
-type SimpleAuditLogger struct{}
-
-func (sal *SimpleAuditLogger) LogEvent(event string, attrs map[string]any) {
-	log.Printf("Audit Event: %s, attrs: %v", event, attrs)
-}
-
 type TransactionOptions struct {
 	IsolationLevel         string
 	Timeout                time.Duration
@@ -337,11 +102,11 @@ type TransactionOptions struct {
 	RetryPolicy            RetryPolicy
 	LifecycleHooks         *LifecycleHooks
 	DistributedCoordinator DistributedCoordinator
-	Logger                 Logger
-	Metrics                MetricsCollector
+	Logger                 logs.Logger
+	Metrics                metrics.Collector
 	CaptureStackTrace      bool
-	Tracer                 Tracer
-	AuditLogger            AuditLogger
+	Tracer                 metrics.Tracer
+	AuditLogger            logs.AuditLogger
 }
 
 type TxState int
@@ -404,14 +169,14 @@ type Transaction struct {
 	rollbackTimeout           time.Duration
 	lifecycleHooks            *LifecycleHooks
 	distributedCoordinator    DistributedCoordinator
-	logger                    Logger
-	metrics                   MetricsCollector
+	logger                    logs.Logger
+	metrics                   metrics.Collector
 	testHooks                 *TestHooks
 	savepoints                map[string]int
 	abortCalled               bool
 	captureStackTrace         bool
-	tracer                    Tracer
-	auditLogger               AuditLogger
+	tracer                    metrics.Tracer
+	auditLogger               logs.AuditLogger
 }
 
 var txCounter int64
@@ -440,11 +205,11 @@ func LoadTransactionConfig() TransactionOptions {
 		ShouldRetry:     func(err error) bool { return true },
 		BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond },
 	}
-	opts.Logger = &DefaultLogger{Fields: make(map[string]any), Level: InfoLevel}
-	opts.Metrics = &PrometheusMetricsCollector{}
+	opts.Logger = &logs.DefaultLogger{Fields: make(map[string]any), Level: logs.InfoLevel}
+	opts.Metrics = &metrics.PrometheusMetricsCollector{}
 	opts.CaptureStackTrace = true
-	opts.Tracer = &NoopTracer{}
-	opts.AuditLogger = &SimpleAuditLogger{}
+	opts.Tracer = &metrics.NoopTracer{}
+	opts.AuditLogger = &logs.SimpleAuditLogger{}
 	return opts
 }
 
@@ -483,19 +248,19 @@ func (tb *TransactionBuilder) SetDistributedCoordinator(dc DistributedCoordinato
 	tb.opts.DistributedCoordinator = dc
 	return tb
 }
-func (tb *TransactionBuilder) SetLogger(l Logger) *TransactionBuilder {
+func (tb *TransactionBuilder) SetLogger(l logs.Logger) *TransactionBuilder {
 	tb.opts.Logger = l
 	return tb
 }
-func (tb *TransactionBuilder) SetMetrics(m MetricsCollector) *TransactionBuilder {
+func (tb *TransactionBuilder) SetMetrics(m metrics.Collector) *TransactionBuilder {
 	tb.opts.Metrics = m
 	return tb
 }
-func (tb *TransactionBuilder) SetTracer(tr Tracer) *TransactionBuilder {
+func (tb *TransactionBuilder) SetTracer(tr metrics.Tracer) *TransactionBuilder {
 	tb.opts.Tracer = tr
 	return tb
 }
-func (tb *TransactionBuilder) SetAuditLogger(a AuditLogger) *TransactionBuilder {
+func (tb *TransactionBuilder) SetAuditLogger(a logs.AuditLogger) *TransactionBuilder {
 	tb.opts.AuditLogger = a
 	return tb
 }
@@ -508,11 +273,11 @@ func NewTransaction() *Transaction {
 		IsolationLevel:    "default",
 		Timeout:           0,
 		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
-		Logger:            &DefaultLogger{Fields: make(map[string]any), Level: InfoLevel},
-		Metrics:           &NoopMetricsCollector{},
+		Logger:            &logs.DefaultLogger{Fields: make(map[string]any), Level: logs.InfoLevel},
+		Metrics:           &metrics.NoopMetricsCollector{},
 		CaptureStackTrace: true,
-		Tracer:            &NoopTracer{},
-		AuditLogger:       &SimpleAuditLogger{},
+		Tracer:            &metrics.NoopTracer{},
+		AuditLogger:       &logs.SimpleAuditLogger{},
 	})
 }
 
@@ -548,13 +313,13 @@ func NewTransactionWithOptions(opts TransactionOptions) *Transaction {
 	return tx
 }
 
-func (t *Transaction) SetLogger(l Logger) {
+func (t *Transaction) SetLogger(l logs.Logger) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.logger = l
 }
 
-func (t *Transaction) SetMetricsCollector(m MetricsCollector) {
+func (t *Transaction) SetMetricsCollector(m metrics.Collector) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.metrics = m
@@ -627,7 +392,7 @@ func (t *Transaction) SetDistributedCoordinator(dc DistributedCoordinator) {
 	t.distributedCoordinator = dc
 }
 
-func (t *Transaction) SetTracer(tr Tracer) {
+func (t *Transaction) SetTracer(tr metrics.Tracer) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tracer = tr
@@ -697,7 +462,7 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	}
 
 	if t.tracer != nil {
-		var span Span
+		var span metrics.Span
 		ctx, span = t.tracer.StartSpan(ctx, fmt.Sprintf("Transaction-%d-Begin", t.id))
 		span.End()
 	}
@@ -812,7 +577,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		commitCtx = ctx
 	}
 
-	var span Span
+	var span metrics.Span
 	if t.tracer != nil {
 		commitCtx, span = t.tracer.StartSpan(commitCtx, fmt.Sprintf("Transaction-%d-Commit", t.id))
 		defer span.End()
@@ -1126,7 +891,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		rbCtx = ctx
 	}
 
-	var span Span
+	var span metrics.Span
 	if t.tracer != nil {
 		rbCtx, span = t.tracer.StartSpan(rbCtx, fmt.Sprintf("Transaction-%d-Rollback", t.id))
 		defer span.End()
@@ -1461,27 +1226,6 @@ func (nt *NestedTransaction) Rollback(ctx context.Context) error {
 	return nil
 }
 
-func RunInTransaction(ctx context.Context, fn func(tx *Transaction) error) error {
-	tx := NewTransaction()
-	if err := tx.Begin(ctx); err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Close()
-	}()
-	if err := fn(tx); err != nil {
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			stack := ""
-			if tx.captureStackTrace {
-				stack = string(debug.Stack())
-			}
-			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Code: "RUNINTRANS_RB_ERR", Category: "FATAL", Action: "rollback", StackTrace: stack}
-		}
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
 func (t *Transaction) runCleanup(ctx context.Context) error {
 	t.mu.Lock()
 	if t.cleanupCalled {
@@ -1506,55 +1250,23 @@ func (t *Transaction) runCleanup(ctx context.Context) error {
 	return nil
 }
 
-func retryAction(ctx context.Context, action func(ctx context.Context) error, description string, rp RetryPolicy) error {
-	var err error
-	for attempt := 0; attempt <= rp.MaxRetries; attempt++ {
-		if err = action(ctx); err != nil {
-			if rp.ShouldRetry != nil && rp.ShouldRetry(err) {
-				var delay time.Duration
-				if rp.BackoffStrategy != nil {
-					delay = rp.BackoffStrategy(attempt)
-				} else {
-					delay = rp.Delay
-				}
-				log.Printf("%s failed on attempt %d: %v; retrying after %v", description, attempt, err, delay)
-				select {
-				case <-time.After(delay):
-					continue
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-			return err
-		}
-		return nil
+func RunInTransaction(ctx context.Context, fn func(tx *Transaction) error) error {
+	tx := NewTransaction()
+	if err := tx.Begin(ctx); err != nil {
+		return err
 	}
-	return err
-}
-
-func safeAction(ctx context.Context, action func(ctx context.Context) error, description string) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in %s: %v", description, r)
-		}
+		_ = tx.Close()
 	}()
-	return action(ctx)
-}
-
-func safeResourceCommit(ctx context.Context, res TransactionalResource, index int, txID int64) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in resource commit %d for transaction %d: %v", index, txID, r)
+	if err := fn(tx); err != nil {
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			stack := ""
+			if tx.captureStackTrace {
+				stack = string(debug.Stack())
+			}
+			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Code: "RUNINTRANS_RB_ERR", Category: "FATAL", Action: "rollback", StackTrace: stack}
 		}
-	}()
-	return res.Commit(ctx)
-}
-
-func safeResourceRollback(ctx context.Context, res TransactionalResource, index int, txID int64) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in resource rollback %d for transaction %d: %v", index, txID, r)
-		}
-	}()
-	return res.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
 }
