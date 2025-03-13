@@ -5,13 +5,14 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/oarkflow/json"
 
-	"github.com/shirou/gopsutil/disk"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // Monitor wraps a gopsutil Process pointer for the current process
@@ -68,10 +69,20 @@ func (m *Monitor) Snapshot() (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	ioCounters, err := m.proc.IOCounters()
-	if err != nil {
-		return nil, err
+	// macOS does not support process.IOCounters()
+	var ioCounters *process.IOCountersStat
+	if runtime.GOOS != "darwin" {
+		ioCounters, err = m.proc.IOCounters()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		pid := int32(os.Getpid())
+		ioCounters, err = GetIOCountersMac(pid, "/")
+		fmt.Println(ioCounters)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	threads, err := m.proc.NumThreads()
@@ -101,12 +112,48 @@ func (m *Monitor) Snapshot() (*Snapshot, error) {
 		Timestamp:  t,
 		CPUTime:    cpuTime,
 		Memory:     memInfo.RSS,
-		IOCounters: ioCounters,
+		IOCounters: ioCounters, // This will be nil on macOS
 		Threads:    threads,
 		DiskUsage:  diskUsage,
 		SwapUsage:  swapUsage,
 		GoMemStats: &ms,
 	}, nil
+}
+
+func GetIOCountersMac(pid int32, diskPath string) (*process.IOCountersStat, error) {
+	// Get resource usage for the current process.
+	var ru syscall.Rusage
+	// Note: syscall.Getrusage only supports RUSAGE_SELF (current process).
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return nil, fmt.Errorf("getrusage failed: %w", err)
+	}
+
+	// Retrieve filesystem block size for diskPath.
+	var fsStat syscall.Statfs_t
+	blockSize := uint64(512) // fallback block size
+	if err := syscall.Statfs(diskPath, &fsStat); err == nil {
+		blockSize = uint64(fsStat.Bsize)
+	}
+
+	// ru.Inblock and ru.Oublock hold the number of block operations performed.
+	readCount := ru.Inblock
+	writeCount := ru.Oublock
+
+	// Convert block counts to estimated bytes.
+	readBytes := readCount * int64(blockSize)
+	writeBytes := writeCount * int64(blockSize)
+
+	// Populate the IOCountersStat–like struct.
+	ioCounters := &process.IOCountersStat{
+		ReadCount:      uint64(readCount),
+		WriteCount:     uint64(writeCount),
+		ReadBytes:      uint64(readBytes),
+		WriteBytes:     uint64(writeBytes),
+		DiskReadBytes:  uint64(readBytes),
+		DiskWriteBytes: uint64(writeBytes),
+	}
+
+	return ioCounters, nil
 }
 
 // Start takes a snapshot marking the beginning of an interval.
