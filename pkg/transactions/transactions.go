@@ -18,6 +18,26 @@ const (
 	ContextKeyCorrelationID contextKey = "correlation_id"
 )
 
+type Tracer interface {
+	StartSpan(ctx context.Context, name string) (context.Context, Span)
+}
+
+type Span interface {
+	End()
+	SetAttributes(attrs map[string]any)
+}
+
+type NoopTracer struct{}
+
+func (nt *NoopTracer) StartSpan(ctx context.Context, _ string) (context.Context, Span) {
+	return ctx, &NoopSpan{}
+}
+
+type NoopSpan struct{}
+
+func (ns *NoopSpan) End()                           {}
+func (ns *NoopSpan) SetAttributes(_ map[string]any) {}
+
 type LogLevel int
 
 const (
@@ -28,20 +48,20 @@ const (
 )
 
 type Logger interface {
-	Info(msg string, args ...interface{})
-	Error(msg string, args ...interface{})
-	Debug(msg string, args ...interface{})
-	WithFields(fields map[string]interface{}) Logger
+	Info(msg string, args ...any)
+	Error(msg string, args ...any)
+	Debug(msg string, args ...any)
+	WithFields(fields map[string]any) Logger
 	SetLevel(level LogLevel)
 	GetLevel() LogLevel
 }
 
 type DefaultLogger struct {
-	fields map[string]interface{}
+	fields map[string]any
 	Level  LogLevel
 }
 
-func (l *DefaultLogger) Info(msg string, args ...interface{}) {
+func (l *DefaultLogger) Info(msg string, args ...any) {
 	if l.Level > InfoLevel {
 		return
 	}
@@ -49,13 +69,7 @@ func (l *DefaultLogger) Info(msg string, args ...interface{}) {
 	log.Printf("[INFO] "+msg, args...)
 }
 
-func (l *DefaultLogger) Error(msg string, args ...interface{}) {
-
-	msg = l.prependFields(msg)
-	log.Printf("[ERROR] "+msg, args...)
-}
-
-func (l *DefaultLogger) Debug(msg string, args ...interface{}) {
+func (l *DefaultLogger) Debug(msg string, args ...any) {
 	if l.Level > DebugLevel {
 		return
 	}
@@ -63,8 +77,24 @@ func (l *DefaultLogger) Debug(msg string, args ...interface{}) {
 	log.Printf("[DEBUG] "+msg, args...)
 }
 
-func (l *DefaultLogger) WithFields(fields map[string]interface{}) Logger {
-	newFields := make(map[string]interface{})
+func (l *DefaultLogger) Warn(msg string, args ...any) {
+	if l.Level > WarnLevel {
+		return
+	}
+	msg = l.prependFields(msg)
+	log.Printf("[WARN] "+msg, args...)
+}
+
+func (l *DefaultLogger) Error(msg string, args ...any) {
+	if l.Level > ErrorLevel {
+		return
+	}
+	msg = l.prependFields(msg)
+	log.Printf("[ERROR] "+msg, args...)
+}
+
+func (l *DefaultLogger) WithFields(fields map[string]any) Logger {
+	newFields := make(map[string]any)
 	for k, v := range l.fields {
 		newFields[k] = v
 	}
@@ -99,6 +129,80 @@ func (l *DefaultLogger) prependFields(msg string) string {
 	return fieldStr + msg
 }
 
+type AsyncLogger struct {
+	underlying Logger
+	logCh      chan logEntry
+	done       chan struct{}
+	level      LogLevel
+}
+
+type logEntry struct {
+	level string
+	msg   string
+	args  []any
+}
+
+func NewAsyncLogger(underlying Logger) *AsyncLogger {
+	al := &AsyncLogger{
+		underlying: underlying,
+		logCh:      make(chan logEntry, 100),
+		done:       make(chan struct{}),
+		level:      underlying.GetLevel(),
+	}
+	go al.processLogs()
+	return al
+}
+
+func (al *AsyncLogger) processLogs() {
+	for entry := range al.logCh {
+		switch entry.level {
+		case "INFO":
+			al.underlying.Info(entry.msg, entry.args...)
+		case "ERROR":
+			al.underlying.Error(entry.msg, entry.args...)
+		case "DEBUG":
+			al.underlying.Debug(entry.msg, entry.args...)
+		}
+	}
+	close(al.done)
+}
+
+func (al *AsyncLogger) Info(msg string, args ...any) {
+	if al.level > InfoLevel {
+		return
+	}
+	al.logCh <- logEntry{"INFO", msg, args}
+}
+
+func (al *AsyncLogger) Error(msg string, args ...any) {
+	al.logCh <- logEntry{"ERROR", msg, args}
+}
+
+func (al *AsyncLogger) Debug(msg string, args ...any) {
+	if al.level > DebugLevel {
+		return
+	}
+	al.logCh <- logEntry{"DEBUG", msg, args}
+}
+
+func (al *AsyncLogger) WithFields(fields map[string]any) Logger {
+	return NewAsyncLogger(al.underlying.WithFields(fields))
+}
+
+func (al *AsyncLogger) SetLevel(level LogLevel) {
+	al.level = level
+	al.underlying.SetLevel(level)
+}
+
+func (al *AsyncLogger) GetLevel() LogLevel {
+	return al.level
+}
+
+func (al *AsyncLogger) Close() {
+	close(al.logCh)
+	<-al.done
+}
+
 type MetricsCollector interface {
 	IncCommitCount()
 	IncRollbackCount()
@@ -123,12 +227,13 @@ type TransactionError struct {
 	TxID       int64
 	Err        error
 	Code       string
+	Category   string
 	Action     string
 	StackTrace string
 }
 
 func (te TransactionError) Error() string {
-	return fmt.Sprintf("transaction %d [%s, code %s]: %v\nStackTrace:\n%s", te.TxID, te.Action, te.Code, te.Err, te.StackTrace)
+	return fmt.Sprintf("transaction %d [%s, code %s, category %s]: %v\nStackTrace:\n%s", te.TxID, te.Action, te.Code, te.Category, te.Err, te.StackTrace)
 }
 
 type TransactionalResource interface {
@@ -200,6 +305,7 @@ type TransactionOptions struct {
 	Logger                 Logger
 	Metrics                MetricsCollector
 	CaptureStackTrace      bool
+	Tracer                 Tracer
 }
 
 type TxState int
@@ -235,35 +341,49 @@ type AsyncResult struct {
 	State TxState
 }
 
+type ActionWithPolicy struct {
+	fn func(ctx context.Context) error
+	rp *RetryPolicy
+}
+
 type Transaction struct {
-	mu                     sync.RWMutex
-	id                     int64
-	state                  TxState
-	rollbackActions        []func(ctx context.Context) error
-	commitActions          []func(ctx context.Context) error
-	cleanupActions         []func(ctx context.Context) error
-	resources              []TransactionalResource
-	cleanupCalled          bool
-	retryPolicy            RetryPolicy
-	parallelCommit         bool
-	parallelRollback       bool
-	onError                func(txID int64, err error)
-	isolationLevel         string
-	timeout                time.Duration
-	prepareTimeout         time.Duration
-	commitTimeout          time.Duration
-	rollbackTimeout        time.Duration
-	lifecycleHooks         *LifecycleHooks
-	distributedCoordinator DistributedCoordinator
-	logger                 Logger
-	metrics                MetricsCollector
-	testHooks              *TestHooks
-	savepoints             map[string]int
-	abortCalled            bool
-	captureStackTrace      bool
+	mu                        sync.RWMutex
+	id                        int64
+	state                     TxState
+	rollbackActions           []func(ctx context.Context) error
+	commitActions             []func(ctx context.Context) error
+	commitActionsWithPolicy   []ActionWithPolicy
+	rollbackActionsWithPolicy []ActionWithPolicy
+	cleanupActions            []func(ctx context.Context) error
+	resources                 []TransactionalResource
+	cleanupCalled             bool
+	retryPolicy               RetryPolicy
+	parallelCommit            bool
+	parallelRollback          bool
+	onError                   func(txID int64, err error)
+	isolationLevel            string
+	timeout                   time.Duration
+	prepareTimeout            time.Duration
+	commitTimeout             time.Duration
+	rollbackTimeout           time.Duration
+	lifecycleHooks            *LifecycleHooks
+	distributedCoordinator    DistributedCoordinator
+	logger                    Logger
+	metrics                   MetricsCollector
+	testHooks                 *TestHooks
+	savepoints                map[string]int
+	abortCalled               bool
+	captureStackTrace         bool
+	tracer                    Tracer
 }
 
 var txCounter int64
+
+var txPool = sync.Pool{
+	New: func() any {
+		return &Transaction{}
+	},
+}
 
 func NewTransaction() *Transaction {
 	return NewTransactionWithOptions(TransactionOptions{
@@ -273,32 +393,39 @@ func NewTransaction() *Transaction {
 		Logger:            &DefaultLogger{Level: InfoLevel},
 		Metrics:           &NoopMetricsCollector{},
 		CaptureStackTrace: true,
+		Tracer:            &NoopTracer{},
 	})
 }
 
 func NewTransactionWithOptions(opts TransactionOptions) *Transaction {
-	tx := &Transaction{
-		id:                     atomic.AddInt64(&txCounter, 1),
-		state:                  StateInitialized,
-		rollbackActions:        make([]func(ctx context.Context) error, 0),
-		commitActions:          make([]func(ctx context.Context) error, 0),
-		cleanupActions:         make([]func(ctx context.Context) error, 0),
-		resources:              make([]TransactionalResource, 0),
-		retryPolicy:            opts.RetryPolicy,
-		isolationLevel:         opts.IsolationLevel,
-		timeout:                opts.Timeout,
-		prepareTimeout:         opts.PrepareTimeout,
-		commitTimeout:          opts.CommitTimeout,
-		rollbackTimeout:        opts.RollbackTimeout,
-		parallelCommit:         opts.ParallelCommit,
-		parallelRollback:       opts.ParallelRollback,
-		logger:                 opts.Logger,
-		metrics:                opts.Metrics,
-		lifecycleHooks:         opts.LifecycleHooks,
-		distributedCoordinator: opts.DistributedCoordinator,
-		savepoints:             make(map[string]int),
-		captureStackTrace:      opts.CaptureStackTrace,
-	}
+	tx := txPool.Get().(*Transaction)
+	tx.id = atomic.AddInt64(&txCounter, 1)
+	tx.state = StateInitialized
+	tx.rollbackActions = make([]func(ctx context.Context) error, 0)
+	tx.commitActions = make([]func(ctx context.Context) error, 0)
+	tx.commitActionsWithPolicy = make([]ActionWithPolicy, 0)
+	tx.rollbackActionsWithPolicy = make([]ActionWithPolicy, 0)
+	tx.cleanupActions = make([]func(ctx context.Context) error, 0)
+	tx.resources = make([]TransactionalResource, 0)
+	tx.savepoints = make(map[string]int)
+	tx.abortCalled = false
+
+	tx.retryPolicy = opts.RetryPolicy
+	tx.isolationLevel = opts.IsolationLevel
+	tx.timeout = opts.Timeout
+	tx.prepareTimeout = opts.PrepareTimeout
+	tx.commitTimeout = opts.CommitTimeout
+	tx.rollbackTimeout = opts.RollbackTimeout
+	tx.parallelCommit = opts.ParallelCommit
+	tx.parallelRollback = opts.ParallelRollback
+	tx.logger = opts.Logger
+	tx.metrics = opts.Metrics
+	tx.lifecycleHooks = opts.LifecycleHooks
+	tx.distributedCoordinator = opts.DistributedCoordinator
+	tx.captureStackTrace = opts.CaptureStackTrace
+	tx.tracer = opts.Tracer
+	tx.testHooks = nil
+
 	return tx
 }
 
@@ -381,13 +508,47 @@ func (t *Transaction) SetDistributedCoordinator(dc DistributedCoordinator) {
 	t.distributedCoordinator = dc
 }
 
+func (t *Transaction) SetTracer(tr Tracer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tracer = tr
+}
+
+func (t *Transaction) RegisterCommitWithRetryPolicy(fn func(ctx context.Context) error, rp RetryPolicy) error {
+	if fn == nil {
+		return errors.New("commit action cannot be nil")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.state != StateInProgress {
+		return fmt.Errorf("cannot register commit action in transaction %d state %s", t.id, t.state)
+	}
+	t.commitActionsWithPolicy = append(t.commitActionsWithPolicy, ActionWithPolicy{fn: fn, rp: &rp})
+	t.logger.Info("Transaction %d: Registered commit action with custom retry policy", t.id)
+	return nil
+}
+
+func (t *Transaction) RegisterRollbackWithRetryPolicy(fn func(ctx context.Context) error, rp RetryPolicy) error {
+	if fn == nil {
+		return errors.New("rollback action cannot be nil")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.state != StateInProgress {
+		return fmt.Errorf("cannot register rollback action in transaction %d state %s", t.id, t.state)
+	}
+	t.rollbackActionsWithPolicy = append(t.rollbackActionsWithPolicy, ActionWithPolicy{fn: fn, rp: &rp})
+	t.logger.Info("Transaction %d: Registered rollback action with custom retry policy", t.id)
+	return nil
+}
+
 func (t *Transaction) Begin(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	batch := ctx.Value(contextKeyBatch)
 
 	if cid, ok := ctx.Value(ContextKeyCorrelationID).(string); ok {
-		t.logger = t.logger.WithFields(map[string]interface{}{"correlation_id": cid})
+		t.logger = t.logger.WithFields(map[string]any{"correlation_id": cid})
 	}
 	if t.state != StateInitialized {
 		return fmt.Errorf("cannot begin transaction %d in state %s", t.id, t.state)
@@ -395,6 +556,8 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	t.state = StateInProgress
 	t.rollbackActions = make([]func(ctx context.Context) error, 0)
 	t.commitActions = make([]func(ctx context.Context) error, 0)
+	t.commitActionsWithPolicy = make([]ActionWithPolicy, 0)
+	t.rollbackActionsWithPolicy = make([]ActionWithPolicy, 0)
 	t.cleanupActions = make([]func(ctx context.Context) error, 0)
 	t.resources = make([]TransactionalResource, 0)
 	t.savepoints = make(map[string]int)
@@ -412,6 +575,12 @@ func (t *Transaction) Begin(ctx context.Context) error {
 		if err := t.distributedCoordinator.BeginDistributed(t); err != nil {
 			return err
 		}
+	}
+
+	if t.tracer != nil {
+		var span Span
+		ctx, span = t.tracer.StartSpan(ctx, fmt.Sprintf("Transaction-%d-Begin", t.id))
+		span.End()
 	}
 	return nil
 }
@@ -521,13 +690,18 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		commitCtx = ctx
 	}
 
+	var span Span
+	if t.tracer != nil {
+		commitCtx, span = t.tracer.StartSpan(commitCtx, fmt.Sprintf("Transaction-%d-Commit", t.id))
+		defer span.End()
+	}
+
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnBeforeCommit != nil {
 		t.lifecycleHooks.OnBeforeCommit(t.id, commitCtx)
 	}
 
 	t.mu.Lock()
 	if t.state != StateInProgress {
-
 		if t.state == StateCommitted || t.state == StateRolledBack {
 			t.mu.Unlock()
 			return nil
@@ -552,7 +726,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		if t.captureStackTrace {
 			stack = string(debug.Stack())
 		}
-		return TransactionError{TxID: t.id, Err: err, Code: "SIM_COMMIT_FAIL", Action: "commit", StackTrace: stack}
+		return TransactionError{TxID: t.id, Err: err, Code: "SIM_COMMIT_FAIL", Category: "FATAL", Action: "commit", StackTrace: stack}
 	}
 
 	if err := t.prepareResources(commitCtx); err != nil {
@@ -566,7 +740,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		if t.captureStackTrace {
 			stack = string(debug.Stack())
 		}
-		return TransactionError{TxID: t.id, Err: err, Code: "PREP_FAIL", Action: "prepare", StackTrace: stack}
+		return TransactionError{TxID: t.id, Err: err, Code: "PREP_FAIL", Category: "TRANSIENT", Action: "prepare", StackTrace: stack}
 	}
 
 	handleError := func(err error) {
@@ -611,7 +785,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				if t.captureStackTrace {
 					stack = string(debug.Stack())
 				}
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v; rollback failed: %v", errList, rbErr), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v; rollback failed: %v", errList, rbErr), Code: "COMMIT_ERR", Category: "FATAL", Action: "commit", StackTrace: stack}
 			}
 			handleError(fmt.Errorf("commit errors: %v", errList))
 			t.metrics.IncErrorCount()
@@ -619,7 +793,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			if t.captureStackTrace {
 				stack = string(debug.Stack())
 			}
-			return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v", errList), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
+			return TransactionError{TxID: t.id, Err: fmt.Errorf("commit errors: %v", errList), Code: "COMMIT_ERR", Category: "TRANSIENT", Action: "commit", StackTrace: stack}
 		}
 	} else {
 		for i, action := range t.commitActions {
@@ -639,17 +813,47 @@ func (t *Transaction) Commit(ctx context.Context) error {
 					if t.captureStackTrace {
 						stack = string(debug.Stack())
 					}
-					return TransactionError{TxID: t.id, Err: fmt.Errorf("commit failed: %v; rollback failed: %v", err, rbErr), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
+					return TransactionError{TxID: t.id, Err: fmt.Errorf("commit failed: %v; rollback failed: %v", err, rbErr), Code: "COMMIT_ERR", Category: "FATAL", Action: "commit", StackTrace: stack}
 				}
 				t.metrics.IncErrorCount()
 				stack := ""
 				if t.captureStackTrace {
 					stack = string(debug.Stack())
 				}
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit action failed: %v", err), Code: "COMMIT_ERR", Action: "commit", StackTrace: stack}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit action failed: %v", err), Code: "COMMIT_ERR", Category: "TRANSIENT", Action: "commit", StackTrace: stack}
 			} else {
 				t.metrics.RecordActionDuration("commit_action", time.Since(start))
 			}
+		}
+	}
+
+	for i, actionWP := range t.commitActionsWithPolicy {
+		desc := fmt.Sprintf("commit action (custom policy) %d in transaction %d", i, t.id)
+		start := time.Now()
+		if err := retryAction(commitCtx, func(ctx context.Context) error {
+			return safeAction(ctx, actionWP.fn, desc)
+		}, desc, *actionWP.rp); err != nil {
+			t.mu.Lock()
+			t.state = StateFailed
+			t.mu.Unlock()
+			t.logger.Error("Transaction %d: Commit action (custom policy) failed: %v", t.id, err)
+			handleError(err)
+			rbErr := t.Rollback(commitCtx)
+			if rbErr != nil {
+				stack := ""
+				if t.captureStackTrace {
+					stack = string(debug.Stack())
+				}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("commit custom policy error: %v; rollback failed: %v", err, rbErr), Code: "COMMIT_ERR", Category: "FATAL", Action: "commit", StackTrace: stack}
+			}
+			t.metrics.IncErrorCount()
+			stack := ""
+			if t.captureStackTrace {
+				stack = string(debug.Stack())
+			}
+			return TransactionError{TxID: t.id, Err: fmt.Errorf("commit custom policy error: %v", err), Code: "COMMIT_ERR", Category: "TRANSIENT", Action: "commit", StackTrace: stack}
+		} else {
+			t.metrics.RecordActionDuration("commit_action_custom", time.Since(start))
 		}
 	}
 
@@ -689,7 +893,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				if t.captureStackTrace {
 					stack = string(debug.Stack())
 				}
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v; rollback failed: %v", errList, rbErr), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v; rollback failed: %v", errList, rbErr), Code: "RES_COMMIT_ERR", Category: "FATAL", Action: "commit", StackTrace: stack}
 			}
 			handleError(fmt.Errorf("resource commit errors: %v", errList))
 			t.metrics.IncErrorCount()
@@ -697,7 +901,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			if t.captureStackTrace {
 				stack = string(debug.Stack())
 			}
-			return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v", errList), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
+			return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit errors: %v", errList), Code: "RES_COMMIT_ERR", Category: "TRANSIENT", Action: "commit", StackTrace: stack}
 		}
 	} else {
 		for i, res := range t.resources {
@@ -717,14 +921,14 @@ func (t *Transaction) Commit(ctx context.Context) error {
 					if t.captureStackTrace {
 						stack = string(debug.Stack())
 					}
-					return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v; rollback failed: %v", err, rbErr), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
+					return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v; rollback failed: %v", err, rbErr), Code: "RES_COMMIT_ERR", Category: "FATAL", Action: "commit", StackTrace: stack}
 				}
 				t.metrics.IncErrorCount()
 				stack := ""
 				if t.captureStackTrace {
 					stack = string(debug.Stack())
 				}
-				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v", err), Code: "RES_COMMIT_ERR", Action: "commit", StackTrace: stack}
+				return TransactionError{TxID: t.id, Err: fmt.Errorf("resource commit failed: %v", err), Code: "RES_COMMIT_ERR", Category: "TRANSIENT", Action: "commit", StackTrace: stack}
 			} else {
 				t.metrics.RecordActionDuration("resource_commit", time.Since(start))
 			}
@@ -752,7 +956,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		if t.captureStackTrace {
 			stack = string(debug.Stack())
 		}
-		return TransactionError{TxID: t.id, Err: fmt.Errorf("commit cleanup error: %v", err), Code: "CLEANUP_ERR", Action: "cleanup", StackTrace: stack}
+		return TransactionError{TxID: t.id, Err: fmt.Errorf("commit cleanup error: %v", err), Code: "CLEANUP_ERR", Category: "TRANSIENT", Action: "cleanup", StackTrace: stack}
 	}
 	t.metrics.RecordCommitDuration(time.Since(startTime))
 	t.metrics.IncCommitCount()
@@ -797,6 +1001,12 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		rbCtx = ctx
 	}
 
+	var span Span
+	if t.tracer != nil {
+		rbCtx, span = t.tracer.StartSpan(rbCtx, fmt.Sprintf("Transaction-%d-Rollback", t.id))
+		defer span.End()
+	}
+
 	if t.lifecycleHooks != nil && t.lifecycleHooks.OnBeforeRollback != nil {
 		t.lifecycleHooks.OnBeforeRollback(t.id, rbCtx)
 	}
@@ -826,7 +1036,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		if t.captureStackTrace {
 			stack = string(debug.Stack())
 		}
-		return TransactionError{TxID: t.id, Err: err, Code: "SIM_RB_FAIL", Action: "rollback", StackTrace: stack}
+		return TransactionError{TxID: t.id, Err: err, Code: "SIM_RB_FAIL", Category: "FATAL", Action: "rollback", StackTrace: stack}
 	}
 
 	var errs []error
@@ -908,7 +1118,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		if t.captureStackTrace {
 			stack = string(debug.Stack())
 		}
-		return TransactionError{TxID: t.id, Err: fmt.Errorf("rollback encountered errors: %v", errs), Code: "RB_ERR", Action: "rollback", StackTrace: stack}
+		return TransactionError{TxID: t.id, Err: fmt.Errorf("rollback encountered errors: %v", errs), Code: "RB_ERR", Category: "TRANSIENT", Action: "rollback", StackTrace: stack}
 	}
 	t.metrics.RecordRollbackDuration(time.Since(startTime))
 	t.metrics.IncRollbackCount()
@@ -959,10 +1169,14 @@ func (t *Transaction) Close() error {
 		t.lifecycleHooks.OnClose(t.id, context.Background())
 	}
 	if currentState == StateCommitted || currentState == StateRolledBack {
+
+		txPool.Put(t)
 		return nil
 	}
 	t.logger.Info("Transaction %d: Closing - performing rollback", t.id)
-	return t.Rollback(context.Background())
+	err := t.Rollback(context.Background())
+	txPool.Put(t)
+	return err
 }
 
 func (t *Transaction) CreateSavepoint(_ context.Context) (int, error) {
@@ -1133,7 +1347,7 @@ func RunInTransaction(ctx context.Context, fn func(tx *Transaction) error) error
 			if tx.captureStackTrace {
 				stack = string(debug.Stack())
 			}
-			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Code: "RUNINTRANS_RB_ERR", Action: "rollback", StackTrace: stack}
+			return TransactionError{TxID: tx.id, Err: fmt.Errorf("rollback error: %v (original error: %v)", rbErr, err), Code: "RUNINTRANS_RB_ERR", Category: "FATAL", Action: "rollback", StackTrace: stack}
 		}
 		return err
 	}
