@@ -9,8 +9,6 @@ import (
 	_ "github.com/lib/pq"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/oarkflow/etl/pkg/transformers"
 )
 
 type DataConfig struct {
@@ -69,9 +67,15 @@ type Config struct {
 	Checkpoint  Checkpoint     `json:"checkpoints" yaml:"checkpoints"`
 }
 
+type AggregationDefinition struct {
+	SourceField string `json:"source_field" yaml:"source_field"`
+	Func        string `json:"func" yaml:"func"`
+	OutputField string `json:"output_field" yaml:"output_field"`
+}
+
 type AggregatorConfig struct {
-	GroupBy      []string                             `yaml:"group_by"`
-	Aggregations []transformers.AggregationDefinition `yaml:"aggregations"`
+	GroupBy      []string                `yaml:"group_by"`
+	Aggregations []AggregationDefinition `yaml:"aggregations"`
 }
 
 func Load(path string) (*Config, error) {

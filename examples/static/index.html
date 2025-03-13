@@ -2,428 +2,458 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ETL Configuration Wizard</title>
-    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Alpine.js for interactivity -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.12.0/dist/cdn.min.js" defer></script>
 </head>
 <body class="bg-gray-100">
-<div class="container mx-auto p-4" x-data="etlWizard()">
-    <header class="mb-6">
-        <h1 class="text-3xl font-bold text-center">ETL Configuration Wizard</h1>
-    </header>
-
-    <!-- Horizontal Navigation: Only show completed steps and the active one -->
-    <div class="flex justify-center space-x-4 mb-6">
-        <template x-for="(step, index) in steps" :key="index">
-            <template x-if="index < activeStep">
-                <div class="px-4 py-2 bg-green-500 text-white rounded cursor-pointer" @click="activeStep = index+1" x-text="step.name + ' (Completed)'"></div>
-            </template>
-            <template x-if="index === activeStep - 1">
-                <div class="px-4 py-2 bg-blue-500 text-white rounded" x-text="step.name + ' (Draft)'"></div>
-            </template>
-        </template>
-    </div>
-
-    <!-- Accordion Content -->
-    <div class="bg-white shadow rounded p-6">
-        <!-- Step 1: Configure Sources -->
-        <div x-show="activeStep === 1" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure Sources</h2>
-            <template x-for="(source, index) in sources" :key="index">
-                <div class="border p-4 rounded mb-4">
-                    <div class="flex justify-between items-center mb-2">
-                        <h3 class="font-bold">Source <span x-text="index + 1"></span></h3>
-                        <button type="button" @click="removeSource(index)" class="text-red-600 text-sm">Remove</button>
+<div class="container mx-auto p-4">
+    <div class="max-w-4xl mx-auto bg-white shadow-md rounded-lg p-6">
+        <h1 class="text-2xl font-bold mb-4">ETL Configuration Wizard</h1>
+        <!-- Wizard Steps -->
+        <div id="wizard">
+            <!-- Step 1: Sources -->
+            <div class="step" data-step="1">
+                <h2 class="text-xl font-semibold mb-3">1. Configure Sources</h2>
+                <div id="sourcesContainer"></div>
+                <button id="addSource" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded mb-4">Add Source</button>
+            </div>
+            <!-- Step 2: Destination -->
+            <div class="step hidden" data-step="2">
+                <h2 class="text-xl font-semibold mb-3">2. Configure Destination</h2>
+                <div id="destinationContainer"></div>
+                <button id="addDestination" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded mb-4">Add Destination</button>
+            </div>
+            <!-- Step 3: Source to Target Mapping -->
+            <div class="step hidden" data-step="3">
+                <h2 class="text-xl font-semibold mb-3">3. Source to Target Mapping</h2>
+                <div id="mappingContainer"></div>
+                <button id="addMapping" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded mb-4">Add Mapping</button>
+            </div>
+            <!-- Step 4: Field Mappers -->
+            <div class="step hidden" data-step="4">
+                <h2 class="text-xl font-semibold mb-3">4. Field Mappers</h2>
+                <!-- Field Mapping Section -->
+                <div class="mb-6">
+                    <h3 class="font-semibold mb-2">Field Mappings</h3>
+                    <div id="fieldMapperContainer"></div>
+                    <button id="addFieldMapper" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded mb-4">Add Field Mapper</button>
+                </div>
+                <!-- Aggregator Configuration Section -->
+                <div>
+                    <h3 class="font-semibold mb-2">Aggregator Configurations</h3>
+                    <div class="mb-4">
+                        <label class="block">Group By (comma separated)</label>
+                        <input type="text" id="aggregatorGroupBy" class="border p-2 w-full" placeholder="e.g. field1, field2" />
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-gray-700">Key</label>
-                            <input type="text" x-model="source.key" class="mt-1 block w-full border rounded p-2" placeholder="sourceKey" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Type</label>
-                            <select x-model="source.type" class="mt-1 block w-full border rounded p-2">
-                                <option value="">Select source type</option>
-                                <option value="mysql">MySQL</option>
-                                <option value="postgres">Postgres</option>
-                                <option value="file">File</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Host</label>
-                            <input type="text" x-model="source.host" class="mt-1 block w-full border rounded p-2" placeholder="localhost" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Port</label>
-                            <input type="number" x-model="source.port" class="mt-1 block w-full border rounded p-2" placeholder="3306" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Driver</label>
-                            <input type="text" x-model="source.driver" class="mt-1 block w-full border rounded p-2" placeholder="e.g., go-sql-driver/mysql" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Username</label>
-                            <input type="text" x-model="source.username" class="mt-1 block w-full border rounded p-2" placeholder="username" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Password</label>
-                            <input type="password" x-model="source.password" class="mt-1 block w-full border rounded p-2" placeholder="password" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Database</label>
-                            <input type="text" x-model="source.database" class="mt-1 block w-full border rounded p-2" placeholder="database" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">File</label>
-                            <input type="text" x-model="source.file" class="mt-1 block w-full border rounded p-2" placeholder="path/to/file" />
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="source.disableLogger" class="mr-2" />
-                            <label class="text-gray-700">Disable Logger</label>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Table</label>
-                            <input type="text" x-model="source.table" class="mt-1 block w-full border rounded p-2" placeholder="table_name" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Source Alias</label>
-                            <input type="text" x-model="source.source" class="mt-1 block w-full border rounded p-2" placeholder="alias" />
-                        </div>
-                    </div>
-                </div>
-            </template>
-            <button type="button" @click="addSource()" class="bg-green-500 text-white px-4 py-2 rounded">Add Source</button>
-        </div>
-
-        <!-- Step 2: Configure Destination -->
-        <div x-show="activeStep === 2" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure Destination</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-gray-700">Key</label>
-                    <input type="text" x-model="destination.key" class="mt-1 block w-full border rounded p-2" placeholder="destinationKey" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Type</label>
-                    <select x-model="destination.type" class="mt-1 block w-full border rounded p-2">
-                        <option value="">Select destination type</option>
-                        <option value="mysql">MySQL</option>
-                        <option value="postgres">Postgres</option>
-                        <option value="file">File</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-gray-700">Host</label>
-                    <input type="text" x-model="destination.host" class="mt-1 block w-full border rounded p-2" placeholder="localhost" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Port</label>
-                    <input type="number" x-model="destination.port" class="mt-1 block w-full border rounded p-2" placeholder="3306" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Driver</label>
-                    <input type="text" x-model="destination.driver" class="mt-1 block w-full border rounded p-2" placeholder="driver" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Username</label>
-                    <input type="text" x-model="destination.username" class="mt-1 block w-full border rounded p-2" placeholder="username" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Password</label>
-                    <input type="password" x-model="destination.password" class="mt-1 block w-full border rounded p-2" placeholder="password" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Database</label>
-                    <input type="text" x-model="destination.database" class="mt-1 block w-full border rounded p-2" placeholder="database" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">File</label>
-                    <input type="text" x-model="destination.file" class="mt-1 block w-full border rounded p-2" placeholder="path/to/file" />
-                </div>
-                <div class="flex items-center">
-                    <input type="checkbox" x-model="destination.disableLogger" class="mr-2" />
-                    <label class="text-gray-700">Disable Logger</label>
-                </div>
-                <div>
-                    <label class="block text-gray-700">Table</label>
-                    <input type="text" x-model="destination.table" class="mt-1 block w-full border rounded p-2" placeholder="table_name" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Source Alias</label>
-                    <input type="text" x-model="destination.source" class="mt-1 block w-full border rounded p-2" placeholder="alias" />
+                    <div id="aggregatorContainer"></div>
+                    <button id="addAggregator" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded">Add Aggregator</button>
                 </div>
             </div>
-        </div>
-
-        <!-- Step 3: Configure Lookups -->
-        <div x-show="activeStep === 3" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure Lookups</h2>
-            <template x-for="(lookup, index) in lookups" :key="index">
-                <div class="border p-4 rounded mb-4">
-                    <div class="flex justify-between items-center mb-2">
-                        <h3 class="font-bold">Lookup <span x-text="index + 1"></span></h3>
-                        <button type="button" @click="removeLookup(index)" class="text-red-600 text-sm">Remove</button>
+            <!-- Step 5: Transformers -->
+            <div class="step hidden" data-step="5">
+                <h2 class="text-xl font-semibold mb-3">5. Transformers</h2>
+                <div id="transformersContainer"></div>
+                <button id="addTransformer" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded mb-4">Add Transformer</button>
+            </div>
+            <!-- Step 6: ETL Configurations -->
+            <div class="step hidden" data-step="6">
+                <h2 class="text-xl font-semibold mb-3">6. ETL Configurations</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="inline-flex items-center">
+                            <input type="checkbox" id="keyValueTable" class="form-checkbox" />
+                            <span class="ml-2">KeyValue Table</span>
+                        </label>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-gray-700">Key</label>
-                            <input type="text" x-model="lookup.key" class="mt-1 block w-full border rounded p-2" placeholder="lookupKey" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Type</label>
-                            <select x-model="lookup.type" class="mt-1 block w-full border rounded p-2">
-                                <option value="">Select type</option>
-                                <option value="mysql">MySQL</option>
-                                <option value="postgres">Postgres</option>
-                                <option value="file">File</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Host</label>
-                            <input type="text" x-model="lookup.host" class="mt-1 block w-full border rounded p-2" placeholder="localhost" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Port</label>
-                            <input type="number" x-model="lookup.port" class="mt-1 block w-full border rounded p-2" placeholder="3306" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Driver</label>
-                            <input type="text" x-model="lookup.driver" class="mt-1 block w-full border rounded p-2" placeholder="driver" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Username</label>
-                            <input type="text" x-model="lookup.username" class="mt-1 block w-full border rounded p-2" placeholder="username" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Password</label>
-                            <input type="password" x-model="lookup.password" class="mt-1 block w-full border rounded p-2" placeholder="password" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Database</label>
-                            <input type="text" x-model="lookup.database" class="mt-1 block w-full border rounded p-2" placeholder="database" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">File</label>
-                            <input type="text" x-model="lookup.file" class="mt-1 block w-full border rounded p-2" placeholder="path/to/file" />
-                        </div>
-                        <div class="flex items-center">
-                            <input type="checkbox" x-model="lookup.disableLogger" class="mr-2" />
-                            <label class="text-gray-700">Disable Logger</label>
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Table</label>
-                            <input type="text" x-model="lookup.table" class="mt-1 block w-full border rounded p-2" placeholder="table_name" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Source Alias</label>
-                            <input type="text" x-model="lookup.source" class="mt-1 block w-full border rounded p-2" placeholder="alias" />
-                        </div>
+                    <div id="keyValueConfig" class="hidden space-y-2 pl-6">
+                        <input type="text" placeholder="Key Field" class="border p-2 w-full" />
+                        <input type="text" placeholder="Value Field" class="border p-2 w-full" />
+                        <input type="text" placeholder="Value Type" class="border p-2 w-full" />
                     </div>
-                </div>
-            </template>
-            <button type="button" @click="addLookup()" class="bg-green-500 text-white px-4 py-2 rounded">Add Lookup</button>
-        </div>
-
-        <!-- Step 4: Configure Field Mapping (Dynamic Key/Value Pairs) -->
-        <div x-show="activeStep === 4" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure Field Mapping</h2>
-            <template x-for="(pair, index) in fieldMappingPairs" :key="index">
-                <div class="border p-4 rounded mb-4 flex flex-col md:flex-row md:items-center md:space-x-4">
-                    <div class="flex-1">
-                        <label class="block text-gray-700">Key</label>
-                        <input type="text" x-model="pair.key" class="mt-1 block w-full border rounded p-2" placeholder="field name" />
+                    <div>
+                        <label class="inline-flex items-center">
+                            <input type="checkbox" id="migrate" class="form-checkbox" />
+                            <span class="ml-2">Migrate</span>
+                        </label>
                     </div>
-                    <div class="flex-1">
-                        <label class="block text-gray-700">Value</label>
-                        <input type="text" x-model="pair.value" class="mt-1 block w-full border rounded p-2" placeholder="mapped field or expression" />
+                    <div>
+                        <label class="inline-flex items-center">
+                            <input type="checkbox" id="cloneSource" class="form-checkbox" />
+                            <span class="ml-2">Clone Source</span>
+                        </label>
                     </div>
-                    <div class="flex items-center mt-2 md:mt-0">
-                        <input type="checkbox" x-model="pair.useExpression" class="mr-2" />
-                        <span class="text-gray-700">Use Expression</span>
+                    <div>
+                        <label class="block mb-1">Batch Size</label>
+                        <input type="number" id="batchSize" class="border p-2 w-full" placeholder="Enter batch size" />
                     </div>
-                    <button type="button" @click="removeFieldMappingPair(index)" class="mt-2 md:mt-0 text-red-600">Remove</button>
-                </div>
-            </template>
-            <button type="button" @click="addFieldMappingPair()" class="bg-green-500 text-white px-4 py-2 rounded">Add Field Mapping Pair</button>
-        </div>
-
-        <!-- Step 5: Configure Transformers -->
-        <div x-show="activeStep === 5" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure Transformers</h2>
-            <template x-for="(transformer, index) in transformers" :key="index">
-                <div class="border p-4 rounded mb-4">
-                    <div class="flex justify-between items-center mb-2">
-                        <h3 class="font-bold">Transformer <span x-text="index + 1"></span></h3>
-                        <button type="button" @click="removeTransformer(index)" class="text-red-600 text-sm">Remove</button>
+                    <div>
+                        <label class="inline-flex items-center">
+                            <input type="checkbox" id="update" class="form-checkbox" />
+                            <span class="ml-2">Update</span>
+                        </label>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-gray-700">Name</label>
-                            <input type="text" x-model="transformer.name" class="mt-1 block w-full border rounded p-2" placeholder="Transformer Name" />
-                        </div>
-                        <div>
-                            <label class="block text-gray-700">Type</label>
-                            <select x-model="transformer.type" class="mt-1 block w-full border rounded p-2">
-                                <option value="">Select transformer type</option>
-                                <option value="aggregator">Aggregator</option>
-                                <option value="mapper">Mapper</option>
-                                <option value="filter">Filter</option>
-                            </select>
-                        </div>
-                        <div class="md:col-span-2">
-                            <label class="block text-gray-700">Config (JSON)</label>
-                            <textarea x-model="transformer.config" class="mt-1 block w-full border rounded p-2" rows="3" placeholder='{"param": "value"}'></textarea>
-                        </div>
+                    <div>
+                        <label class="inline-flex items-center">
+                            <input type="checkbox" id="delete" class="form-checkbox" />
+                            <span class="ml-2">Delete</span>
+                        </label>
                     </div>
-                </div>
-            </template>
-            <button type="button" @click="addTransformer()" class="bg-green-500 text-white px-4 py-2 rounded">Add Transformer</button>
-        </div>
-
-        <!-- Step 6: Configure ETL Level Settings -->
-        <div x-show="activeStep === 6" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configure ETL Level Settings</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-gray-700">Worker Count</label>
-                    <input type="number" x-model="etlSettings.worker_count" class="mt-1 block w-full border rounded p-2" placeholder="4" />
-                </div>
-                <div>
-                    <label class="block text-gray-700">Buffer</label>
-                    <input type="number" x-model="etlSettings.buffer" class="mt-1 block w-full border rounded p-2" placeholder="50" />
                 </div>
             </div>
-        </div>
-
-        <!-- Step 7: Configuration Summary -->
-        <div x-show="activeStep === 7" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Configuration Summary</h2>
-            <pre class="bg-gray-100 p-4 rounded text-sm overflow-auto" x-text="JSON.stringify(getConfig(), null, 2)"></pre>
-        </div>
-
-        <!-- Step 8: Test Execution -->
-        <div x-show="activeStep === 8" x-transition>
-            <h2 class="text-xl font-semibold mb-4">Test Execution</h2>
-            <p class="mb-4 text-gray-700">Click the button below to test run your ETL configuration.</p>
-            <button type="button" @click="testETL()" class="bg-green-600 text-white px-4 py-2 rounded">Run Test</button>
         </div>
 
         <!-- Navigation Buttons -->
-        <div class="mt-6 flex justify-between">
-            <button x-show="activeStep > 1" @click="prevStep()" class="px-4 py-2 bg-gray-300 rounded">Previous</button>
-            <button x-show="activeStep < steps.length" @click="nextStep()" class="px-4 py-2 bg-blue-600 text-white rounded">Next</button>
+        <div class="flex justify-between mt-6">
+            <button id="prevBtn" class="bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded hidden">Previous</button>
+            <button id="nextBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded">Next</button>
         </div>
     </div>
-
-    <!-- ETL Status Section -->
-    <section class="bg-white shadow rounded p-6 mt-6">
-        <h2 class="text-xl font-semibold mb-2">ETL Status</h2>
-        <div class="text-gray-700" x-text="statusMessage">No ETL process initiated.</div>
-    </section>
 </div>
 
 <script>
-    function etlWizard() {
-        return {
-            activeStep: 1,
-            steps: [
-                { id: 'sources', name: 'Configure Sources' },
-                { id: 'destination', name: 'Configure Destination' },
-                { id: 'lookups', name: 'Configure Lookups' },
-                { id: 'fieldMapping', name: 'Configure Field Mapping' },
-                { id: 'transformers', name: 'Configure Transformers' },
-                { id: 'etlSettings', name: 'Configure ETL Level Settings' },
-                { id: 'summary', name: 'Configuration Summary' },
-                { id: 'test', name: 'Test Execution' }
-            ],
-            sources: [
-                { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' }
-            ],
-            destination: { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' },
-            lookups: [
-                { key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' }
-            ],
-            // Field mapping as dynamic key-value pairs with a checkbox for expressions
-            fieldMappingPairs: [
-                { key: '', value: '', useExpression: false }
-            ],
-            transformers: [
-                { name: '', type: '', config: '{}' }
-            ],
-            etlSettings: { worker_count: 4, buffer: 50 },
-            statusMessage: 'No ETL process initiated.',
-            nextStep() {
-                // You can add validation for the current step here
-                if (this.activeStep < this.steps.length) {
-                    this.activeStep++;
-                }
-            },
-            prevStep() {
-                if (this.activeStep > 1) {
-                    this.activeStep--;
-                }
-            },
-            addSource() {
-                this.sources.push({ key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' });
-            },
-            removeSource(index) {
-                if (this.sources.length > 1) this.sources.splice(index, 1);
-            },
-            addLookup() {
-                this.lookups.push({ key: '', type: '', host: '', port: 3306, driver: '', username: '', password: '', database: '', file: '', disableLogger: false, table: '', source: '' });
-            },
-            removeLookup(index) {
-                if (this.lookups.length > 1) this.lookups.splice(index, 1);
-            },
-            addFieldMappingPair() {
-                this.fieldMappingPairs.push({ key: '', value: '', useExpression: false });
-            },
-            removeFieldMappingPair(index) {
-                if (this.fieldMappingPairs.length > 1) this.fieldMappingPairs.splice(index, 1);
-            },
-            addTransformer() {
-                this.transformers.push({ name: '', type: '', config: '{}' });
-            },
-            removeTransformer(index) {
-                if (this.transformers.length > 1) this.transformers.splice(index, 1);
-            },
-            getConfig() {
-                return {
-                    source: this.sources[0],
-                    sources: this.sources,
-                    destination: this.destination,
-                    lookups: this.lookups,
-                    field_mapping: this.fieldMappingPairs.map(pair => ({
-                        key: pair.key,
-                        value: pair.value,
-                        use_expression: pair.useExpression
-                    })),
-                    transformers: this.transformers.map(t => ({
-                        ...t,
-                        config: JSON.parse(t.config)
-                    })),
-                    etl_settings: this.etlSettings
-                };
-            },
-            async testETL() {
-                const configData = this.getConfig();
-                try {
-                    const res = await fetch('/api/etl/test', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(configData)
-                    });
-                    const result = await res.text();
-                    this.statusMessage = result;
-                } catch (err) {
-                    this.statusMessage = 'Error testing ETL';
-                }
-            }
-        }
+    // Wizard Navigation
+    const steps = document.querySelectorAll('.step');
+    let currentStep = 0;
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+
+    function showStep(step) {
+        steps.forEach((s, index) => {
+            s.classList.toggle('hidden', index !== step);
+        });
+        prevBtn.classList.toggle('hidden', step === 0);
+        nextBtn.textContent = (step === steps.length - 1) ? 'Submit' : 'Next';
     }
+
+    nextBtn.addEventListener('click', () => {
+        if (currentStep < steps.length - 1) {
+            currentStep++;
+            showStep(currentStep);
+        } else {
+            // Final submit action
+            alert('Configuration Submitted!');
+        }
+    });
+
+    prevBtn.addEventListener('click', () => {
+        if (currentStep > 0) {
+            currentStep--;
+            showStep(currentStep);
+        }
+    });
+
+    showStep(currentStep);
+
+    // ----------------------
+    // Sources Component
+    // ----------------------
+    function createSource() {
+        const sourceDiv = document.createElement('div');
+        sourceDiv.className = 'p-4 border rounded mb-4';
+        sourceDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Source</h3>
+          <button type="button" class="removeSource bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2">
+          <label class="block">Type</label>
+          <select class="sourceType border p-2 w-full">
+            <option value="">Select Type</option>
+            <option value="REST">REST</option>
+            <option value="CSV">CSV</option>
+            <option value="JSON">JSON</option>
+            <option value="Database">Database</option>
+          </select>
+        </div>
+        <!-- Configurations per type -->
+        <div class="config-fields mt-2 hidden" data-type="REST">
+          <label class="block">API Endpoint</label>
+          <input type="text" class="border p-2 w-full" placeholder="https://api.example.com/data" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="CSV">
+          <label class="block">CSV File</label>
+          <input type="file" class="border p-2 w-full" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="JSON">
+          <label class="block">JSON File</label>
+          <input type="file" class="border p-2 w-full" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="Database">
+          <label class="block">Host</label>
+          <input type="text" class="border p-2 w-full" placeholder="localhost" />
+          <label class="block mt-2">Port</label>
+          <input type="number" class="border p-2 w-full" placeholder="5432" />
+          <label class="block mt-2">Username</label>
+          <input type="text" class="border p-2 w-full" placeholder="username" />
+          <label class="block mt-2">Password</label>
+          <input type="password" class="border p-2 w-full" placeholder="password" />
+          <label class="block mt-2">Database</label>
+          <input type="text" class="border p-2 w-full" placeholder="database" />
+        </div>
+      `;
+        sourceDiv.querySelector('.removeSource').addEventListener('click', () => {
+            sourceDiv.remove();
+        });
+        const typeSelect = sourceDiv.querySelector('.sourceType');
+        typeSelect.addEventListener('change', (e) => {
+            const selected = e.target.value;
+            sourceDiv.querySelectorAll('.config-fields').forEach(div => {
+                div.classList.toggle('hidden', div.getAttribute('data-type') !== selected);
+            });
+        });
+        return sourceDiv;
+    }
+    document.getElementById('addSource').addEventListener('click', () => {
+        const sourceElement = createSource();
+        document.getElementById('sourcesContainer').appendChild(sourceElement);
+    });
+
+    // ----------------------
+    // Destination Component
+    // ----------------------
+    function createDestination() {
+        const destDiv = document.createElement('div');
+        destDiv.className = 'p-4 border rounded mb-4';
+        destDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Destination</h3>
+          <button type="button" class="removeDestination bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2">
+          <label class="block">Type</label>
+          <select class="destinationType border p-2 w-full">
+            <option value="">Select Type</option>
+            <option value="REST">REST</option>
+            <option value="CSV">CSV</option>
+            <option value="JSON">JSON</option>
+            <option value="Database">Database</option>
+          </select>
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="REST">
+          <label class="block">API Endpoint</label>
+          <input type="text" class="border p-2 w-full" placeholder="https://api.example.com/endpoint" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="CSV">
+          <label class="block">CSV File</label>
+          <input type="file" class="border p-2 w-full" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="JSON">
+          <label class="block">JSON File</label>
+          <input type="file" class="border p-2 w-full" />
+        </div>
+        <div class="config-fields mt-2 hidden" data-type="Database">
+          <label class="block">Host</label>
+          <input type="text" class="border p-2 w-full" placeholder="localhost" />
+          <label class="block mt-2">Port</label>
+          <input type="number" class="border p-2 w-full" placeholder="5432" />
+          <label class="block mt-2">Username</label>
+          <input type="text" class="border p-2 w-full" placeholder="username" />
+          <label class="block mt-2">Password</label>
+          <input type="password" class="border p-2 w-full" placeholder="password" />
+          <label class="block mt-2">Database</label>
+          <input type="text" class="border p-2 w-full" placeholder="database" />
+        </div>
+      `;
+        destDiv.querySelector('.removeDestination').addEventListener('click', () => {
+            destDiv.remove();
+        });
+        const typeSelect = destDiv.querySelector('.destinationType');
+        typeSelect.addEventListener('change', (e) => {
+            const selected = e.target.value;
+            destDiv.querySelectorAll('.config-fields').forEach(div => {
+                div.classList.toggle('hidden', div.getAttribute('data-type') !== selected);
+            });
+        });
+        return destDiv;
+    }
+    document.getElementById('addDestination').addEventListener('click', () => {
+        const destElement = createDestination();
+        document.getElementById('destinationContainer').appendChild(destElement);
+    });
+
+    // ----------------------
+    // Mapping Component (for source to target table)
+    // ----------------------
+    function createMapping() {
+        const mappingDiv = document.createElement('div');
+        mappingDiv.className = 'p-4 border rounded mb-4';
+        mappingDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Mapping</h3>
+          <button type="button" class="removeMapping bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2">
+          <label class="block">Source Table</label>
+          <select class="border p-2 w-full">
+            <option value="">Select Source Table</option>
+            <option value="table1">Table1</option>
+            <option value="table2">Table2</option>
+          </select>
+        </div>
+        <div class="mt-2">
+          <label class="block">Target Table</label>
+          <select class="border p-2 w-full">
+            <option value="">Select Target Table</option>
+            <option value="tableA">TableA</option>
+            <option value="tableB">TableB</option>
+          </select>
+        </div>
+      `;
+        mappingDiv.querySelector('.removeMapping').addEventListener('click', () => {
+            mappingDiv.remove();
+        });
+        return mappingDiv;
+    }
+    document.getElementById('addMapping').addEventListener('click', () => {
+        const mappingElement = createMapping();
+        document.getElementById('mappingContainer').appendChild(mappingElement);
+    });
+
+    // ----------------------
+    // Field Mappers Component (without aggregator settings)
+    // ----------------------
+    function createFieldMapper() {
+        const mapperDiv = document.createElement('div');
+        mapperDiv.className = 'p-4 border rounded mb-4';
+        mapperDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Field Mapper</h3>
+          <button type="button" class="removeMapper bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2 grid grid-cols-2 gap-4">
+          <div>
+            <label class="block">Target Field</label>
+            <select class="border p-2 w-full">
+              <option value="">Select Field</option>
+              <option value="field1">Field1</option>
+              <option value="field2">Field2</option>
+            </select>
+          </div>
+          <div>
+            <label class="block">Source Type</label>
+            <select class="sourceTypeMapping border p-2 w-full">
+              <option value="field">Field</option>
+              <option value="expression">Expression</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="block">Source Field / Expression</label>
+          <input type="text" class="sourceMappingInput border p-2 w-full" placeholder="Enter field or expression" />
+        </div>
+      `;
+        mapperDiv.querySelector('.removeMapper').addEventListener('click', () => {
+            mapperDiv.remove();
+        });
+        return mapperDiv;
+    }
+    document.getElementById('addFieldMapper').addEventListener('click', () => {
+        const mapperElement = createFieldMapper();
+        document.getElementById('fieldMapperContainer').appendChild(mapperElement);
+    });
+
+    // ----------------------
+    // Aggregators Component (separate block under Field Mappers)
+    // ----------------------
+    function createAggregator() {
+        const aggregatorDiv = document.createElement('div');
+        aggregatorDiv.className = 'p-4 border rounded mb-4';
+        aggregatorDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Aggregator</h3>
+          <button type="button" class="removeAggregator bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2 grid grid-cols-3 gap-4">
+          <div>
+            <label class="block">Target Field</label>
+            <select class="border p-2 w-full">
+              <option value="">Select Field</option>
+              <option value="field1">Field1</option>
+              <option value="field2">Field2</option>
+            </select>
+          </div>
+          <div>
+            <label class="block">Source Field</label>
+            <select class="border p-2 w-full">
+              <option value="">Select Field</option>
+              <option value="field1">Field1</option>
+              <option value="field2">Field2</option>
+            </select>
+          </div>
+          <div>
+            <label class="block">Aggregator Function</label>
+            <select class="border p-2 w-full">
+              <option value="">Select Function</option>
+              <option value="COUNT">COUNT</option>
+              <option value="SUM">SUM</option>
+              <option value="MIN">MIN</option>
+              <option value="MAX">MAX</option>
+              <option value="AVG">AVG</option>
+            </select>
+          </div>
+        </div>
+      `;
+        aggregatorDiv.querySelector('.removeAggregator').addEventListener('click', () => {
+            aggregatorDiv.remove();
+        });
+        return aggregatorDiv;
+    }
+    document.getElementById('addAggregator').addEventListener('click', () => {
+        const aggregatorElement = createAggregator();
+        document.getElementById('aggregatorContainer').appendChild(aggregatorElement);
+    });
+
+    // ----------------------
+    // Transformers Component
+    // ----------------------
+    function createTransformer() {
+        const transformerDiv = document.createElement('div');
+        transformerDiv.className = 'p-4 border rounded mb-4';
+        transformerDiv.innerHTML = `
+        <div class="flex justify-between items-center">
+          <h3 class="font-semibold">Transformer</h3>
+          <button type="button" class="removeTransformer bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+        </div>
+        <div class="mt-2">
+          <label class="block">Transformer Type</label>
+          <select class="border p-2 w-full">
+            <option value="">Select Transformer</option>
+            <option value="uppercase">Uppercase</option>
+            <option value="lowercase">Lowercase</option>
+          </select>
+        </div>
+        <div class="mt-2">
+          <label class="block">Expression</label>
+          <input type="text" class="border p-2 w-full" placeholder="Enter transformer expression" />
+        </div>
+      `;
+        transformerDiv.querySelector('.removeTransformer').addEventListener('click', () => {
+            transformerDiv.remove();
+        });
+        return transformerDiv;
+    }
+    document.getElementById('addTransformer').addEventListener('click', () => {
+        const transformerElement = createTransformer();
+        document.getElementById('transformersContainer').appendChild(transformerElement);
+    });
+
+    // ----------------------
+    // ETL Configurations: Toggle KeyValue Table fields
+    // ----------------------
+    document.getElementById('keyValueTable').addEventListener('change', (e) => {
+        document.getElementById('keyValueConfig').classList.toggle('hidden', !e.target.checked);
+    });
+
+    // Initialize default elements for each dynamic component on page load
+    window.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('sourcesContainer').appendChild(createSource());
+        document.getElementById('destinationContainer').appendChild(createDestination());
+        document.getElementById('mappingContainer').appendChild(createMapping());
+        document.getElementById('fieldMapperContainer').appendChild(createFieldMapper());
+        document.getElementById('aggregatorContainer').appendChild(createAggregator());
+        document.getElementById('transformersContainer').appendChild(createTransformer());
+    });
 </script>
 </body>
 </html>

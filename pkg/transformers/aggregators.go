@@ -7,18 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
-type AggregationDefinition struct {
-	SourceField string `json:"source_field" yaml:"source_field"`
-	Func        string `json:"func" yaml:"func"`
-	OutputField string `json:"output_field" yaml:"output_field"`
-}
-
 type AggregatorTransformer struct {
-	GroupBy      []string                `json:"group_by" yaml:"group_by"`
-	Aggregations []AggregationDefinition `json:"aggregations" yaml:"aggregations"`
+	GroupBy      []string                       `json:"group_by" yaml:"group_by"`
+	Aggregations []config.AggregationDefinition `json:"aggregations" yaml:"aggregations"`
 
 	groups map[string]map[string]*aggValue
 }
@@ -31,7 +26,7 @@ type aggValue struct {
 	set   bool
 }
 
-func NewAggregatorTransformer(groupBy []string, aggs []AggregationDefinition) *AggregatorTransformer {
+func NewAggregatorTransformer(groupBy []string, aggs []config.AggregationDefinition) *AggregatorTransformer {
 	return &AggregatorTransformer{
 		GroupBy:      groupBy,
 		Aggregations: aggs,
