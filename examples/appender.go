@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// Create or open the JSON appender
-	appender, err := fileutil.NewAppender[any]("data.csv", "csv", true)
+	appender, err := fileutil.NewAppender[any]("data.json", "json", true, 1000000)
 	if err != nil {
 		log.Fatalf("Error initializing JSONAppender: %v", err)
 	}
