@@ -59,7 +59,7 @@ type Logger interface {
 }
 
 type DefaultLogger struct {
-	fields map[string]any
+	Fields map[string]any
 	Level  LogLevel
 }
 
@@ -97,13 +97,13 @@ func (l *DefaultLogger) Error(msg string, args ...any) {
 
 func (l *DefaultLogger) WithFields(fields map[string]any) Logger {
 	newFields := make(map[string]any)
-	for k, v := range l.fields {
+	for k, v := range l.Fields {
 		newFields[k] = v
 	}
 	for k, v := range fields {
 		newFields[k] = v
 	}
-	return &DefaultLogger{fields: newFields, Level: l.Level}
+	return &DefaultLogger{Fields: newFields, Level: l.Level}
 }
 
 func (l *DefaultLogger) SetLevel(level LogLevel) {
@@ -115,12 +115,12 @@ func (l *DefaultLogger) GetLevel() LogLevel {
 }
 
 func (l *DefaultLogger) prependFields(msg string) string {
-	if len(l.fields) == 0 {
+	if len(l.Fields) == 0 {
 		return msg
 	}
 	fieldStr := "[FIELDS: "
 	first := true
-	for k, v := range l.fields {
+	for k, v := range l.Fields {
 		if !first {
 			fieldStr += ", "
 		}
@@ -440,7 +440,7 @@ func LoadTransactionConfig() TransactionOptions {
 		ShouldRetry:     func(err error) bool { return true },
 		BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond },
 	}
-	opts.Logger = &DefaultLogger{fields: make(map[string]any), Level: InfoLevel}
+	opts.Logger = &DefaultLogger{Fields: make(map[string]any), Level: InfoLevel}
 	opts.Metrics = &PrometheusMetricsCollector{}
 	opts.CaptureStackTrace = true
 	opts.Tracer = &NoopTracer{}
@@ -508,7 +508,7 @@ func NewTransaction() *Transaction {
 		IsolationLevel:    "default",
 		Timeout:           0,
 		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
-		Logger:            &DefaultLogger{fields: make(map[string]any), Level: InfoLevel},
+		Logger:            &DefaultLogger{Fields: make(map[string]any), Level: InfoLevel},
 		Metrics:           &NoopMetricsCollector{},
 		CaptureStackTrace: true,
 		Tracer:            &NoopTracer{},

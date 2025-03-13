@@ -419,6 +419,58 @@ func examplePerActionRetryPolicies() {
 	}
 }
 
+func transactionBuilder() {
+	tb := resilience.NewTransactionBuilder().
+		SetIsolationLevel("SERIALIZABLE").
+		SetTimeout(10 * time.Second).
+		SetParallelCommit(true).
+		SetParallelRollback(true).
+		SetRetryPolicy(resilience.RetryPolicy{
+			MaxRetries:      3,
+			Delay:           200 * time.Millisecond,
+			ShouldRetry:     func(err error) bool { return true },
+			BackoffStrategy: func(attempt int) time.Duration { return time.Duration(100*(1<<attempt)) * time.Millisecond },
+		}).
+		SetLifecycleHooks(&resilience.LifecycleHooks{
+			OnBegin: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d started", txID)
+			},
+			OnBeforeCommit: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d before commit", txID)
+			},
+			OnAfterCommit: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d committed", txID)
+			},
+			OnBeforeRollback: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d before rollback", txID)
+			},
+			OnAfterRollback: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d rolled back", txID)
+			},
+			OnClose: func(txID int64, ctx context.Context) {
+				log.Printf("Transaction %d closed", txID)
+			},
+		}).
+		SetDistributedCoordinator(&resilience.TwoPhaseCoordinator{}).
+		SetLogger(&resilience.DefaultLogger{Fields: map[string]interface{}{"app": "transactionBuilderExample"}, Level: resilience.InfoLevel}).
+		SetMetrics(&resilience.NoopMetricsCollector{}).
+		SetTracer(&resilience.NoopTracer{}).
+		SetAuditLogger(&resilience.SimpleAuditLogger{})
+
+	tx := tb.Build()
+	ctx := context.Background()
+	if err := tx.Begin(ctx); err != nil {
+		log.Fatalf("Begin error: %v", err)
+	}
+	tx.RegisterCommit(func(ctx context.Context) error {
+		log.Println("Commit action executed")
+		return nil
+	})
+	if err := tx.Commit(ctx); err != nil {
+		log.Fatalf("Commit error: %v", err)
+	}
+}
+
 // -----------------------------
 // Main: Run All Examples
 // -----------------------------
@@ -452,4 +504,7 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 
 	examplePerActionRetryPolicies()
+	time.Sleep(500 * time.Millisecond)
+
+	transactionBuilder()
 }
