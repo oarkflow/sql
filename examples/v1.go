@@ -1,32 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/oarkflow/etl"
 	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/etl/pkg/utils"
 )
-
-// LoggerPlugin is a simple plugin that logs its initialization.
-type LoggerPlugin struct{}
-
-func (p *LoggerPlugin) Name() string {
-	return "LoggerPlugin"
-}
-
-func (p *LoggerPlugin) Init(e *etl.ETL) error {
-	// Subscribe to the "AfterLoad" event.
-	if e.EventBus() != nil {
-		e.EventBus().Subscribe("AfterLoad", func(evt etl.Event) {
-			log.Printf("[SamplePlugin] Received AfterLoad event with payload: %v", evt.Payload)
-			// For example, perform extra logging or trigger external notifications.
-		})
-	}
-	// You could also modify ETL's configuration, add new sources/transformers, etc.
-	log.Println("[SamplePlugin] Initialized successfully.")
-	return nil
-}
 
 func main() {
 	paths := []string{
@@ -87,7 +69,7 @@ func RunETL(configPath string) error {
 	}*/
 
 	// Define validations.
-	/*validations := &etl.Validations{
+	validations := &etl.Validations{
 		ValidateBeforeExtract: func(ctx context.Context) error {
 			log.Println("[Validation] ValidateBeforeExtract: OK")
 			return nil
@@ -104,19 +86,15 @@ func RunETL(configPath string) error {
 			log.Printf("[Validation] ValidateAfterLoad: batch size %d", len(batch))
 			return nil
 		},
-	}*/
+	}
 
 	// Create an EventBus and subscribe to some events.
 	eventBus := etl.NewEventBus()
 	eventBus.Subscribe("BeforeExtract", func(e etl.Event) {
 		log.Println("[EventBus] Received event:", e.Name)
 	})
-	/*eventBus.Subscribe("AfterLoad", func(e etl.Event) {
-		log.Printf("[EventBus] AfterLoad event with payload: %v", e.Name)
-	})*/
 	opts := []etl.Option{
-		// etl.WithValidations(validations),
-		etl.WithPlugin(&LoggerPlugin{}),
+		etl.WithValidations(validations),
 		etl.WithEventBus(eventBus),
 		// etl.WithLifecycleHooks(hooks),
 		etl.WithDashboardAuth("admin", "password"),

@@ -175,12 +175,15 @@ func WithDeduplication(dedupField string) Option {
 	}
 }
 
-func WithPlugin(p Plugin) Option {
+func WithPlugins(plugins ...Plugin) Option {
 	return func(e *ETL) error {
-		if err := p.Init(e); err != nil {
-			return err
+		for _, p := range plugins {
+			if err := p.Init(e); err != nil {
+				return err
+			}
+			e.plugins = append(e.plugins, p)
 		}
-		e.plugins = append(e.plugins, p)
+
 		return nil
 	}
 }
