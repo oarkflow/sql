@@ -56,15 +56,23 @@ type Checkpoint struct {
 	Field string `json:"field" yaml:"field"`
 }
 
+type Deduplication struct {
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Field   string `json:"field" yaml:"field"`
+}
+
 type Config struct {
-	Source      DataConfig     `yaml:"source" json:"source"`
-	Sources     []DataConfig   `yaml:"sources" json:"sources"`
-	Destination DataConfig     `yaml:"destination" json:"destination"`
-	Lookups     []DataConfig   `yaml:"lookups" json:"lookups"`
-	Tables      []TableMapping `yaml:"tables" json:"tables"`
-	WorkerCount int            `json:"worker_count" yaml:"worker_count"`
-	Buffer      int            `json:"buffer" yaml:"buffer"`
-	Checkpoint  Checkpoint     `json:"checkpoints" yaml:"checkpoints"`
+	Source          DataConfig     `yaml:"source" json:"source"`
+	Sources         []DataConfig   `yaml:"sources" json:"sources"`
+	Destination     DataConfig     `yaml:"destination" json:"destination"`
+	Lookups         []DataConfig   `yaml:"lookups" json:"lookups"`
+	Tables          []TableMapping `yaml:"tables" json:"tables"`
+	WorkerCount     int            `json:"worker_count" yaml:"worker_count"`
+	Buffer          int            `json:"buffer" yaml:"buffer"`
+	DistributedMode bool           `json:"distributed_mode" yaml:"distributed_mode"`
+	StreamingMode   bool           `json:"streaming_mode" yaml:"streaming_mode"`
+	Checkpoint      Checkpoint     `json:"checkpoints" yaml:"checkpoints"`
+	Deduplication   Deduplication  `json:"deduplication" yaml:"deduplication"`
 }
 
 type AggregationDefinition struct {

@@ -2,9 +2,13 @@ package etl
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -28,19 +32,154 @@ import (
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
+type LifecycleHooks struct {
+	BeforeExtract   func(ctx context.Context) error
+	AfterExtract    func(ctx context.Context, recordCount int) error
+	BeforeMapper    func(ctx context.Context, rec utils.Record) error
+	AfterMapper     func(ctx context.Context, rec utils.Record) error
+	BeforeTransform func(ctx context.Context, rec utils.Record) error
+	AfterTransform  func(ctx context.Context, rec utils.Record) error
+	BeforeLoad      func(ctx context.Context, batch []utils.Record) error
+	AfterLoad       func(ctx context.Context, batch []utils.Record) error
+}
+
+type Validations struct {
+	ValidateBeforeExtract func(ctx context.Context) error
+	ValidateAfterExtract  func(ctx context.Context, recordCount int) error
+	ValidateBeforeLoad    func(ctx context.Context, batch []utils.Record) error
+	ValidateAfterLoad     func(ctx context.Context, batch []utils.Record) error
+}
+
+type Event struct {
+	Name    string
+	Payload interface{}
+}
+
+type EventHandler func(Event)
+
+type EventBus struct {
+	handlers map[string][]EventHandler
+	mu       sync.RWMutex
+}
+
+func NewEventBus() *EventBus {
+	return &EventBus{
+		handlers: make(map[string][]EventHandler),
+	}
+}
+
+func (eb *EventBus) Subscribe(eventName string, handler EventHandler) {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.handlers[eventName] = append(eb.handlers[eventName], handler)
+}
+
+func (eb *EventBus) Publish(eventName string, payload interface{}) {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+	if hs, ok := eb.handlers[eventName]; ok {
+		for _, h := range hs {
+
+			go h(Event{Name: eventName, Payload: payload})
+		}
+	}
+}
+
+type Plugin interface {
+	Name() string
+	Init(e *ETL) error
+}
+
+type Metrics struct {
+	Extracted   int64 `json:"extracted"`
+	Mapped      int64 `json:"mapped"`
+	Transformed int64 `json:"transformed"`
+	Loaded      int64 `json:"loaded"`
+	Errors      int64 `json:"errors"`
+}
+
 func Shutdown(cancel context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// Listen for the signal in a separate goroutine.
 	go func() {
 		sig := <-sigChan
 		log.Printf("Received signal: %v. Initiating graceful shutdown...", sig)
-		cancel() // This will signal the ETL job to shutdown.
+		cancel()
 	}()
 }
 
-func Run(cfg *config.Config) error {
+type ETL struct {
+	sources         []contracts.Source
+	mappers         []contracts.Mapper
+	transformers    []contracts.Transformer
+	loaders         []contracts.Loader
+	lookups         []contracts.LookupLoader
+	checkpointStore contracts.CheckpointStore
+	circuitBreaker  *transactions.CircuitBreaker
+	workerCount     int
+	loaderWorkers   int
+	batchSize       int
+	retryCount      int
+	retryDelay      time.Duration
+	rawChanBuffer   int
+	checkpointFunc  func(rec utils.Record) string
+	lastCheckpoint  string
+	cpMutex         sync.Mutex
+	maxErrorCount   int
+	errorCount      int
+	cancelFunc      context.CancelFunc
+	lookupStore     map[string][]utils.Record
+	lookupInCache   sync.Map
+	pipelineConfig  *PipelineConfig
+	normalizeSchema map[string]string
+
+	hooks           *LifecycleHooks
+	validations     *Validations
+	eventBus        *EventBus
+	plugins         []Plugin
+	distributedMode bool
+	streamingMode   bool
+	metrics         *Metrics
+
+	dashboardUser string
+	dashboardPass string
+
+	dedupEnabled bool
+	dedupField   string
+}
+
+func defaultConfig() *ETL {
+	return &ETL{
+		workerCount:    4,
+		batchSize:      100,
+		retryCount:     3,
+		retryDelay:     100 * time.Millisecond,
+		loaderWorkers:  2,
+		rawChanBuffer:  100,
+		maxErrorCount:  10,
+		lookupStore:    make(map[string][]utils.Record),
+		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
+		metrics:        &Metrics{},
+	}
+}
+
+func NewETL(opts ...Option) *ETL {
+	e := defaultConfig()
+	for _, opt := range opts {
+		if err := opt(e); err != nil {
+			log.Printf("Error applying option: %v", err)
+		}
+	}
+
+	for _, p := range e.plugins {
+		if err := p.Init(e); err != nil {
+			log.Printf("Error initializing plugin %s: %v", p.Name(), err)
+		}
+	}
+	return e
+}
+
+func Run(cfg *config.Config, options ...Option) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	Shutdown(cancel)
@@ -52,9 +191,7 @@ func Run(cfg *config.Config) error {
 			log.Printf("Error connecting to destination DB: %v\n", err)
 			return err
 		}
-		defer func() {
-			_ = destDB.Close()
-		}()
+		defer func() { _ = destDB.Close() }()
 	}
 	if cfg.Buffer == 0 {
 		cfg.Buffer = 50
@@ -145,7 +282,19 @@ func Run(cfg *config.Config) error {
 			WithWorkerCount(cfg.WorkerCount),
 			WithBatchSize(tableCfg.BatchSize),
 			WithRawChanBuffer(cfg.Buffer),
+			WithStreamingMode(cfg.StreamingMode),
+			WithDistributedMode(cfg.DistributedMode),
 		}
+		for _, opt := range options {
+			opts = append(opts, opt)
+		}
+		if cfg.Deduplication.Enabled {
+			if cfg.Deduplication.Field == "" {
+				cfg.Deduplication.Field = "id"
+			}
+			opts = append(opts, WithDeduplication(cfg.Deduplication.Field))
+		}
+
 		if tableCfg.NormalizeSchema != nil {
 			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
 		}
@@ -172,6 +321,7 @@ func Run(cfg *config.Config) error {
 			))
 		}
 		etlJob := NewETL(opts...)
+		go etlJob.StartDashboard(":8080")
 		var lookups []contracts.LookupLoader
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
@@ -231,6 +381,9 @@ func Run(cfg *config.Config) error {
 type SourceNode struct {
 	sources       []contracts.Source
 	rawChanBuffer int
+	hooks         *LifecycleHooks
+	validations   *Validations
+	eventBus      *EventBus
 }
 
 func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping) (<-chan utils.Record, error) {
@@ -245,6 +398,23 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			defer wg.Done()
 			startTime := time.Now()
 			recordCount := 0
+
+			if sn.eventBus != nil {
+				sn.eventBus.Publish("BeforeExtract", nil)
+			}
+			if sn.validations != nil && sn.validations.ValidateBeforeExtract != nil {
+				if err := sn.validations.ValidateBeforeExtract(ctx); err != nil {
+					log.Printf("[SourceNode] ValidateBeforeExtract error: %v", err)
+					return
+				}
+			}
+			if sn.hooks != nil && sn.hooks.BeforeExtract != nil {
+				if err := sn.hooks.BeforeExtract(ctx); err != nil {
+					log.Printf("[SourceNode] BeforeExtract hook error: %v", err)
+					return
+				}
+			}
+
 			var opts []contracts.Option
 			if tableCfg.OldName != "" {
 				opts = append(opts, contracts.WithTable(tableCfg.OldName))
@@ -259,6 +429,20 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			for rec := range ch {
 				out <- rec
 				recordCount++
+				atomic.AddInt64(&snMetrics().Extracted, 1)
+			}
+			if sn.eventBus != nil {
+				sn.eventBus.Publish("AfterExtract", recordCount)
+			}
+			if sn.hooks != nil && sn.hooks.AfterExtract != nil {
+				if err := sn.hooks.AfterExtract(ctx, recordCount); err != nil {
+					log.Printf("[SourceNode] AfterExtract hook error: %v", err)
+				}
+			}
+			if sn.validations != nil && sn.validations.ValidateAfterExtract != nil {
+				if err := sn.validations.ValidateAfterExtract(ctx, recordCount); err != nil {
+					log.Printf("[SourceNode] ValidateAfterExtract error: %v", err)
+				}
 			}
 			elapsed := time.Since(startTime)
 			log.Printf("[Source] %T extracted %d records in %v", source, recordCount, elapsed)
@@ -316,6 +500,8 @@ func (nn *NormalizeNode) Process(_ context.Context, in <-chan utils.Record, _ co
 type MapNode struct {
 	mappers     []contracts.Mapper
 	workerCount int
+	hooks       *LifecycleHooks
+	eventBus    *EventBus
 }
 
 func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -329,17 +515,35 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 			defer wg.Done()
 			localCount := 0
 			for rec := range in {
+				if mn.eventBus != nil {
+					mn.eventBus.Publish("BeforeMapper", rec)
+				}
+				if mn.hooks != nil && mn.hooks.BeforeMapper != nil {
+					if err := mn.hooks.BeforeMapper(ctx, rec); err != nil {
+						log.Printf("[Mapper Worker %d] BeforeMapper hook error: %v", workerID, err)
+					}
+				}
 				mapped, err := applyMappers(ctx, rec, mn.mappers, workerID)
 				if err != nil {
 					log.Printf("[Mapper Worker %d] Error: %v", workerID, err)
+					atomic.AddInt64(&mnMetrics().Errors, 1)
 					continue
+				}
+				if mn.eventBus != nil {
+					mn.eventBus.Publish("AfterMapper", mapped)
+				}
+				if mn.hooks != nil && mn.hooks.AfterMapper != nil {
+					if err := mn.hooks.AfterMapper(ctx, mapped); err != nil {
+						log.Printf("[Mapper Worker %d] AfterMapper hook error: %v", workerID, err)
+					}
 				}
 				if mapped != nil {
 					out <- mapped
 					localCount++
+					atomic.AddInt64(&mnMetrics().Mapped, 1)
 				}
 			}
-			atomic.AddInt64(&totalMapped, int64(localCount))
+			atomic.AddInt64(&mnMetrics().Mapped, int64(localCount))
 			log.Printf("[Mapper Worker %d] mapped %d records", workerID, localCount)
 		}(i)
 	}
@@ -355,6 +559,8 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 type TransformNode struct {
 	transformers []contracts.Transformer
 	workerCount  int
+	hooks        *LifecycleHooks
+	eventBus     *EventBus
 }
 
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -368,24 +574,43 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 			defer wg.Done()
 			localCount := 0
 			for rec := range in {
+				if tn.eventBus != nil {
+					tn.eventBus.Publish("BeforeTransform", rec)
+				}
+				if tn.hooks != nil && tn.hooks.BeforeTransform != nil {
+					if err := tn.hooks.BeforeTransform(ctx, rec); err != nil {
+						log.Printf("[Transformer Worker %d] BeforeTransform hook error: %v", workerID, err)
+					}
+				}
 				transformed, err := applyTransformers(ctx, rec, tn.transformers, workerID)
 				if err != nil {
 					log.Printf("[Transformer Worker %d] Error: %v", workerID, err)
+					atomic.AddInt64(&tnMetrics().Errors, 1)
 					continue
 				}
 				for _, r := range transformed {
+					if tn.eventBus != nil {
+						tn.eventBus.Publish("AfterTransform", r)
+					}
+					if tn.hooks != nil && tn.hooks.AfterTransform != nil {
+						if err := tn.hooks.AfterTransform(ctx, r); err != nil {
+							log.Printf("[Transformer Worker %d] AfterTransform hook error: %v", workerID, err)
+						}
+					}
 					if r != nil {
 						out <- r
 						localCount++
+						atomic.AddInt64(&tnMetrics().Transformed, 1)
 					}
 				}
 			}
-			atomic.AddInt64(&totalTransformed, int64(localCount))
+			atomic.AddInt64(&tnMetrics().Transformed, int64(localCount))
 			log.Printf("[Transformer Worker %d] transformed %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
+
 		for _, t := range tn.transformers {
 			if flushable, ok := t.(contracts.Flushable); ok {
 				flushRecords, err := flushable.Flush(ctx)
@@ -416,13 +641,25 @@ type LoaderNode struct {
 	checkpointFunc  func(rec utils.Record) string
 	cpMutex         *sync.Mutex
 	lastCheckpoint  string
+	hooks           *LifecycleHooks
+	validations     *Validations
+	eventBus        *EventBus
+
+	dedupEnabled bool
+	dedupField   string
+	dedupCache   map[string]struct{}
+	dedupLock    sync.Mutex
+
+	deadLetterQueue []utils.Record
+
+	metrics *Metrics
 }
 
 func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
 	done := make(chan utils.Record)
 	batchChan := make(chan []utils.Record, ln.workerCount)
 	startTime := time.Now()
-	var totalLoaded int64
+
 	go func() {
 		batch := make([]utils.Record, 0, ln.batchSize)
 		for rec := range in {
@@ -437,6 +674,11 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 		}
 		close(batchChan)
 	}()
+
+	if ln.dedupEnabled && ln.dedupCache == nil {
+		ln.dedupCache = make(map[string]struct{})
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < ln.workerCount; i++ {
 		wg.Add(1)
@@ -445,10 +687,50 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 			localLoaded := 0
 			batchID := 1
 			for batch := range batchChan {
-				// Associate a batch ID with the context.
+
+				if ln.dedupEnabled {
+					uniqueBatch := make([]utils.Record, 0, len(batch))
+					for _, rec := range batch {
+						var key string
+						if ln.dedupField != "" {
+							if val, ok := rec[ln.dedupField]; ok {
+								key = fmt.Sprintf("%v", val)
+							} else {
+								data, _ := json.Marshal(rec)
+								key = string(data)
+							}
+						} else {
+							data, _ := json.Marshal(rec)
+							hash := sha256.Sum256(data)
+							key = hex.EncodeToString(hash[:])
+						}
+						ln.dedupLock.Lock()
+						if _, exists := ln.dedupCache[key]; !exists {
+							ln.dedupCache[key] = struct{}{}
+							uniqueBatch = append(uniqueBatch, rec)
+						}
+						ln.dedupLock.Unlock()
+					}
+					batch = uniqueBatch
+				}
+
+				if ln.eventBus != nil {
+					ln.eventBus.Publish("BeforeLoad", batch)
+				}
+				if ln.validations != nil && ln.validations.ValidateBeforeLoad != nil {
+					if err := ln.validations.ValidateBeforeLoad(ctx, batch); err != nil {
+						log.Printf("[Loader Worker %d] ValidateBeforeLoad error: %v", workerID, err)
+						continue
+					}
+				}
+				if ln.hooks != nil && ln.hooks.BeforeLoad != nil {
+					if err := ln.hooks.BeforeLoad(ctx, batch); err != nil {
+						log.Printf("[Loader Worker %d] BeforeLoad hook error: %v", workerID, err)
+						continue
+					}
+				}
 				batchCtx := context.WithValue(ctx, "batch", batchID)
 				batchID++
-				// If the parent context is cancelled, use a background context for the final operations.
 				storeCtx := batchCtx
 				if batchCtx.Err() != nil {
 					storeCtx = context.Background()
@@ -471,10 +753,12 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Batch load error (transaction): %v", workerID, err)
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 							continue
 						}
 						if err := txnLoader.Commit(storeCtx); err != nil {
 							log.Printf("[Loader Worker %d] Commit error: %v", workerID, err)
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 							continue
 						}
 					} else {
@@ -485,6 +769,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 						})
 						if err != nil {
 							log.Printf("[Loader Worker %d] Batch load error: %v", workerID, err)
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 							continue
 						}
 					}
@@ -502,8 +787,21 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 						ln.cpMutex.Unlock()
 					}
 				}
+				if ln.eventBus != nil {
+					ln.eventBus.Publish("AfterLoad", batch)
+				}
+				if ln.hooks != nil && ln.hooks.AfterLoad != nil {
+					if err := ln.hooks.AfterLoad(ctx, batch); err != nil {
+						log.Printf("[Loader Worker %d] AfterLoad hook error: %v", workerID, err)
+					}
+				}
+				if ln.validations != nil && ln.validations.ValidateAfterLoad != nil {
+					if err := ln.validations.ValidateAfterLoad(ctx, batch); err != nil {
+						log.Printf("[Loader Worker %d] ValidateAfterLoad error: %v", workerID, err)
+					}
+				}
 			}
-			atomic.AddInt64(&totalLoaded, int64(localLoaded))
+			atomic.AddInt64(&ln.metrics.Loaded, int64(localLoaded))
 			log.Printf("[Loader Worker %d] loaded %d records", workerID, localLoaded)
 		}(i)
 	}
@@ -511,69 +809,9 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 		wg.Wait()
 		close(done)
 		elapsed := time.Since(startTime)
-		log.Printf("[Loader] Total loaded records: %d in %v", totalLoaded, elapsed)
+		log.Printf("[Loader] Total loaded records: %d in %v", ln.metrics.Loaded, elapsed)
 	}()
 	return done, nil
-}
-
-func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
-	for _, mapper := range mappers {
-		var err error
-		rec, err = mapper.Map(ctx, rec)
-		if err != nil {
-			log.Printf("[Mapper Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
-			return nil, err
-		}
-	}
-	return rec, nil
-}
-
-func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int) ([]utils.Record, error) {
-	records := []utils.Record{rec}
-	for _, transformer := range transformers {
-		var nextRecords []utils.Record
-		if mt, ok := transformer.(contracts.MultiTransformer); ok {
-			for _, r := range records {
-				recs, err := mt.TransformMany(ctx, r)
-				if err != nil {
-					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, recs...)
-			}
-		} else {
-			for _, r := range records {
-				r2, err := transformer.Transform(ctx, r)
-				if err != nil {
-					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, r2)
-			}
-		}
-		records = nextRecords
-	}
-	return records, nil
-}
-
-func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
-	var wg sync.WaitGroup
-	out := make(chan utils.Record)
-	output := func(c <-chan utils.Record) {
-		for rec := range c {
-			out <- rec
-		}
-		wg.Done()
-	}
-	wg.Add(len(channels))
-	for _, c := range channels {
-		go output(c)
-	}
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-	return out
 }
 
 type dagNode struct {
@@ -648,11 +886,34 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, tableCfg conf
 	return nil
 }
 
+func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
+	var wg sync.WaitGroup
+	out := make(chan utils.Record)
+	output := func(c <-chan utils.Record) {
+		for rec := range c {
+			out <- rec
+		}
+		wg.Done()
+	}
+	wg.Add(len(channels))
+	for _, c := range channels {
+		go output(c)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
+}
+
 func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 	nodes := map[string]contracts.Node{
 		"source": &SourceNode{
 			sources:       e.sources,
 			rawChanBuffer: e.rawChanBuffer,
+			hooks:         e.hooks,
+			validations:   e.validations,
+			eventBus:      e.eventBus,
 		},
 		"normalize": &NormalizeNode{
 			schema:      e.normalizeSchema,
@@ -661,10 +922,14 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		"map": &MapNode{
 			mappers:     e.mappers,
 			workerCount: e.workerCount,
+			hooks:       e.hooks,
+			eventBus:    e.eventBus,
 		},
 		"transform": &TransformNode{
 			transformers: e.transformers,
 			workerCount:  e.workerCount,
+			hooks:        e.hooks,
+			eventBus:     e.eventBus,
 		},
 		"load": &LoaderNode{
 			loaders:         e.loaders,
@@ -677,6 +942,12 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			checkpointFunc:  e.checkpointFunc,
 			cpMutex:         &e.cpMutex,
 			lastCheckpoint:  e.lastCheckpoint,
+			hooks:           e.hooks,
+			validations:     e.validations,
+			eventBus:        e.eventBus,
+			dedupEnabled:    e.dedupEnabled,
+			dedupField:      e.dedupField,
+			metrics:         e.metrics,
 		},
 	}
 	edges := []dagEdge{
@@ -691,55 +962,16 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 	}
 }
 
-type ETL struct {
-	sources         []contracts.Source
-	mappers         []contracts.Mapper
-	transformers    []contracts.Transformer
-	loaders         []contracts.Loader
-	lookups         []contracts.LookupLoader
-	workerCount     int
-	loaderWorkers   int
-	batchSize       int
-	retryCount      int
-	retryDelay      time.Duration
-	rawChanBuffer   int
-	checkpointStore contracts.CheckpointStore
-	checkpointFunc  func(rec utils.Record) string
-	lastCheckpoint  string
-	cpMutex         sync.Mutex
-	maxErrorCount   int
-	errorCount      int
-	errorLock       sync.Mutex
-	circuitBreaker  *transactions.CircuitBreaker
-	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]utils.Record
-	lookupInCache   sync.Map
-	pipelineConfig  *PipelineConfig
-	normalizeSchema map[string]string
-}
-
-func defaultConfig() *ETL {
-	return &ETL{
-		workerCount:    4,
-		batchSize:      100,
-		retryCount:     3,
-		retryDelay:     100 * time.Millisecond,
-		loaderWorkers:  2,
-		rawChanBuffer:  100,
-		maxErrorCount:  10,
-		lookupStore:    make(map[string][]utils.Record),
-		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
-	}
-}
-
-func NewETL(opts ...Option) *ETL {
-	e := defaultConfig()
-	for _, opt := range opts {
-		if err := opt(e); err != nil {
-			log.Printf("Error applying option: %v", err)
+func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
+	for _, mapper := range mappers {
+		var err error
+		rec, err = mapper.Map(ctx, rec)
+		if err != nil {
+			log.Printf("[Mapper Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
+			return nil, err
 		}
 	}
-	return e
+	return rec, nil
 }
 
 func (e *ETL) Run(ctx context.Context, tableCfg config.TableMapping) error {
@@ -770,6 +1002,53 @@ func (e *ETL) Close() error {
 		}
 	}
 	return nil
+}
+
+func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int) ([]utils.Record, error) {
+	records := []utils.Record{rec}
+	for _, transformer := range transformers {
+		var nextRecords []utils.Record
+		if mt, ok := transformer.(contracts.MultiTransformer); ok {
+			for _, r := range records {
+				recs, err := mt.TransformMany(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, recs...)
+			}
+		} else {
+			for _, r := range records {
+				r2, err := transformer.Transform(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, r2)
+			}
+		}
+		records = nextRecords
+	}
+	return records, nil
+}
+
+func (e *ETL) StartDashboard(addr string) {
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != e.dashboardUser || pass != e.dashboardPass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ETL Dashboard"`)
+			http.Error(w, "Unauthorized.", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		data, _ := json.MarshalIndent(e.metrics, "", "  ")
+		w.Write(data)
+	})
+	log.Printf("Starting dashboard on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Printf("Dashboard server error: %v", err)
+	}
 }
 
 func (e *ETL) lookupIn(args ...any) (any, error) {
@@ -806,3 +1085,21 @@ func (e *ETL) lookupIn(args ...any) (any, error) {
 	}
 	return nil, fmt.Errorf("lookupIn: no matching value for %s in dataset %s", sourceValStr, datasetKey)
 }
+
+func (e *ETL) StreamingMode() bool {
+	return e.streamingMode
+}
+
+func (e *ETL) DistributedMode() bool {
+	return e.distributedMode
+}
+
+var (
+	_sourceMetrics    = &Metrics{}
+	_mapperMetrics    = &Metrics{}
+	_transformMetrics = &Metrics{}
+)
+
+func snMetrics() *Metrics { return _sourceMetrics }
+func mnMetrics() *Metrics { return _mapperMetrics }
+func tnMetrics() *Metrics { return _transformMetrics }

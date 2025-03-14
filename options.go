@@ -3,6 +3,7 @@ package etl
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/oarkflow/etl/pkg/adapters"
@@ -141,6 +142,73 @@ func WithCheckpoint(store contracts.CheckpointStore, cpFunc func(rec utils2.Reco
 	return func(e *ETL) error {
 		e.checkpointStore = store
 		e.checkpointFunc = cpFunc
+		return nil
+	}
+}
+
+func WithLifecycleHooks(hooks *LifecycleHooks) Option {
+	return func(e *ETL) error {
+		e.hooks = hooks
+		return nil
+	}
+}
+
+func WithValidations(val *Validations) Option {
+	return func(e *ETL) error {
+		e.validations = val
+		return nil
+	}
+}
+
+func WithEventBus(eb *EventBus) Option {
+	return func(e *ETL) error {
+		e.eventBus = eb
+		return nil
+	}
+}
+
+func WithDeduplication(dedupField string) Option {
+	return func(e *ETL) error {
+		e.dedupEnabled = true
+		e.dedupField = dedupField
+		return nil
+	}
+}
+
+func WithPlugin(p Plugin) Option {
+	return func(e *ETL) error {
+		if err := p.Init(e); err != nil {
+			return err
+		}
+		e.plugins = append(e.plugins, p)
+		return nil
+	}
+}
+
+func WithDistributedMode(enabled bool) Option {
+	return func(e *ETL) error {
+		e.distributedMode = enabled
+		if enabled {
+			log.Println("[ETL] Distributed mode enabled.")
+		}
+		return nil
+	}
+}
+
+func WithStreamingMode(enabled bool) Option {
+	return func(e *ETL) error {
+		e.streamingMode = enabled
+		if enabled {
+			log.Println("[ETL] Streaming mode enabled.")
+		}
+		return nil
+	}
+}
+
+func WithDashboardAuth(user, pass string) Option {
+	return func(e *ETL) error {
+		e.dashboardUser = user
+		e.dashboardPass = pass
 		return nil
 	}
 }

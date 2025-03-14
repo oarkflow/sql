@@ -13,6 +13,13 @@ destination:
     type: "json"
     file: "charge_master.json"
 
+deduplication:
+    enabled: true
+    field: "id"
+    
+streaming_mode: true
+distributed_mode: true
+
 checkpoint:
     file: "checkpoint.txt"
     field: "id"
