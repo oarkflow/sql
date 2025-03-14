@@ -111,13 +111,13 @@ func RunETL(configPath string) error {
 	eventBus.Subscribe("BeforeExtract", func(e etl.Event) {
 		log.Println("[EventBus] Received event:", e.Name)
 	})
-	eventBus.Subscribe("AfterLoad", func(e etl.Event) {
-		log.Printf("[EventBus] AfterLoad event with payload: %v", e.Payload)
-	})
+	/*eventBus.Subscribe("AfterLoad", func(e etl.Event) {
+		log.Printf("[EventBus] AfterLoad event with payload: %v", e.Name)
+	})*/
 	opts := []etl.Option{
 		// etl.WithValidations(validations),
 		etl.WithPlugin(&LoggerPlugin{}),
-		// etl.WithEventBus(eventBus),
+		etl.WithEventBus(eventBus),
 		// etl.WithLifecycleHooks(hooks),
 		etl.WithDashboardAuth("admin", "password"),
 	}

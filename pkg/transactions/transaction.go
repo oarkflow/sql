@@ -252,6 +252,7 @@ func (tb *TransactionBuilder) SetLogger(l logs.Logger) *TransactionBuilder {
 	tb.opts.Logger = l
 	return tb
 }
+
 func (tb *TransactionBuilder) SetMetrics(m metrics.Collector) *TransactionBuilder {
 	tb.opts.Metrics = m
 	return tb
@@ -273,7 +274,6 @@ func NewTransaction() *Transaction {
 		IsolationLevel:    "default",
 		Timeout:           0,
 		RetryPolicy:       RetryPolicy{MaxRetries: 0, Delay: 0, ShouldRetry: func(err error) bool { return false }},
-		Logger:            &logs.DefaultLogger{Fields: make(map[string]any), Level: logs.InfoLevel},
 		Metrics:           &metrics.NoopMetricsCollector{},
 		CaptureStackTrace: true,
 		Tracer:            &metrics.NoopTracer{},
@@ -362,6 +362,18 @@ func (t *Transaction) SetTimeout(d time.Duration) {
 	t.timeout = d
 }
 
+func (t *Transaction) Log(level logs.LogLevel, msg string, args ...any) {
+	if t.logger == nil {
+		return
+	}
+	switch level {
+	case logs.ErrorLevel:
+		t.logger.Error(msg, args...)
+	default:
+		t.logger.Info(msg, args...)
+	}
+}
+
 func (t *Transaction) SetPrepareTimeout(d time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -408,7 +420,7 @@ func (t *Transaction) RegisterCommitWithRetryPolicy(fn func(ctx context.Context)
 		return fmt.Errorf("cannot register commit action in transaction %d state %s", t.id, t.state)
 	}
 	t.commitActionsWithPolicy = append(t.commitActionsWithPolicy, ActionWithPolicy{fn: fn, rp: &rp})
-	t.logger.Info("Transaction %d: Registered commit action with custom retry policy", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered commit action with custom retry policy", t.id)
 	return nil
 }
 
@@ -422,7 +434,7 @@ func (t *Transaction) RegisterRollbackWithRetryPolicy(fn func(ctx context.Contex
 		return fmt.Errorf("cannot register rollback action in transaction %d state %s", t.id, t.state)
 	}
 	t.rollbackActionsWithPolicy = append(t.rollbackActionsWithPolicy, ActionWithPolicy{fn: fn, rp: &rp})
-	t.logger.Info("Transaction %d: Registered rollback action with custom retry policy", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered rollback action with custom retry policy", t.id)
 	return nil
 }
 
@@ -432,7 +444,9 @@ func (t *Transaction) Begin(ctx context.Context) error {
 	batch := ctx.Value(contextKeyBatch)
 
 	if cid, ok := ctx.Value(ContextKeyCorrelationID).(string); ok {
-		t.logger = t.logger.WithFields(map[string]any{"correlation_id": cid})
+		if t.logger != nil {
+			t.logger = t.logger.WithFields(map[string]any{"correlation_id": cid})
+		}
 	}
 	if t.state != StateInitialized {
 		return fmt.Errorf("cannot begin transaction %d in state %s", t.id, t.state)
@@ -451,9 +465,9 @@ func (t *Transaction) Begin(ctx context.Context) error {
 		t.lifecycleHooks.OnBegin(t.id, ctx)
 	}
 
-	t.logger.Info("Transaction %d begun with isolation level '%s'", t.id, t.isolationLevel)
+	t.Log(logs.InfoLevel, "Transaction %d begun with isolation level '%s'", t.id, t.isolationLevel)
 	if batch != nil {
-		t.logger.Info("Transaction %d begun for batch %v", t.id, batch)
+		t.Log(logs.InfoLevel, "Transaction %d begun for batch %v", t.id, batch)
 	}
 	if t.distributedCoordinator != nil {
 		if err := t.distributedCoordinator.BeginDistributed(t); err != nil {
@@ -482,7 +496,7 @@ func (t *Transaction) RegisterRollback(fn func(ctx context.Context) error) error
 		return fmt.Errorf("cannot register rollback action in transaction %d state %s", t.id, t.state)
 	}
 	t.rollbackActions = append(t.rollbackActions, fn)
-	t.logger.Info("Transaction %d: Registered rollback action", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered rollback action", t.id)
 	return nil
 }
 
@@ -496,7 +510,7 @@ func (t *Transaction) RegisterCommit(fn func(ctx context.Context) error) error {
 		return fmt.Errorf("cannot register commit action in transaction %d state %s", t.id, t.state)
 	}
 	t.commitActions = append(t.commitActions, fn)
-	t.logger.Info("Transaction %d: Registered commit action", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered commit action", t.id)
 	return nil
 }
 
@@ -510,7 +524,7 @@ func (t *Transaction) RegisterCleanup(fn func(ctx context.Context) error) error 
 		return fmt.Errorf("cannot register cleanup action in transaction %d state %s", t.id, t.state)
 	}
 	t.cleanupActions = append(t.cleanupActions, fn)
-	t.logger.Info("Transaction %d: Registered cleanup action", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered cleanup action", t.id)
 	return nil
 }
 
@@ -524,7 +538,7 @@ func (t *Transaction) RegisterResource(res TransactionalResource) error {
 		return fmt.Errorf("cannot register resource in transaction %d state %s", t.id, t.state)
 	}
 	t.resources = append(t.resources, res)
-	t.logger.Info("Transaction %d: Registered transactional resource", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Registered transactional resource", t.id)
 	return nil
 }
 
@@ -554,7 +568,7 @@ func (t *Transaction) prepareResources(ctx context.Context) error {
 			if err := retryAction(prepareCtx, func(ctx context.Context) error {
 				return safeAction(ctx, pr.Prepare, desc)
 			}, desc, t.retryPolicy); err != nil {
-				t.logger.Error("Transaction %d: Resource prepare failed: %v", t.id, err)
+				t.Log(logs.ErrorLevel, "Transaction %d: Resource prepare failed: %v", t.id, err)
 				return err
 			}
 		}
@@ -599,14 +613,14 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	batch := commitCtx.Value(contextKeyBatch)
 	if err := commitCtx.Err(); err != nil {
 		t.mu.Unlock()
-		t.logger.Error("Transaction %d: Context error during commit: %v", t.id, err)
+		t.Log(logs.ErrorLevel, "Transaction %d: Context error during commit: %v", t.id, err)
 		return err
 	}
 	t.mu.Unlock()
 
 	if t.testHooks != nil && t.testHooks.SimulateCommitFailure {
 		err := fmt.Errorf("simulated commit failure")
-		t.logger.Error("Transaction %d: %v", t.id, err)
+		t.Log(logs.ErrorLevel, "Transaction %d: %v", t.id, err)
 		t.metrics.IncErrorCount()
 		_ = t.Rollback(commitCtx)
 		stack := ""
@@ -620,7 +634,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 		t.mu.Lock()
 		t.state = StateFailed
 		t.mu.Unlock()
-		t.logger.Error("Transaction %d: Prepare phase failed: %v", t.id, err)
+		t.Log(logs.ErrorLevel, "Transaction %d: Prepare phase failed: %v", t.id, err)
 		t.metrics.IncErrorCount()
 		_ = t.Rollback(commitCtx)
 		stack := ""
@@ -692,7 +706,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				t.mu.Lock()
 				t.state = StateFailed
 				t.mu.Unlock()
-				t.logger.Error("Transaction %d: Commit action failed: %v", t.id, err)
+				t.Log(logs.ErrorLevel, "Transaction %d: Commit action failed: %v", t.id, err)
 				handleError(err)
 				rbErr := t.Rollback(commitCtx)
 				if rbErr != nil {
@@ -723,7 +737,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 			t.mu.Lock()
 			t.state = StateFailed
 			t.mu.Unlock()
-			t.logger.Error("Transaction %d: Commit action (custom policy) failed: %v", t.id, err)
+			t.Log(logs.ErrorLevel, "Transaction %d: Commit action (custom policy) failed: %v", t.id, err)
 			handleError(err)
 			rbErr := t.Rollback(commitCtx)
 			if rbErr != nil {
@@ -800,7 +814,7 @@ func (t *Transaction) Commit(ctx context.Context) error {
 				t.mu.Lock()
 				t.state = StateFailed
 				t.mu.Unlock()
-				t.logger.Error("Transaction %d: Resource commit failed: %v", t.id, err)
+				t.Log(logs.ErrorLevel, "Transaction %d: Resource commit failed: %v", t.id, err)
 				handleError(err)
 				rbErr := t.Rollback(commitCtx)
 				if rbErr != nil {
@@ -827,9 +841,9 @@ func (t *Transaction) Commit(ctx context.Context) error {
 	t.rollbackActions = nil
 	t.mu.Unlock()
 	if batch != nil {
-		t.logger.Info("Transaction %d committed successfully for batch %v", t.id, batch)
+		t.Log(logs.InfoLevel, "Transaction %d committed successfully for batch %v", t.id, batch)
 	} else {
-		t.logger.Info("Transaction %d committed successfully", t.id)
+		t.Log(logs.InfoLevel, "Transaction %d committed successfully", t.id)
 	}
 	if t.distributedCoordinator != nil {
 		if err := t.distributedCoordinator.CommitDistributed(t); err != nil {
@@ -908,7 +922,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 	}
 	if err := rbCtx.Err(); err != nil {
 		t.mu.Unlock()
-		t.logger.Error("Transaction %d: Context error during rollback: %v", t.id, err)
+		t.Log(logs.ErrorLevel, "Transaction %d: Context error during rollback: %v", t.id, err)
 		return err
 	}
 	actions := t.rollbackActions
@@ -920,7 +934,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 
 	if t.testHooks != nil && t.testHooks.SimulateRollbackFailure {
 		err := fmt.Errorf("simulated rollback failure")
-		t.logger.Error("Transaction %d: %v", t.id, err)
+		t.Log(logs.ErrorLevel, "Transaction %d: %v", t.id, err)
 		t.metrics.IncErrorCount()
 		stack := ""
 		if t.captureStackTrace {
@@ -930,7 +944,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 	}
 
 	var errs []error
-	t.logger.Info("Transaction %d: Rolling back", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Rolling back", t.id)
 
 	if t.parallelRollback {
 		var wg sync.WaitGroup
@@ -951,7 +965,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		close(errCh)
 		for err := range errCh {
 			errs = append(errs, err)
-			t.logger.Error("Transaction %d: Error during parallel rollback action: %v", t.id, err)
+			t.Log(logs.ErrorLevel, "Transaction %d: Error during parallel rollback action: %v", t.id, err)
 		}
 	} else {
 		for i := len(actions) - 1; i >= 0; i-- {
@@ -960,7 +974,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 				return safeAction(ctx, actions[i], desc)
 			}, desc, t.retryPolicy); err != nil {
 				errs = append(errs, err)
-				t.logger.Error("Transaction %d: Error during rollback action %d: %v", t.id, i, err)
+				t.Log(logs.ErrorLevel, "Transaction %d: Error during rollback action %d: %v", t.id, i, err)
 			}
 		}
 	}
@@ -984,7 +998,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 		close(errCh)
 		for err := range errCh {
 			errs = append(errs, err)
-			t.logger.Error("Transaction %d: Error during parallel resource rollback: %v", t.id, err)
+			t.Log(logs.ErrorLevel, "Transaction %d: Error during parallel resource rollback: %v", t.id, err)
 		}
 	} else {
 		for i := len(resources) - 1; i >= 0; i-- {
@@ -993,7 +1007,7 @@ func (t *Transaction) Rollback(ctx context.Context) error {
 				return safeResourceRollback(ctx, resources[i], i, t.id)
 			}, desc, t.retryPolicy); err != nil {
 				errs = append(errs, err)
-				t.logger.Error("Transaction %d: Error during resource rollback %d: %v", t.id, i, err)
+				t.Log(logs.ErrorLevel, "Transaction %d: Error during resource rollback %d: %v", t.id, i, err)
 			}
 		}
 	}
@@ -1050,7 +1064,7 @@ func (t *Transaction) Abort(ctx context.Context) error {
 	t.mu.Lock()
 	t.abortCalled = true
 	t.mu.Unlock()
-	t.logger.Info("Transaction %d: Aborting", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Aborting", t.id)
 	return t.Rollback(ctx)
 }
 
@@ -1066,7 +1080,7 @@ func (t *Transaction) Close() error {
 		txPool.Put(t)
 		return nil
 	}
-	t.logger.Info("Transaction %d: Closing - performing rollback", t.id)
+	t.Log(logs.InfoLevel, "Transaction %d: Closing - performing rollback", t.id)
 	err := t.Rollback(context.Background())
 	txPool.Put(t)
 	return err
@@ -1079,7 +1093,7 @@ func (t *Transaction) CreateSavepoint(_ context.Context) (int, error) {
 		return 0, fmt.Errorf("cannot create savepoint in transaction %d state %s", t.id, t.state)
 	}
 	sp := len(t.rollbackActions)
-	t.logger.Info("Transaction %d: Created savepoint at index %d", t.id, sp)
+	t.Log(logs.InfoLevel, "Transaction %d: Created savepoint at index %d", t.id, sp)
 	return sp, nil
 }
 
@@ -1093,7 +1107,7 @@ func (t *Transaction) CreateNamedSavepoint(name string) error {
 		return fmt.Errorf("savepoint '%s' already exists in transaction %d", name, t.id)
 	}
 	t.savepoints[name] = len(t.rollbackActions)
-	t.logger.Info("Transaction %d: Created named savepoint '%s' at index %d", t.id, name, t.savepoints[name])
+	t.Log(logs.InfoLevel, "Transaction %d: Created named savepoint '%s' at index %d", t.id, name, t.savepoints[name])
 	return nil
 }
 
@@ -1119,7 +1133,7 @@ func (t *Transaction) ReleaseNamedSavepoint(name string) error {
 	}
 	t.rollbackActions = t.rollbackActions[:sp]
 	delete(t.savepoints, name)
-	t.logger.Info("Transaction %d: Released named savepoint '%s'", t.id, name)
+	t.Log(logs.InfoLevel, "Transaction %d: Released named savepoint '%s'", t.id, name)
 	return nil
 }
 
@@ -1138,14 +1152,14 @@ func (t *Transaction) RollbackToSavepoint(ctx context.Context, sp int) error {
 	t.mu.Unlock()
 
 	var errs []error
-	t.logger.Info("Transaction %d: Rolling back to savepoint at index %d", t.id, sp)
+	t.Log(logs.InfoLevel, "Transaction %d: Rolling back to savepoint at index %d", t.id, sp)
 	for i := len(actionsToRollback) - 1; i >= 0; i-- {
 		desc := fmt.Sprintf("rollback savepoint action %d in transaction %d", i, t.id)
 		if err := retryAction(ctx, func(ctx context.Context) error {
 			return safeAction(ctx, actionsToRollback[i], desc)
 		}, desc, t.retryPolicy); err != nil {
 			errs = append(errs, err)
-			t.logger.Error("Transaction %d: Error during rollback action at savepoint: %v", t.id, err)
+			t.Log(logs.ErrorLevel, "Transaction %d: Error during rollback action at savepoint: %v", t.id, err)
 		}
 	}
 	if len(errs) > 0 {
@@ -1180,7 +1194,7 @@ func (t *Transaction) BeginNested(ctx context.Context) (*NestedTransaction, erro
 		savepoint: sp,
 		active:    true,
 	}
-	t.logger.Info("Transaction %d: Nested transaction started at savepoint %d", t.id, sp)
+	t.Log(logs.InfoLevel, "Transaction %d: Nested transaction started at savepoint %d", t.id, sp)
 	return nt, nil
 }
 
@@ -1198,7 +1212,7 @@ func (t *Transaction) ReleaseSavepoint(_ context.Context, sp int) error {
 		return fmt.Errorf("invalid savepoint index %d for transaction %d", sp, t.id)
 	}
 	t.rollbackActions = t.rollbackActions[:sp]
-	t.logger.Info("Transaction %d: Released savepoint at index %d", t.id, sp)
+	t.Log(logs.InfoLevel, "Transaction %d: Released savepoint at index %d", t.id, sp)
 	return nil
 }
 
@@ -1210,7 +1224,7 @@ func (nt *NestedTransaction) Commit(ctx context.Context) error {
 		return err
 	}
 	nt.active = false
-	nt.parent.logger.Info("Transaction %d: Nested transaction committed (released savepoint %d)", nt.parent.id, nt.savepoint)
+	nt.parent.Log(logs.InfoLevel, "Transaction %d: Nested transaction committed (released savepoint %d)", nt.parent.id, nt.savepoint)
 	return nil
 }
 
@@ -1222,7 +1236,7 @@ func (nt *NestedTransaction) Rollback(ctx context.Context) error {
 		return err
 	}
 	nt.active = false
-	nt.parent.logger.Info("Transaction %d: Nested transaction rolled back to savepoint %d", nt.parent.id, nt.savepoint)
+	nt.parent.Log(logs.InfoLevel, "Transaction %d: Nested transaction rolled back to savepoint %d", nt.parent.id, nt.savepoint)
 	return nil
 }
 
@@ -1241,7 +1255,7 @@ func (t *Transaction) runCleanup(ctx context.Context) error {
 		desc := fmt.Sprintf("cleanup action %d in transaction %d", i, t.id)
 		if err := safeAction(ctx, action, desc); err != nil {
 			errs = append(errs, err)
-			t.logger.Error("Transaction %d: Error during cleanup action %d: %v", t.id, i, err)
+			t.Log(logs.ErrorLevel, "Transaction %d: Error during cleanup action %d: %v", t.id, i, err)
 		}
 	}
 	if len(errs) > 0 {
