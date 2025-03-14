@@ -16,8 +16,15 @@ func (p *LoggerPlugin) Name() string {
 }
 
 func (p *LoggerPlugin) Init(e *etl.ETL) error {
-	log.Println("[LoggerPlugin] Plugin initialized. StreamingMode =", e.StreamingMode(),
-		"DistributedMode =", e.DistributedMode())
+	// Subscribe to the "AfterLoad" event.
+	if e.EventBus() != nil {
+		e.EventBus().Subscribe("AfterLoad", func(evt etl.Event) {
+			log.Printf("[SamplePlugin] Received AfterLoad event with payload: %v", evt.Payload)
+			// For example, perform extra logging or trigger external notifications.
+		})
+	}
+	// You could also modify ETL's configuration, add new sources/transformers, etc.
+	log.Println("[SamplePlugin] Initialized successfully.")
 	return nil
 }
 

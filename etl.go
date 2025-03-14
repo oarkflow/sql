@@ -174,6 +174,8 @@ func NewETL(opts ...Option) *ETL {
 	for _, p := range e.plugins {
 		if err := p.Init(e); err != nil {
 			log.Printf("Error initializing plugin %s: %v", p.Name(), err)
+		} else {
+			log.Printf("Plugin %s initialized successfully", p.Name())
 		}
 	}
 	return e
@@ -378,12 +380,107 @@ func Run(cfg *config.Config, options ...Option) error {
 	return nil
 }
 
+func (e *ETL) Close() error {
+	for _, src := range e.sources {
+		if err := src.Close(); err != nil {
+			return fmt.Errorf("error closing source: %v", err)
+		}
+	}
+	for _, src := range e.lookups {
+		if err := src.Close(); err != nil {
+			return fmt.Errorf("error closing lookups: %v", err)
+		}
+	}
+	for _, loader := range e.loaders {
+		if err := loader.Close(); err != nil {
+			return fmt.Errorf("error closing loader: %v", err)
+		}
+	}
+	return nil
+}
+
+func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
+	for _, mapper := range mappers {
+		var err error
+		rec, err = mapper.Map(ctx, rec)
+		if err != nil {
+			log.Printf("[Mapper Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
+			return nil, err
+		}
+	}
+	return rec, nil
+}
+
+func (e *ETL) Run(ctx context.Context, tableCfg config.TableMapping) error {
+	if e.streamingMode {
+		log.Println("[ETL] Streaming mode is enabled.")
+	}
+	if e.distributedMode {
+		log.Println("[ETL] Distributed mode is enabled.")
+	}
+	overallStart := time.Now()
+	if e.pipelineConfig == nil {
+		e.pipelineConfig = e.buildDefaultPipeline()
+	}
+	err := e.runPipeline(ctx, e.pipelineConfig, tableCfg)
+	elapsed := time.Since(overallStart)
+	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
+	return err
+}
+
+func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int) ([]utils.Record, error) {
+	records := []utils.Record{rec}
+	for _, transformer := range transformers {
+		var nextRecords []utils.Record
+		if mt, ok := transformer.(contracts.MultiTransformer); ok {
+			for _, r := range records {
+				recs, err := mt.TransformMany(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, recs...)
+			}
+		} else {
+			for _, r := range records {
+				r2, err := transformer.Transform(ctx, r)
+				if err != nil {
+					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
+					continue
+				}
+				nextRecords = append(nextRecords, r2)
+			}
+		}
+		records = nextRecords
+	}
+	return records, nil
+}
+
+func (e *ETL) StartDashboard(addr string) {
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != e.dashboardUser || pass != e.dashboardPass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ETL Dashboard"`)
+			http.Error(w, "Unauthorized.", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		data, _ := json.MarshalIndent(e.metrics, "", "  ")
+		w.Write(data)
+	})
+	log.Printf("Starting dashboard on %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Printf("Dashboard server error: %v", err)
+	}
+}
+
 type SourceNode struct {
 	sources       []contracts.Source
 	rawChanBuffer int
 	hooks         *LifecycleHooks
 	validations   *Validations
 	eventBus      *EventBus
+	metrics       *Metrics
 }
 
 func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping) (<-chan utils.Record, error) {
@@ -429,7 +526,7 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			for rec := range ch {
 				out <- rec
 				recordCount++
-				atomic.AddInt64(&snMetrics().Extracted, 1)
+				atomic.AddInt64(&sn.metrics.Extracted, 1)
 			}
 			if sn.eventBus != nil {
 				sn.eventBus.Publish("AfterExtract", recordCount)
@@ -502,6 +599,7 @@ type MapNode struct {
 	workerCount int
 	hooks       *LifecycleHooks
 	eventBus    *EventBus
+	metrics     *Metrics
 }
 
 func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -520,13 +618,13 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 				}
 				if mn.hooks != nil && mn.hooks.BeforeMapper != nil {
 					if err := mn.hooks.BeforeMapper(ctx, rec); err != nil {
-						log.Printf("[Mapper Worker %d] BeforeMapper hook error: %v", workerID, err)
+						log.Printf("[MapNode Worker %d] BeforeMapper hook error: %v", workerID, err)
 					}
 				}
 				mapped, err := applyMappers(ctx, rec, mn.mappers, workerID)
 				if err != nil {
-					log.Printf("[Mapper Worker %d] Error: %v", workerID, err)
-					atomic.AddInt64(&mnMetrics().Errors, 1)
+					log.Printf("[MapNode Worker %d] Error: %v", workerID, err)
+					atomic.AddInt64(&mn.metrics.Errors, 1)
 					continue
 				}
 				if mn.eventBus != nil {
@@ -534,24 +632,24 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 				}
 				if mn.hooks != nil && mn.hooks.AfterMapper != nil {
 					if err := mn.hooks.AfterMapper(ctx, mapped); err != nil {
-						log.Printf("[Mapper Worker %d] AfterMapper hook error: %v", workerID, err)
+						log.Printf("[MapNode Worker %d] AfterMapper hook error: %v", workerID, err)
 					}
 				}
 				if mapped != nil {
 					out <- mapped
 					localCount++
-					atomic.AddInt64(&mnMetrics().Mapped, 1)
+					atomic.AddInt64(&mn.metrics.Mapped, 1)
 				}
 			}
-			atomic.AddInt64(&mnMetrics().Mapped, int64(localCount))
-			log.Printf("[Mapper Worker %d] mapped %d records", workerID, localCount)
+			atomic.AddInt64(&mn.metrics.Mapped, int64(localCount))
+			log.Printf("[MapNode Worker %d] mapped %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
 		wg.Wait()
 		close(out)
 		elapsed := time.Since(startTime)
-		log.Printf("[Mapper] Total mapped records: %d in %v", totalMapped, elapsed)
+		log.Printf("[MapNode] Total mapped records: %d in %v", totalMapped, elapsed)
 	}()
 	return out, nil
 }
@@ -561,6 +659,7 @@ type TransformNode struct {
 	workerCount  int
 	hooks        *LifecycleHooks
 	eventBus     *EventBus
+	metrics      *Metrics
 }
 
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -579,13 +678,13 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 				}
 				if tn.hooks != nil && tn.hooks.BeforeTransform != nil {
 					if err := tn.hooks.BeforeTransform(ctx, rec); err != nil {
-						log.Printf("[Transformer Worker %d] BeforeTransform hook error: %v", workerID, err)
+						log.Printf("[TransformNode Worker %d] BeforeTransform hook error: %v", workerID, err)
 					}
 				}
 				transformed, err := applyTransformers(ctx, rec, tn.transformers, workerID)
 				if err != nil {
-					log.Printf("[Transformer Worker %d] Error: %v", workerID, err)
-					atomic.AddInt64(&tnMetrics().Errors, 1)
+					log.Printf("[TransformNode Worker %d] Error: %v", workerID, err)
+					atomic.AddInt64(&tn.metrics.Errors, 1)
 					continue
 				}
 				for _, r := range transformed {
@@ -594,18 +693,18 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 					}
 					if tn.hooks != nil && tn.hooks.AfterTransform != nil {
 						if err := tn.hooks.AfterTransform(ctx, r); err != nil {
-							log.Printf("[Transformer Worker %d] AfterTransform hook error: %v", workerID, err)
+							log.Printf("[TransformNode Worker %d] AfterTransform hook error: %v", workerID, err)
 						}
 					}
 					if r != nil {
 						out <- r
 						localCount++
-						atomic.AddInt64(&tnMetrics().Transformed, 1)
+						atomic.AddInt64(&tn.metrics.Transformed, 1)
 					}
 				}
 			}
-			atomic.AddInt64(&tnMetrics().Transformed, int64(localCount))
-			log.Printf("[Transformer Worker %d] transformed %d records", workerID, localCount)
+			atomic.AddInt64(&tn.metrics.Transformed, int64(localCount))
+			log.Printf("[TransformNode Worker %d] transformed %d records", workerID, localCount)
 		}(i)
 	}
 	go func() {
@@ -615,7 +714,7 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 			if flushable, ok := t.(contracts.Flushable); ok {
 				flushRecords, err := flushable.Flush(ctx)
 				if err != nil {
-					log.Printf("[Transformer] Flush error: %v", err)
+					log.Printf("[TransformNode] Flush error: %v", err)
 					continue
 				}
 				for _, r := range flushRecords {
@@ -625,7 +724,7 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 		}
 		close(out)
 		elapsed := time.Since(startTime)
-		log.Printf("[Transformer] Total transformed records: %d in %v", totalTransformed, elapsed)
+		log.Printf("[TransformNode] Total transformed records: %d in %v", totalTransformed, elapsed)
 	}()
 	return out, nil
 }
@@ -687,7 +786,6 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 			localLoaded := 0
 			batchID := 1
 			for batch := range batchChan {
-
 				if ln.dedupEnabled {
 					uniqueBatch := make([]utils.Record, 0, len(batch))
 					for _, rec := range batch {
@@ -914,6 +1012,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			hooks:         e.hooks,
 			validations:   e.validations,
 			eventBus:      e.eventBus,
+			metrics:       e.metrics,
 		},
 		"normalize": &NormalizeNode{
 			schema:      e.normalizeSchema,
@@ -924,12 +1023,14 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			workerCount: e.workerCount,
 			hooks:       e.hooks,
 			eventBus:    e.eventBus,
+			metrics:     e.metrics,
 		},
 		"transform": &TransformNode{
 			transformers: e.transformers,
 			workerCount:  e.workerCount,
 			hooks:        e.hooks,
 			eventBus:     e.eventBus,
+			metrics:      e.metrics,
 		},
 		"load": &LoaderNode{
 			loaders:         e.loaders,
@@ -959,95 +1060,6 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 	return &PipelineConfig{
 		Nodes: nodes,
 		Edges: edges,
-	}
-}
-
-func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
-	for _, mapper := range mappers {
-		var err error
-		rec, err = mapper.Map(ctx, rec)
-		if err != nil {
-			log.Printf("[Mapper Worker %d] Mapper (%s) error: %v", workerID, mapper.Name(), err)
-			return nil, err
-		}
-	}
-	return rec, nil
-}
-
-func (e *ETL) Run(ctx context.Context, tableCfg config.TableMapping) error {
-	overallStart := time.Now()
-	if e.pipelineConfig == nil {
-		e.pipelineConfig = e.buildDefaultPipeline()
-	}
-	err := e.runPipeline(ctx, e.pipelineConfig, tableCfg)
-	elapsed := time.Since(overallStart)
-	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
-	return err
-}
-
-func (e *ETL) Close() error {
-	for _, src := range e.sources {
-		if err := src.Close(); err != nil {
-			return fmt.Errorf("error closing source: %v", err)
-		}
-	}
-	for _, src := range e.lookups {
-		if err := src.Close(); err != nil {
-			return fmt.Errorf("error closing lookups: %v", err)
-		}
-	}
-	for _, loader := range e.loaders {
-		if err := loader.Close(); err != nil {
-			return fmt.Errorf("error closing loader: %v", err)
-		}
-	}
-	return nil
-}
-
-func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int) ([]utils.Record, error) {
-	records := []utils.Record{rec}
-	for _, transformer := range transformers {
-		var nextRecords []utils.Record
-		if mt, ok := transformer.(contracts.MultiTransformer); ok {
-			for _, r := range records {
-				recs, err := mt.TransformMany(ctx, r)
-				if err != nil {
-					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, recs...)
-			}
-		} else {
-			for _, r := range records {
-				r2, err := transformer.Transform(ctx, r)
-				if err != nil {
-					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
-					continue
-				}
-				nextRecords = append(nextRecords, r2)
-			}
-		}
-		records = nextRecords
-	}
-	return records, nil
-}
-
-func (e *ETL) StartDashboard(addr string) {
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != e.dashboardUser || pass != e.dashboardPass {
-			w.Header().Set("WWW-Authenticate", `Basic realm="ETL Dashboard"`)
-			http.Error(w, "Unauthorized.", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.MarshalIndent(e.metrics, "", "  ")
-		w.Write(data)
-	})
-	log.Printf("Starting dashboard on %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Printf("Dashboard server error: %v", err)
 	}
 }
 
@@ -1094,12 +1106,6 @@ func (e *ETL) DistributedMode() bool {
 	return e.distributedMode
 }
 
-var (
-	_sourceMetrics    = &Metrics{}
-	_mapperMetrics    = &Metrics{}
-	_transformMetrics = &Metrics{}
-)
-
-func snMetrics() *Metrics { return _sourceMetrics }
-func mnMetrics() *Metrics { return _mapperMetrics }
-func tnMetrics() *Metrics { return _transformMetrics }
+func (e *ETL) EventBus() *EventBus {
+	return e.eventBus
+}
