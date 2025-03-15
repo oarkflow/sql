@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goccy/go-reflect"
 	"github.com/oarkflow/json"
 
 	"github.com/go-redis/redis/v8"
@@ -19,6 +20,13 @@ import (
 
 	"github.com/oarkflow/etl/pkg/utils"
 )
+
+type Field struct {
+	Name      string
+	DataType  string
+	IsPrimary bool
+	Nullable  bool
+}
 
 type Provider interface {
 	Setup(ctx context.Context) error
@@ -594,7 +602,6 @@ func (p *CSVFileProvider) readAll() ([]utils.Record, error) {
 	if len(records) < 1 {
 		return items, nil
 	}
-
 	for i, record := range records {
 		if i == 0 {
 			continue
@@ -794,7 +801,6 @@ func (r *RedisProvider) Read(ctx context.Context, id string) (utils.Record, erro
 }
 
 func (r *RedisProvider) Update(ctx context.Context, item utils.Record) error {
-
 	return r.Create(ctx, item)
 }
 
@@ -887,4 +893,87 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported providers type: %s", cfg.Type)
 	}
+}
+
+func detectFields(records []utils.Record, primaryKey string) ([]Field, error) {
+	// If there are no records, return a default for the primary key.
+	if len(records) == 0 {
+		return []Field{
+			{
+				Name:      primaryKey,
+				DataType:  "unknown",
+				IsPrimary: true,
+				Nullable:  true,
+			},
+		}, nil
+	}
+
+	// fieldInfo aggregates type and nullability information for each key.
+	type fieldInfo struct {
+		nonNullCount int             // how many records had a non-nil value for this key
+		types        map[string]bool // set of encountered type names
+	}
+	fields := make(map[string]*fieldInfo)
+	total := len(records)
+
+	// Iterate over every record and every field in the record.
+	for _, record := range records {
+		for key, value := range record {
+			if fields[key] == nil {
+				fields[key] = &fieldInfo{
+					nonNullCount: 0,
+					types:        make(map[string]bool),
+				}
+			}
+			if value != nil {
+				fields[key].nonNullCount++
+				// Use a type switch to infer the type.
+				switch v := value.(type) {
+				case bool:
+					fields[key].types["bool"] = true
+				case int, int8, int16, int32, int64:
+					fields[key].types["int"] = true
+				case uint, uint8, uint16, uint32, uint64:
+					fields[key].types["uint"] = true
+				case float32, float64:
+					fields[key].types["float"] = true
+				case string:
+					fields[key].types["string"] = true
+				case map[string]interface{}, []interface{}:
+					fields[key].types["JSON"] = true
+				default:
+					// Fallback to using reflection to determine the type name.
+					rt := reflect.TypeOf(v)
+					if rt != nil {
+						fields[key].types[rt.Name()] = true
+					} else {
+						fields[key].types["unknown"] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Build the slice of Field values.
+	var result []Field
+	for key, info := range fields {
+		var dataType string
+		if len(info.types) == 1 {
+			for t := range info.types {
+				dataType = t
+			}
+		} else if len(info.types) > 1 {
+			dataType = "mixed"
+		} else {
+			dataType = "unknown"
+		}
+		field := Field{
+			Name:      key,
+			DataType:  dataType,
+			IsPrimary: key == primaryKey,
+			Nullable:  info.nonNullCount < total,
+		}
+		result = append(result, field)
+	}
+	return result, nil
 }

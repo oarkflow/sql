@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 
 	"github.com/oarkflow/etl"
 	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/utils"
 )
 
 func main() {
@@ -69,7 +67,7 @@ func RunETL(configPath string) error {
 	}*/
 
 	// Define validations.
-	validations := &etl.Validations{
+	/*validations := &etl.Validations{
 		ValidateBeforeExtract: func(ctx context.Context) error {
 			log.Println("[Validation] ValidateBeforeExtract: OK")
 			return nil
@@ -86,7 +84,7 @@ func RunETL(configPath string) error {
 			log.Printf("[Validation] ValidateAfterLoad: batch size %d", len(batch))
 			return nil
 		},
-	}
+	}*/
 
 	// Create an EventBus and subscribe to some events.
 	eventBus := etl.NewEventBus()
@@ -94,7 +92,7 @@ func RunETL(configPath string) error {
 		log.Println("[EventBus] Received event:", e.Name)
 	})
 	opts := []etl.Option{
-		etl.WithValidations(validations),
+		// etl.WithValidations(validations),
 		etl.WithEventBus(eventBus),
 		// etl.WithLifecycleHooks(hooks),
 		etl.WithDashboardAuth("admin", "password"),

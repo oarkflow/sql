@@ -7,55 +7,55 @@ import (
 	"time"
 )
 
-func retryAction(ctx context.Context, action func(ctx context.Context) error, description string, rp RetryPolicy) error {
+func retryAction(ctx context.Context, action func(ctx context.Context) error, desc string, rp RetryPolicy) error {
 	var err error
 	for attempt := 0; attempt <= rp.MaxRetries; attempt++ {
-		if err = action(ctx); err != nil {
-			if rp.ShouldRetry != nil && rp.ShouldRetry(err) {
-				var delay time.Duration
-				if rp.BackoffStrategy != nil {
-					delay = rp.BackoffStrategy(attempt)
-				} else {
-					delay = rp.Delay
-				}
-				log.Printf("%s failed on attempt %d: %v; retrying after %v", description, attempt, err, delay)
-				select {
-				case <-time.After(delay):
-					continue
-				case <-ctx.Done():
-					return ctx.Err()
-				}
+		if attempt > 0 {
+			var delay time.Duration
+			if rp.BackoffStrategy != nil {
+				delay = rp.BackoffStrategy(attempt)
+			} else {
+				delay = rp.Delay
 			}
-			return err
+			// Log the retry attempt.
+			log.Printf("Retrying (%d/%d) for %s", attempt, rp.MaxRetries, desc)
+			// Wait for the backoff duration.
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry of %s: %w", desc, ctx.Err())
+			case <-time.After(delay):
+			}
 		}
-		return nil
+		err = action(ctx)
+		if err == nil {
+			return nil
+		}
+		if rp.ShouldRetry != nil && !rp.ShouldRetry(err) {
+			return fmt.Errorf("non-retryable error in %s: %w", desc, err)
+		}
 	}
+	return fmt.Errorf("action %s failed after %d attempts: %w", desc, rp.MaxRetries+1, err)
+}
+
+// safeAction wraps the execution of an action, recovering from panics.
+func safeAction(ctx context.Context, action func(ctx context.Context) error, desc string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic recovered during %s: %v", desc, r)
+		}
+	}()
+	err = action(ctx)
 	return err
 }
 
-func safeAction(ctx context.Context, action func(ctx context.Context) error, description string) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in %s: %v", description, r)
-		}
-	}()
-	return action(ctx)
+// safeResourceCommit wraps the commit call for a resource.
+func safeResourceCommit(ctx context.Context, res TransactionalResource, index int, txID int64) error {
+	desc := fmt.Sprintf("resource commit %d for transaction %d", index, txID)
+	return safeAction(ctx, res.Commit, desc)
 }
 
-func safeResourceCommit(ctx context.Context, res TransactionalResource, index int, txID int64) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in resource commit %d for transaction %d: %v", index, txID, r)
-		}
-	}()
-	return res.Commit(ctx)
-}
-
-func safeResourceRollback(ctx context.Context, res TransactionalResource, index int, txID int64) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic in resource rollback %d for transaction %d: %v", index, txID, r)
-		}
-	}()
-	return res.Rollback(ctx)
+// safeResourceRollback wraps the rollback call for a resource.
+func safeResourceRollback(ctx context.Context, res TransactionalResource, index int, txID int64) error {
+	desc := fmt.Sprintf("resource rollback %d for transaction %d", index, txID)
+	return safeAction(ctx, res.Rollback, desc)
 }
