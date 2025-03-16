@@ -1,133 +1,50 @@
 package sql
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/fileutil"
 )
 
-type Integration struct {
-	Type       string
-	DataConfig *config.DataConfig // used for SQL (mysql, postgres, etc.)
-	Endpoint   string             // used for REST integration
-	Method     string
-}
-
-var integrationRegistry = map[string]Integration{
-	"test_db": {
-		Type: "mysql",
-		DataConfig: &config.DataConfig{
-			Driver:   "postgres",
-			Host:     "127.0.0.1",
-			Port:     5432,
-			Username: "postgres",
-			Password: "postgres",
-			Database: "clear_dev",
-		},
-	},
-	"test_rest": {
-		Type:     "rest",
-		Endpoint: "https://jsonplaceholder.typicode.com/posts",
-	},
-}
-
-func readService(identifier string) ([]utils.Record, error) {
-	parts := strings.SplitN(identifier, ".", 2)
-	integrationKey := parts[0]
-	var source string
-	if len(parts) > 1 {
-		source = parts[1]
-	}
-	integration, exists := integrationRegistry[integrationKey]
-	if !exists {
-		return nil, fmt.Errorf("integration not found: %s", integrationKey)
-	}
-
-	switch strings.ToLower(integration.Type) {
-	case "mysql", "postgres", "sqlite", "sqlite3":
-		if integration.DataConfig == nil {
-			return nil, fmt.Errorf("no data config provided for SQL integration")
-		}
-		if source == "" {
-			return nil, fmt.Errorf("no table name provided for SQL integration")
-		}
-		db, err := config.OpenDB(*integration.DataConfig)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			_ = db.Close()
-		}()
-		src := adapters.NewSQLAdapterAsSource(db, source, "")
-		ctx := context.Background()
-		err = src.Setup(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return src.LoadData()
-	case "rest":
-		if integration.Method == "" {
-			integration.Method = "GET"
-		}
-		data, err := utils.Request[[]utils.Record](integration.Endpoint, integration.Method, nil)
-		if err == nil {
-			return data, nil
-		}
-		singleData, err := utils.Request[utils.Record](integration.Endpoint, integration.Method, nil)
-		if err != nil {
-			return nil, err
-		}
-		return []utils.Record{singleData}, nil
-	default:
-		return nil, fmt.Errorf("unsupported integration type: %s", integration.Type)
-	}
-}
 func loadDataForSubquery() []utils.Record {
-    // Returning nil signals the subquery to load its own FROM clause.
-    return nil
+	return nil
 }
-
 
 func (tr *TableReference) loadData() ([]utils.Record, error) {
-    // If there's a subquery (e.g. a CTE reference), execute it.
-    if tr.Subquery != nil {
-        // Pass nil to signal that the subquery should load its own FROM data.
-        return tr.Subquery.executeQuery(nil)
-    }
+	if tr.Subquery != nil {
+		return tr.Subquery.executeQuery(nil)
+	}
 
-    // Otherwise, load data based on the data source.
-    switch strings.ToLower(tr.Source) {
-    case "read_file":
-        fi, err := os.Stat(tr.Name)
-        if err == nil {
-            modTime := fi.ModTime()
-            if entry, exists := tableCache[strings.ToLower(tr.Source)+":"+tr.Name]; exists {
-                if entry.modTime.Equal(modTime) {
-                    return entry.rows, nil
-                }
-            }
-            rows, err := fileutil.ProcessFile(tr.Name)
-            if err != nil {
-                return nil, err
-            }
-            tableCache[strings.ToLower(tr.Source)+":"+tr.Name] = tableCacheEntry{
-                rows:    rows,
-                modTime: modTime,
-            }
-            return rows, nil
-        }
-        return nil, nil
-    case "read_service":
-        return readService(tr.Name)
-    default:
-        return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
-    }
+	switch strings.ToLower(tr.Source) {
+	case "read_file":
+		fi, err := os.Stat(tr.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to stat file %s: %w", tr.Name, err)
+		}
+		modTime := fi.ModTime()
+		cacheKey := strings.ToLower(tr.Source) + ":" + tr.Name
+		if entry, exists := tableCache[cacheKey]; exists {
+			if entry.modTime.Equal(modTime) {
+				return entry.rows, nil
+			}
+		}
+		rows, err := fileutil.ProcessFile(tr.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process file %s: %w", tr.Name, err)
+		}
+		tableCache[cacheKey] = tableCacheEntry{
+			rows:    rows,
+			modTime: modTime,
+		}
+		return rows, nil
+	case "read_service":
+		return readService(tr.Name)
+	default:
+		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
+	}
 }
 
 type Node interface {

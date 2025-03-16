@@ -10,18 +10,14 @@ import (
 	"time"
 
 	"github.com/oarkflow/convert"
-
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
-// --- Cache Management ---
-
 const (
-	maxTableCacheSize     = 100 // maximum entries in tableCache
-	maxLikeRegexCacheSize = 100 // maximum entries in likeRegexCache
+	maxTableCacheSize     = 100
+	maxLikeRegexCacheSize = 100
 )
 
-// tableCacheEntry holds cached table rows with their modification time.
 type tableCacheEntry struct {
 	rows    []utils.Record
 	modTime time.Time
@@ -30,11 +26,9 @@ type tableCacheEntry struct {
 var tableCache = make(map[string]tableCacheEntry)
 var tableCacheMu sync.Mutex
 
-// likeRegexCache caches compiled regular expressions for SQL LIKE patterns.
 var likeRegexCache = make(map[string]*regexp.Regexp)
 var likeRegexCacheMu sync.RWMutex
 
-// compileLikeRegex compiles a SQL LIKE pattern into a regular expression.
 func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	likeRegexCacheMu.RLock()
 	re, ok := likeRegexCache[pattern]
@@ -51,7 +45,6 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 		case '_':
 			sb.WriteString(".")
 		default:
-			// Escape regex-special characters.
 			if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
 				sb.WriteRune('\\')
 			}
@@ -64,7 +57,6 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 		return nil, err
 	}
 	likeRegexCacheMu.Lock()
-	// Simple eviction: if the cache is too big, remove one arbitrary entry.
 	if len(likeRegexCache) >= maxLikeRegexCacheSize {
 		for key := range likeRegexCache {
 			delete(likeRegexCache, key)
@@ -76,7 +68,6 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	return compiled, nil
 }
 
-// sqlLikeMatch returns true if string s matches the SQL LIKE pattern.
 func sqlLikeMatch(s, pattern string) bool {
 	re, err := compileLikeRegex(pattern)
 	if err != nil {
@@ -85,9 +76,6 @@ func sqlLikeMatch(s, pattern string) bool {
 	return re.MatchString(s)
 }
 
-// --- Query Entry Point ---
-
-// Query executes a SQL query string.
 func Query(query string) ([]utils.Record, error) {
 	lexer := NewLexer(query)
 	parser := NewParser(lexer)
@@ -97,8 +85,6 @@ func Query(query string) ([]utils.Record, error) {
 	}
 	return program.parseAndExecute()
 }
-
-// --- Query Statement Structures ---
 
 type QueryStatement struct {
 	With     *WithClause
@@ -158,8 +144,6 @@ func (qs *QueryStatement) String() string {
 	return qs.Query.String()
 }
 
-// --- SQL Structure ---
-
 type SQL struct {
 	With     *WithClause
 	Select   *SelectClause
@@ -211,37 +195,77 @@ func (query *SQL) String() string {
 	return strings.Join(parts, " ")
 }
 
-// --- Enhanced Index Optimization ---
-
-// EqualityCondition represents an equality predicate (field = value).
-type EqualityCondition struct {
-	Field string
-	Value string
+type Condition struct {
+	Field    string
+	Operator string
+	Value    string
 }
 
-// extractEqualityConditions recursively extracts equality conditions from a WHERE clause.
-func extractEqualityConditions(expr Expression) []EqualityCondition {
-	var conditions []EqualityCondition
+func extractConditions(expr Expression) []Condition {
+	var conds []Condition
 	switch e := expr.(type) {
 	case *BinaryExpression:
-		if e.Operator == "=" {
+		if e.Operator == "AND" {
+			conds = append(conds, extractConditions(e.Left)...)
+			conds = append(conds, extractConditions(e.Right)...)
+		} else if e.Operator == "=" || e.Operator == "!=" || e.Operator == ">" ||
+			e.Operator == "<" || e.Operator == ">=" || e.Operator == "<=" ||
+			strings.ToUpper(e.Operator) == "LIKE" {
 			if ident, ok := e.Left.(*Identifier); ok {
-				if lit, ok := e.Right.(*Literal); ok {
-					conditions = append(conditions, EqualityCondition{
-						Field: ident.Value,
-						Value: fmt.Sprintf("%v", lit.Value),
+				if lit, ok2 := e.Right.(*Literal); ok2 {
+					conds = append(conds, Condition{
+						Field:    ident.Value,
+						Operator: e.Operator,
+						Value:    fmt.Sprintf("%v", lit.Value),
 					})
 				}
 			}
-		} else if e.Operator == "AND" {
-			conditions = append(conditions, extractEqualityConditions(e.Left)...)
-			conditions = append(conditions, extractEqualityConditions(e.Right)...)
 		}
 	}
-	return conditions
+	return conds
 }
 
-// intersectRecords returns the intersection of two slices of records.
+func evaluateCondition(keyStr, op, condVal string) bool {
+	k, ok1 := convert.ToFloat64(keyStr)
+	c, ok2 := convert.ToFloat64(condVal)
+	if ok1 && ok2 {
+		switch op {
+		case "=":
+			return k == c
+		case "!=":
+			return k != c
+		case ">":
+			return k > c
+		case "<":
+			return k < c
+		case ">=":
+			return k >= c
+		case "<=":
+			return k <= c
+		case "LIKE":
+			return sqlLikeMatch(keyStr, condVal)
+		}
+	} else {
+		switch op {
+		case "=":
+			return keyStr == condVal
+		case "!=":
+			return keyStr != condVal
+		case ">":
+			return keyStr > condVal
+		case "<":
+			return keyStr < condVal
+		case ">=":
+			return keyStr >= condVal
+		case "<=":
+			return keyStr <= condVal
+		case "LIKE":
+			return sqlLikeMatch(keyStr, condVal)
+		}
+	}
+	return false
+}
+
 func intersectRecords(a, b []utils.Record) []utils.Record {
 	var result []utils.Record
 	keys := make(map[string]bool)
@@ -258,10 +282,7 @@ func intersectRecords(a, b []utils.Record) []utils.Record {
 	return result
 }
 
-// --- executeQuery with Early Termination and Enhanced Index Optimization ---
-
 func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
-	// Load rows from the FROM clause if needed.
 	if len(rows) == 0 {
 		if query.From != nil {
 			var err error
@@ -274,21 +295,19 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		}
 	}
 	ctx := NewEvalContext()
-
 	var filteredRows []utils.Record
-
-	// Try to extract equality conditions for enhanced index optimization.
-	var eqConds []EqualityCondition
+	conds := []Condition{}
 	if query.Where != nil {
-		eqConds = extractEqualityConditions(query.Where)
+		conds = extractConditions(query.Where)
 	}
-	if len(eqConds) > 0 {
+	if len(conds) > 0 {
 		var sets [][]utils.Record
-		for _, cond := range eqConds {
+		for _, cond := range conds {
 			var set []utils.Record
 			for _, row := range rows {
 				if val, exists := row[cond.Field]; exists {
-					if fmt.Sprintf("%v", val) == cond.Value {
+					keyStr := fmt.Sprintf("%v", val)
+					if evaluateCondition(keyStr, cond.Operator, cond.Value) {
 						set = append(set, row)
 					}
 				}
@@ -302,7 +321,6 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			}
 		}
 	} else {
-		// Fallback: full filtering.
 		for _, row := range rows {
 			if query.Where != nil {
 				result := ctx.evalExpression(query.Where, row)
@@ -313,8 +331,6 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			filteredRows = append(filteredRows, row)
 		}
 	}
-
-	// Early termination for simple queries (no GROUP BY, HAVING, ORDER BY, or aggregates).
 	hasAggregate := false
 	for _, expr := range query.Select.Fields {
 		_, underlying := unwrapAlias(expr)
@@ -329,8 +345,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	targetCount := -1
 	if simpleQuery && query.Limit != nil {
 		targetCount = query.Limit.Offset + query.Limit.Limit
-		// If no index-based filtering was applied, trim early.
-		if len(eqConds) == 0 {
+		if len(conds) == 0 {
 			var temp []utils.Record
 			for _, row := range rows {
 				if query.Where != nil {
@@ -348,10 +363,8 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		}
 	}
 	ctx.CurrentResultSet = filteredRows
-
 	var resultRows []utils.Record
 	if query.GroupBy != nil {
-		// Process GROUP BY fully (no early termination).
 		groups := make(map[string][]utils.Record)
 		for _, row := range filteredRows {
 			keyVal := ctx.evalExpression(query.GroupBy.Fields[0], row)
@@ -475,7 +488,6 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			resultRows = append(resultRows, resultRow)
 		}
 	} else if hasAggregate {
-		// Process aggregates without GROUP BY.
 		resultRow := make(utils.Record)
 		for i, expr := range query.Select.Fields {
 			colName := getFieldName(expr, i)
@@ -589,7 +601,6 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		}
 		resultRows = append(resultRows, resultRow)
 	} else {
-		// Simple projection.
 		for _, row := range filteredRows {
 			newRow := make(utils.Record)
 			for i, expr := range query.Select.Fields {
@@ -656,8 +667,6 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	}
 	return resultRows, nil
 }
-
-// --- Refactored Join Functions ---
 
 func executeCrossJoin(leftRows, rightRows []utils.Record, alias string) []utils.Record {
 	var newResult []utils.Record
@@ -770,7 +779,6 @@ func executeDefaultJoin(leftRows, rightRows []utils.Record, alias string, joinOn
 	return newResult
 }
 
-// executeJoins applies all JOIN clauses sequentially.
 func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
 	currentRows := rows
 	for _, join := range query.Joins {

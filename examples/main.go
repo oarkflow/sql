@@ -9,6 +9,7 @@ import (
 	goccy "github.com/goccy/go-json"
 	"github.com/oarkflow/json"
 
+	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/sql"
 )
 
@@ -24,6 +25,21 @@ func init() {
 }
 
 func main() {
+	sql.AddIntegration("test_db", sql.Integration{
+		Type: "postgres",
+		DataConfig: &config.DataConfig{
+			Driver:   "postgres",
+			Host:     "127.0.0.1",
+			Port:     5432,
+			Username: "postgres",
+			Password: "postgres",
+			Database: "clear_dev",
+		},
+	})
+	sql.AddIntegration("test_rest", sql.Integration{
+		Type:     "rest",
+		Endpoint: "https://jsonplaceholder.typicode.com/posts",
+	})
 	bytes, err := os.ReadFile("query.sql")
 	if err != nil {
 		panic(err)
