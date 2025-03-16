@@ -21,12 +21,9 @@ type tableCacheEntry struct {
 
 var tableCache = make(map[string]tableCacheEntry)
 
-// --- Regex Caching for LIKE Operator ---
-
 var likeRegexCache = make(map[string]*regexp.Regexp)
 var likeRegexCacheMu sync.RWMutex
 
-// compileLikeRegex manually converts an SQL LIKE pattern to a regex and caches it.
 func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	likeRegexCacheMu.RLock()
 	re, ok := likeRegexCache[pattern]
@@ -43,7 +40,6 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 		case '_':
 			sb.WriteString(".")
 		default:
-			// Escape regex special characters.
 			if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
 				sb.WriteRune('\\')
 			}
@@ -61,7 +57,6 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	return compiled, nil
 }
 
-// sqlLikeMatch returns true if s matches the SQL LIKE pattern.
 func sqlLikeMatch(s, pattern string) bool {
 	re, err := compileLikeRegex(pattern)
 	if err != nil {
@@ -69,8 +64,6 @@ func sqlLikeMatch(s, pattern string) bool {
 	}
 	return re.MatchString(s)
 }
-
-// --- Query Execution Entry Point ---
 
 func Query(query string) ([]utils.Record, error) {
 	lexer := NewLexer(query)
@@ -81,8 +74,6 @@ func Query(query string) ([]utils.Record, error) {
 	}
 	return program.parseAndExecute()
 }
-
-// --- QueryStatement and SQL ---
 
 type QueryStatement struct {
 	With     *WithClause
@@ -95,26 +86,22 @@ func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	if qs.Query.From.Alias != "" {
 		alias := qs.Query.From.Alias
 		for i, row := range mainRows {
 			mainRows[i] = utils.ApplyAliasToRecord(row, alias)
 		}
 	}
-
 	if len(qs.Query.Joins) > 0 {
 		mainRows, err = qs.Query.executeJoins(mainRows)
 		if err != nil {
 			return nil, err
 		}
 	}
-
 	result, err := qs.Query.executeQuery(mainRows)
 	if err != nil {
 		return nil, err
 	}
-
 	if qs.Compound != nil {
 		leftRes, _ := qs.Compound.Left.executeQuery(mainRows)
 		rightRes, _ := qs.Compound.Right.executeQuery(mainRows)
@@ -198,21 +185,34 @@ func (query *SQL) String() string {
 }
 
 func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
-	if rows == nil || len(rows) == 0 {
-        if query.From != nil {
-            var err error
-            rows, err = query.From.loadData()
-            if err != nil {
-                return nil, err
-            }
-        } else {
-            rows = []utils.Record{}
-        }
-    }
-	
+	if len(rows) == 0 {
+		if query.From != nil {
+			var err error
+			rows, err = query.From.loadData()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			rows = []utils.Record{}
+		}
+	}
 	ctx := NewEvalContext()
 	var filteredRows []utils.Record
-
+	hasAggregate := false
+	for _, expr := range query.Select.Fields {
+		_, underlying := unwrapAlias(expr)
+		if fc, ok := underlying.(*FunctionCall); ok {
+			switch strings.ToUpper(fc.FunctionName) {
+			case "COUNT", "AVG", "SUM", "MIN", "MAX", "DIFF":
+				hasAggregate = true
+			}
+		}
+	}
+	simpleQuery := (query.GroupBy == nil && query.Having == nil && query.OrderBy == nil && !hasAggregate)
+	targetCount := -1
+	if simpleQuery && query.Limit != nil {
+		targetCount = query.Limit.Offset + query.Limit.Limit
+	}
 	indexApplied := false
 	if query.Where != nil {
 		if be, ok := query.Where.(*BinaryExpression); ok && be.Operator == "=" {
@@ -246,21 +246,12 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 				}
 			}
 			filteredRows = append(filteredRows, row)
-		}
-	}
-	ctx.CurrentResultSet = filteredRows
-
-	hasAggregate := false
-	for _, expr := range query.Select.Fields {
-		_, underlying := unwrapAlias(expr)
-		if fc, ok := underlying.(*FunctionCall); ok {
-			switch strings.ToUpper(fc.FunctionName) {
-			case "COUNT", "AVG", "SUM", "MIN", "MAX", "DIFF":
-				hasAggregate = true
+			if targetCount > 0 && len(filteredRows) >= targetCount {
+				break
 			}
 		}
 	}
-
+	ctx.CurrentResultSet = filteredRows
 	var resultRows []utils.Record
 	if query.GroupBy != nil {
 		groups := make(map[string][]utils.Record)
@@ -513,6 +504,9 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 				}
 			}
 			resultRows = append(resultRows, newRow)
+			if targetCount > 0 && len(resultRows) >= query.Limit.Limit {
+				break
+			}
 		}
 	}
 	if query.Distinct {
