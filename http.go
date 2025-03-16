@@ -39,7 +39,7 @@ func NewManager() *Manager {
 	}
 }
 
-// Prepare parses the configuration, prepares sources, mappers, loaders, etc. and creates one or more ETL jobs.
+// Prepare parses the configuration, prepares sources, mappers, loaders, etc., and creates one or more ETL jobs.
 // It returns a slice of prepared ETL job IDs.
 func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, error) {
 	m.mu.Lock()
@@ -267,4 +267,18 @@ func (m *Manager) Start(ctx context.Context, etlID string) error {
 	}
 	log.Printf("ETL job %s completed successfully.", etlID)
 	return nil
+}
+
+func (m *Manager) GetETL(id string) (*ETL, bool) {
+	m.mu.Lock()
+	etl, ok := m.etls[id]
+	m.mu.Unlock()
+	return etl, ok
+}
+
+func (m *Manager) AdjustWorker(workerCount int, etlID string) {
+	etl, ok := m.GetETL(etlID)
+	if ok {
+		etl.AdjustWorker(workerCount)
+	}
 }
