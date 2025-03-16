@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -97,5 +98,15 @@ func RunETL(configPath string) error {
 		// etl.WithLifecycleHooks(hooks),
 		etl.WithDashboardAuth("admin", "password"),
 	}
-	return etl.Run(cfg, opts...)
+	manager := etl.NewManager()
+	ids, err := manager.Prepare(cfg, opts...)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := manager.Start(context.Background(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

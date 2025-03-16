@@ -1,177 +1,270 @@
 package etl
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"runtime"
+	"strings"
 	"sync"
+
+	"github.com/oarkflow/convert"
+	"github.com/oarkflow/xid"
+
+	"github.com/oarkflow/etl/pkg/adapters"
+	"github.com/oarkflow/etl/pkg/checkpoints"
+	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/etl/pkg/contracts"
+	"github.com/oarkflow/etl/pkg/mappers"
+	"github.com/oarkflow/etl/pkg/transformers"
+	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
 
-// Manager maintains a registry of multiple ETL services.
+// -------------------------
+// Manager Implementation
+// -------------------------
+
+// Manager manages available ETL jobs.
 type Manager struct {
-	services map[string]*ETL
-	mu       sync.RWMutex
+	mu   sync.Mutex
+	etls map[string]*ETL
 }
 
-// NewETLManager creates an ETLManager.
-func NewETLManager() *Manager {
+// NewManager creates a new Manager.
+func NewManager() *Manager {
 	return &Manager{
-		services: make(map[string]*ETL),
+		etls: make(map[string]*ETL),
 	}
 }
 
-// AddService registers a new ETL service.
-func (m *Manager) AddService(s *ETL) {
+// Prepare parses the configuration, prepares sources, mappers, loaders, etc. and creates one or more ETL jobs.
+// It returns a slice of prepared ETL job IDs.
+func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.services[s.ID] = s
-}
 
-// GetService retrieves an ETL service by its ID.
-func (m *Manager) GetService(id string) (*ETL, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	s, ok := m.services[id]
-	return s, ok
-}
+	var preparedIDs []string
 
-// ListServices returns all registered ETL services.
-func (m *Manager) ListServices() []*ETL {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	list := make([]*ETL, 0, len(m.services))
-	for _, s := range m.services {
-		list = append(list, s)
-	}
-	return list
-}
-
-/*
-func (m *Manager) Start(addr string) {
-	app := fiber.New(fiber.Config{
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			code := fiber.StatusInternalServerError
-			if e, ok := err.(*fiber.Error); ok {
-				code = e.Code
-			}
-			return c.Status(code).JSON(fiber.Map{
-				"error": err.Error(),
-			})
-		},
-	})
-	app.Use(logger.New())
-
-	api := app.Group("/api")
-	// Upload a YAML configuration.
-	// POST /api/config
-	api.Post("/etl", func(c *fiber.Ctx) error {
-		var cfg config.Config
-		err := c.BodyParser(&cfg)
+	// Open destination DB if needed.
+	var destDB *sql.DB
+	var err error
+	if utils.IsSQLType(cfg.Destination.Type) {
+		destDB, err = config.OpenDB(cfg.Destination)
 		if err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, "Invalid configuration")
+			log.Printf("Error connecting to destination DB: %v\n", err)
+			return nil, err
 		}
+		defer func() { _ = destDB.Close() }()
+	}
 
-		// For each table mapping in the config, create an ETL instance.
-		for i, table := range cfg.Tables {
-			id := fmt.Sprintf("etl-%d", i+1)
-			etlInstance := CreateETLFromConfig(&cfg, table)
-			service := &ETLService{
-				ID:    id,
-				Name:  fmt.Sprintf("ETL Service %d", i+1),
-				ETL:   etlInstance,
-				Table: table,
+	if cfg.Buffer == 0 {
+		cfg.Buffer = 50
+	}
+	if cfg.WorkerCount == 0 {
+		minCPU := runtime.NumCPU()
+		if minCPU <= 1 {
+			cfg.WorkerCount = 1
+		} else {
+			cfg.WorkerCount = minCPU - 1
+		}
+	}
+
+	// Prepare sources.
+	var sourceFile string
+	var sources []contracts.Source
+	var sourcesToMigrate []string
+	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
+		cfg.Sources = append(cfg.Sources, cfg.Source)
+	}
+	for _, sourceCfg := range cfg.Sources {
+		if sourceCfg.File != "" {
+			sourceFile = sourceCfg.File
+		}
+		var tmp []string
+		if sourceCfg.File != "" {
+			tmp = append(tmp, sourceCfg.File)
+		}
+		if sourceCfg.Table != "" {
+			tmp = append(tmp, sourceCfg.Table)
+		}
+		if sourceCfg.Source != "" {
+			tmp = append(tmp, sourceCfg.Source)
+		}
+		if sourceCfg.Key != "" {
+			var keys []string
+			for _, tableCfg := range cfg.Tables {
+				if tableCfg.OldName != "" {
+					keys = append(keys, sourceCfg.Key+"."+tableCfg.OldName)
+				}
 			}
-			manager.AddService(service)
-			log.Printf("Registered ETL service: %s", id)
+			tmp = append(tmp, strings.Join(keys, ", "))
 		}
-		return c.JSON(fiber.Map{
-			"message": "Configuration loaded and ETL services created",
-		})
-	})
-
-	// List all ETL services.
-	// GET /api/etls
-	api.Get("/etl/list", func(c *fiber.Ctx) error {
-		services := manager.ListServices()
-		list := make([]fiber.Map, 0, len(services))
-		for _, s := range services {
-			list = append(list, fiber.Map{
-				"id":   s.ID,
-				"name": s.Name,
-			})
+		if len(tmp) > 0 {
+			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
 		}
-		return c.JSON(list)
-	})
-
-	// Get details for a specific ETL service.
-	// GET /api/etl/:id
-	api.Get("/etl/:id", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		service, ok := manager.GetService(id)
-		if !ok {
-			return fiber.NewError(fiber.StatusNotFound, "ETL service not found")
-		}
-		return c.JSON(fiber.Map{
-			"global": GlobalConfig,
-			"table":  service.Table,
-		})
-	})
-
-	// Trigger an ETL run.
-	// POST /api/etl/:id/run
-	api.Post("/etl/:id/run", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		service, ok := manager.GetService(id)
-		if !ok {
-			return fiber.NewError(fiber.StatusNotFound, "ETL service not found")
-		}
-		go func() {
-			if err := service.ETL.Run(context.Background(), service.Table); err != nil {
-				log.Printf("ETL run error for service %s: %v", id, err)
+		var sourceDB *sql.DB
+		if utils.IsSQLType(sourceCfg.Type) {
+			sourceDB, err = config.OpenDB(sourceCfg)
+			if err != nil {
+				log.Printf("Error connecting to source DB: %v\n", err)
+				return nil, err
 			}
-		}()
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-			"message": "ETL run started",
-		})
-	})
-
-	// Adjust the worker count.
-	// POST /api/etl/:id/adjust-worker
-	api.Post("/etl/:id/adjust-worker", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		service, ok := manager.GetService(id)
-		if !ok {
-			return fiber.NewError(fiber.StatusNotFound, "ETL service not found")
 		}
-		var payload struct {
-			WorkerCount int `json:"workerCount"`
+		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source, sourceCfg.Format)
+		if err != nil {
+			return nil, err
 		}
-		if err := c.BodyParser(&payload); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, "Invalid payload")
+		sources = append(sources, src)
+	}
+
+	// Prepare checkpoint settings.
+	checkpointFile := cfg.Checkpoint.File
+	checkpointField := cfg.Checkpoint.Field
+	if checkpointFile == "" {
+		checkpointFile = "checkpoints.txt"
+	}
+	if checkpointField == "" {
+		checkpointField = "id"
+	}
+
+	// For each table configuration, prepare an ETL job.
+	for _, tableCfg := range cfg.Tables {
+		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+			continue
 		}
-		if payload.WorkerCount < 1 {
-			return fiber.NewError(fiber.StatusBadRequest, "workerCount must be at least 1")
+		if tableCfg.OldName == "" && sourceFile != "" {
+			tableCfg.OldName = sourceFile
 		}
-		service.ETL.SetWorkerCount(payload.WorkerCount)
-		return c.JSON(fiber.Map{
-			"message": "Worker count updated",
-		})
-	})
-
-	// Get ETL metrics.
-	// GET /api/etl/:id/metrics
-	api.Get("/etl/:id/metrics", func(c *fiber.Ctx) error {
-		id := c.Params("id")
-		service, ok := manager.GetService(id)
-		if !ok {
-			return fiber.NewError(fiber.StatusNotFound, "ETL service not found")
+		if tableCfg.NewName == "" && cfg.Destination.File != "" {
+			tableCfg.NewName = cfg.Destination.File
 		}
-		metrics := service.ETL.GetMetrics()
-		return c.JSON(metrics)
-	})
-
-	// Serve frontend static files from "./public".
-	app.Static("/", "./public")
-
-	log.Println("Centralized ETL Server running on :3000")
-	log.Fatal(app.Listen(":3000"))
-
+		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+			if err := sqlutil.CreateKeyValueTable(
+				destDB, tableCfg.NewName,
+				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
+			); err != nil {
+				log.Printf("Error creating key-value table %s: %v", tableCfg.NewName, err)
+				return nil, err
+			}
+		}
+		// Build options for ETL.
+		var opts []Option
+		opts = append(opts, WithSources(sources...))
+		opts = append(opts, WithDestination(cfg.Destination, destDB, tableCfg))
+		opts = append(opts, WithCheckpoint(checkpoints.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
+			val, ok := rec[checkpointField]
+			if !ok {
+				return ""
+			}
+			v, _ := convert.ToString(val)
+			return v
+		}))
+		opts = append(opts, WithWorkerCount(cfg.WorkerCount))
+		opts = append(opts, WithBatchSize(tableCfg.BatchSize))
+		opts = append(opts, WithRawChanBuffer(cfg.Buffer))
+		opts = append(opts, WithStreamingMode(cfg.StreamingMode))
+		opts = append(opts, WithDistributedMode(cfg.DistributedMode))
+		for _, opt := range options {
+			opts = append(opts, opt)
+		}
+		if cfg.Deduplication.Enabled {
+			if cfg.Deduplication.Field == "" {
+				cfg.Deduplication.Field = "id"
+			}
+			opts = append(opts, WithDeduplication(cfg.Deduplication.Field))
+		}
+		if tableCfg.NormalizeSchema != nil {
+			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
+		}
+		var mapperList []contracts.Mapper
+		if len(tableCfg.Mapping) > 0 {
+			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
+		}
+		mapperList = append(mapperList, &mappers.LowercaseMapper{})
+		opts = append(opts, WithMappers(mapperList...))
+		if tableCfg.Aggregator != nil {
+			aggTransformer := transformers.NewAggregatorTransformer(
+				tableCfg.Aggregator.GroupBy,
+				tableCfg.Aggregator.Aggregations,
+			)
+			opts = append(opts, WithTransformers(aggTransformer))
+		}
+		if tableCfg.KeyValueTable {
+			opts = append(opts, WithKeyValueTransformer(
+				tableCfg.ExtraValues,
+				tableCfg.IncludeFields,
+				tableCfg.ExcludeFields,
+				tableCfg.KeyField,
+				tableCfg.ValueField,
+			))
+		}
+		id := xid.New().String()
+		etlJob := NewETL(id, id, opts...)
+		var lookups []contracts.LookupLoader
+		if len(cfg.Lookups) > 0 {
+			for _, lkup := range cfg.Lookups {
+				lookup, err := adapters.NewLookupLoader(lkup)
+				if err != nil {
+					log.Printf("Unsupported lookup type: %s", lkup.Type)
+					return nil, err
+				}
+				err = lookup.Setup(context.Background())
+				if err != nil {
+					log.Printf("Unable to setup lookup: %s", lkup.Type)
+					return nil, err
+				}
+				data, err := lookup.LoadData()
+				if err != nil {
+					log.Printf("Failed to load lookup data for %s: %v", lkup.Key, err)
+					return nil, err
+				}
+				lookups = append(lookups, lookup)
+				etlJob.lookupStore[lkup.Key] = data
+			}
+		}
+		etlJob.lookups = append(etlJob.lookups, lookups...)
+		for _, loader := range etlJob.loaders {
+			err = loader.Setup(context.Background())
+			if err != nil {
+				log.Printf("Setting up loader failed: %v", err)
+				return nil, err
+			}
+		}
+		etlJob.SetTableConfig(tableCfg)
+		log.Printf("Prepared migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
+		// Store the prepared ETL job in the manager.
+		m.etls[etlJob.ID] = etlJob
+		preparedIDs = append(preparedIDs, etlJob.ID)
+	}
+	log.Println("All ETL jobs prepared.")
+	return preparedIDs, nil
 }
-*/
+
+// Start retrieves a prepared ETL job by its ID and runs it.
+func (m *Manager) Start(ctx context.Context, etlID string) error {
+	m.mu.Lock()
+	etlJob, ok := m.etls[etlID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no ETL job found with ID: %s", etlID)
+	}
+
+	// Setup graceful shutdown.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	Shutdown(cancel)
+
+	// Run the ETL pipeline.
+	if err := etlJob.Run(ctx); err != nil {
+		log.Printf("ETL job %s failed: %v", etlID, err)
+		return err
+	}
+	if err := etlJob.Close(); err != nil {
+		log.Printf("Error closing ETL job %s: %v", etlID, err)
+		return err
+	}
+	log.Printf("ETL job %s completed successfully.", etlID)
+	return nil
+}

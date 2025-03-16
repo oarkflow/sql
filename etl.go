@@ -3,31 +3,23 @@ package etl
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/oarkflow/convert"
 	"github.com/oarkflow/expr"
 	"github.com/oarkflow/json"
-	"github.com/oarkflow/xid"
 
 	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/checkpoints"
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/contracts"
-	"github.com/oarkflow/etl/pkg/mappers"
 	"github.com/oarkflow/etl/pkg/transactions"
-	"github.com/oarkflow/etl/pkg/transformers"
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
@@ -36,6 +28,7 @@ func init() {
 	expr.AddFunction("lookupIn", LookupInGlobal)
 }
 
+// LifecycleHooks holds optional hook functions.
 type LifecycleHooks struct {
 	BeforeExtract   func(ctx context.Context) error
 	AfterExtract    func(ctx context.Context, recordCount int) error
@@ -47,6 +40,7 @@ type LifecycleHooks struct {
 	AfterLoad       func(ctx context.Context, batch []utils.Record) error
 }
 
+// Validations holds optional validation functions.
 type Validations struct {
 	ValidateBeforeExtract func(ctx context.Context) error
 	ValidateAfterExtract  func(ctx context.Context, recordCount int) error
@@ -54,11 +48,13 @@ type Validations struct {
 	ValidateAfterLoad     func(ctx context.Context, batch []utils.Record) error
 }
 
+// Plugin is the interface for ETL plugins.
 type Plugin interface {
 	Name() string
 	Init(e *ETL) error
 }
 
+// Metrics holds counters.
 type Metrics struct {
 	Extracted   int64 `json:"extracted"`
 	Mapped      int64 `json:"mapped"`
@@ -67,6 +63,7 @@ type Metrics struct {
 	Errors      int64 `json:"errors"`
 }
 
+// Shutdown sets up a signal listener for graceful shutdown.
 func Shutdown(cancel context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -77,6 +74,7 @@ func Shutdown(cancel context.CancelFunc) {
 	}()
 }
 
+// ETL represents a complete ETL job.
 type ETL struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
@@ -117,6 +115,7 @@ type ETL struct {
 	dedupField      string
 }
 
+// defaultConfig returns an ETL with default settings.
 func defaultConfig() *ETL {
 	return &ETL{
 		workerCount:    4,
@@ -132,6 +131,7 @@ func defaultConfig() *ETL {
 	}
 }
 
+// NewETL creates a new ETL job with given options.
 func NewETL(id, name string, opts ...Option) *ETL {
 	e := defaultConfig()
 	e.ID = id
@@ -151,217 +151,22 @@ func NewETL(id, name string, opts ...Option) *ETL {
 	return e
 }
 
+// SetTableConfig assigns table mapping config.
 func (e *ETL) SetTableConfig(tableCfg config.TableMapping) {
 	e.tableCfg = tableCfg
 }
 
-func Run(cfg *config.Config, options ...Option) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	Shutdown(cancel)
-	var destDB *sql.DB
-	var err error
-	if utils.IsSQLType(cfg.Destination.Type) {
-		destDB, err = config.OpenDB(cfg.Destination)
-		if err != nil {
-			log.Printf("Error connecting to destination DB: %v\n", err)
-			return err
-		}
-		defer func() { _ = destDB.Close() }()
-	}
-	if cfg.Buffer == 0 {
-		cfg.Buffer = 50
-	}
-	if cfg.WorkerCount == 0 {
-		minCPU := runtime.NumCPU()
-		if minCPU <= 1 {
-			cfg.WorkerCount = 1
-		} else {
-			cfg.WorkerCount = minCPU - 1
-		}
-	}
-	var sourceFile string
-	var sources []contracts.Source
-	var sourcesToMigrate []string
-	if len(cfg.Sources) == 0 && !utils.IsEmpty(cfg.Source) {
-		cfg.Sources = append(cfg.Sources, cfg.Source)
-	}
-	for _, sourceCfg := range cfg.Sources {
-		if sourceCfg.File != "" {
-			sourceFile = sourceCfg.File
-		}
-		var tmp []string
-		if sourceCfg.File != "" {
-			tmp = append(tmp, sourceCfg.File)
-		}
-		if sourceCfg.Table != "" {
-			tmp = append(tmp, sourceCfg.Table)
-		}
-		if sourceCfg.Source != "" {
-			tmp = append(tmp, sourceCfg.Source)
-		}
-		if sourceCfg.Key != "" {
-			var keys []string
-			for _, tableCfg := range cfg.Tables {
-				if tableCfg.OldName != "" {
-					keys = append(keys, sourceCfg.Key+"."+tableCfg.OldName)
-				}
-			}
-			tmp = append(tmp, strings.Join(keys, ", "))
-		}
-		if len(tmp) > 0 {
-			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
-		}
-		var sourceDB *sql.DB
-		if utils.IsSQLType(sourceCfg.Type) {
-			sourceDB, err = config.OpenDB(sourceCfg)
-			if err != nil {
-				log.Printf("Error connecting to source DB: %v\n", err)
-				return err
-			}
-		}
-		src, err := NewSource(sourceCfg.Type, sourceDB, sourceCfg.File, sourceCfg.Table, sourceCfg.Source, sourceCfg.Format)
-		if err != nil {
-			return err
-		}
-		sources = append(sources, src)
-	}
-	checkpointFile := cfg.Checkpoint.File
-	checkpointField := cfg.Checkpoint.Field
-	if checkpointFile == "" {
-		checkpointFile = "checkpoints.txt"
-	}
-	if checkpointField == "" {
-		checkpointField = "id"
-	}
-	for _, tableCfg := range cfg.Tables {
-		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
-			continue
-		}
-		if tableCfg.OldName == "" && sourceFile != "" {
-			tableCfg.OldName = sourceFile
-		}
-		if tableCfg.NewName == "" && cfg.Destination.File != "" {
-			tableCfg.NewName = cfg.Destination.File
-		}
-		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
-			if err := sqlutil.CreateKeyValueTable(
-				destDB, tableCfg.NewName,
-				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
-			); err != nil {
-				log.Printf("Error creating key-value table %s: %v", tableCfg.NewName, err)
-				return err
-			}
-		}
-		opts := []Option{
-			WithSources(sources...),
-			WithDestination(cfg.Destination, destDB, tableCfg),
-			WithCheckpoint(checkpoints.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
-				val, ok := rec[checkpointField]
-				if !ok {
-					return ""
-				}
-				v, _ := convert.ToString(val)
-				return v
-			}),
-			WithWorkerCount(cfg.WorkerCount),
-			WithBatchSize(tableCfg.BatchSize),
-			WithRawChanBuffer(cfg.Buffer),
-			WithStreamingMode(cfg.StreamingMode),
-			WithDistributedMode(cfg.DistributedMode),
-		}
-		for _, opt := range options {
-			opts = append(opts, opt)
-		}
-		if cfg.Deduplication.Enabled {
-			if cfg.Deduplication.Field == "" {
-				cfg.Deduplication.Field = "id"
-			}
-			opts = append(opts, WithDeduplication(cfg.Deduplication.Field))
-		}
-		if tableCfg.NormalizeSchema != nil {
-			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
-		}
-		var mapperList []contracts.Mapper
-		if len(tableCfg.Mapping) > 0 {
-			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
-		}
-		mapperList = append(mapperList, &mappers.LowercaseMapper{})
-		opts = append(opts, WithMappers(mapperList...))
-		if tableCfg.Aggregator != nil {
-			aggTransformer := transformers.NewAggregatorTransformer(
-				tableCfg.Aggregator.GroupBy,
-				tableCfg.Aggregator.Aggregations,
-			)
-			opts = append(opts, WithTransformers(aggTransformer))
-		}
-		if tableCfg.KeyValueTable {
-			opts = append(opts, WithKeyValueTransformer(
-				tableCfg.ExtraValues,
-				tableCfg.IncludeFields,
-				tableCfg.ExcludeFields,
-				tableCfg.KeyField,
-				tableCfg.ValueField,
-			))
-		}
-		id := xid.New().String()
-		etlJob := NewETL(id, id, opts...)
-		var lookups []contracts.LookupLoader
-		if len(cfg.Lookups) > 0 {
-			for _, lkup := range cfg.Lookups {
-				lookup, err := adapters.NewLookupLoader(lkup)
-				if err != nil {
-					log.Printf("Unsupported lookup type: %s", lkup.Type)
-					return err
-				}
-				err = lookup.Setup(ctx)
-				if err != nil {
-					log.Printf("Unable to setup lookup: %s", lkup.Type)
-					return err
-				}
-				data, err := lookup.LoadData()
-				if err != nil {
-					log.Printf("Failed to load lookup data for %s: %v", lkup.Key, err)
-					return err
-				}
-				lookups = append(lookups, lookup)
-				etlJob.lookupStore[lkup.Key] = data
-			}
-		}
-		etlJob.lookups = append(etlJob.lookups, lookups...)
-		for _, loader := range etlJob.loaders {
-			err = loader.Setup(ctx)
-			if err != nil {
-				log.Printf("Setting up loader failed: %v", err)
-				return err
-			}
-		}
-		etlJob.SetTableConfig(tableCfg)
-		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if err := etlJob.Run(ctx); err != nil {
-			log.Printf("ETL DAG job failed: %v", err)
-			return err
-		}
-		if err := etlJob.Close(); err != nil {
-			log.Printf("Error closing ETL job: %v", err)
-			return err
-		}
-		var dst string
-		if tableCfg.NewName != "" {
-			dst = tableCfg.NewName
-		} else if cfg.Destination.File != "" {
-			dst = cfg.Destination.File
-		} else if cfg.Destination.Table != "" {
-			dst = cfg.Destination.Table
-		} else if cfg.Destination.Source != "" {
-			dst = cfg.Destination.Source
-		}
-		log.Printf("Migration for %s to %s completed", "["+strings.Join(sourcesToMigrate, ", ")+"]", dst)
-	}
-	log.Println("All migrations complete.")
-	return nil
+// AdjustWorker dynamically adjusts the worker counts.
+// In this implementation we simply update the workerCount and recalc loaderWorkers.
+// In a real streaming ETL you might implement dynamic worker pools to add/remove goroutines on the fly.
+func (e *ETL) AdjustWorker(numOfWorker int) {
+	e.workerCount = numOfWorker
+	// For example, we set loader workers to half the count.
+	e.loaderWorkers = numOfWorker / 2
+	log.Printf("[ETL %s] Adjusted worker count to %d and loader workers to %d", e.ID, e.workerCount, e.loaderWorkers)
 }
 
+// Close cleans up all underlying sources, lookups and loaders.
 func (e *ETL) Close() error {
 	for _, src := range e.sources {
 		if err := src.Close(); err != nil {
@@ -381,6 +186,22 @@ func (e *ETL) Close() error {
 	return nil
 }
 
+// GetMetrics returns the current metrics snapshot.
+func (e *ETL) GetMetrics() Metrics {
+	return Metrics{
+		Extracted:   atomic.LoadInt64(&e.metrics.Extracted),
+		Mapped:      atomic.LoadInt64(&e.metrics.Mapped),
+		Transformed: atomic.LoadInt64(&e.metrics.Transformed),
+		Loaded:      atomic.LoadInt64(&e.metrics.Loaded),
+		Errors:      atomic.LoadInt64(&e.metrics.Errors),
+	}
+}
+
+// -------------------------
+// Pipeline Node Definitions
+// -------------------------
+
+// applyMappers applies all mappers sequentially.
 func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Mapper, workerID int) (utils.Record, error) {
 	for _, mapper := range mappers {
 		var err error
@@ -393,6 +214,7 @@ func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Map
 	return rec, nil
 }
 
+// applyTransformers applies all transformers.
 func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int, metrics *Metrics) ([]utils.Record, error) {
 	records := []utils.Record{rec}
 	for _, transformer := range transformers {
@@ -423,6 +245,7 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 	return records, nil
 }
 
+// Run starts the ETL pipeline.
 func (e *ETL) Run(ctx context.Context) error {
 	if e.streamingMode {
 		log.Println("[ETL] Streaming mode is enabled.")
@@ -438,16 +261,6 @@ func (e *ETL) Run(ctx context.Context) error {
 	elapsed := time.Since(overallStart)
 	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
 	return err
-}
-
-func (e *ETL) GetMetrics() Metrics {
-	return Metrics{
-		Extracted:   atomic.LoadInt64(&e.metrics.Extracted),
-		Mapped:      atomic.LoadInt64(&e.metrics.Mapped),
-		Transformed: atomic.LoadInt64(&e.metrics.Transformed),
-		Loaded:      atomic.LoadInt64(&e.metrics.Loaded),
-		Errors:      atomic.LoadInt64(&e.metrics.Errors),
-	}
 }
 
 func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
@@ -470,18 +283,22 @@ func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
 	return out
 }
 
+// StreamingMode returns true if streaming mode is enabled.
 func (e *ETL) StreamingMode() bool {
 	return e.streamingMode
 }
 
+// DistributedMode returns true if distributed mode is enabled.
 func (e *ETL) DistributedMode() bool {
 	return e.distributedMode
 }
 
+// EventBus returns the event bus.
 func (e *ETL) EventBus() *EventBus {
 	return e.eventBus
 }
 
+// buildDefaultPipeline builds a simple linear pipeline.
 func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 	nodes := map[string]contracts.Node{
 		"source": &SourceNode{
@@ -540,6 +357,10 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		Edges: edges,
 	}
 }
+
+// -------------------------
+// Pipeline Node Implementations
+// -------------------------
 
 type SourceNode struct {
 	sources       []contracts.Source
@@ -745,7 +566,6 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 						log.Printf("[TransformNode Worker %d] BeforeTransform hook error: %v", workerID, err)
 					}
 				}
-				// Pass tn.metrics into applyTransformers.
 				transformed, err := applyTransformers(ctx, rec, tn.transformers, workerID, tn.metrics)
 				if err != nil {
 					log.Printf("[TransformNode Worker %d] Error: %v", workerID, err)
@@ -985,6 +805,10 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 	}()
 	return done, nil
 }
+
+// -------------------------
+// Pipeline DAG and Runner
+// -------------------------
 
 type dagNode struct {
 	id       string
