@@ -14,16 +14,27 @@ import (
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
+// --- Cache Management ---
+
+const (
+	maxTableCacheSize     = 100 // maximum entries in tableCache
+	maxLikeRegexCacheSize = 100 // maximum entries in likeRegexCache
+)
+
+// tableCacheEntry holds cached table rows with their modification time.
 type tableCacheEntry struct {
 	rows    []utils.Record
 	modTime time.Time
 }
 
 var tableCache = make(map[string]tableCacheEntry)
+var tableCacheMu sync.Mutex
 
+// likeRegexCache caches compiled regular expressions for SQL LIKE patterns.
 var likeRegexCache = make(map[string]*regexp.Regexp)
 var likeRegexCacheMu sync.RWMutex
 
+// compileLikeRegex compiles a SQL LIKE pattern into a regular expression.
 func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	likeRegexCacheMu.RLock()
 	re, ok := likeRegexCache[pattern]
@@ -40,6 +51,7 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 		case '_':
 			sb.WriteString(".")
 		default:
+			// Escape regex-special characters.
 			if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
 				sb.WriteRune('\\')
 			}
@@ -52,11 +64,19 @@ func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 		return nil, err
 	}
 	likeRegexCacheMu.Lock()
+	// Simple eviction: if the cache is too big, remove one arbitrary entry.
+	if len(likeRegexCache) >= maxLikeRegexCacheSize {
+		for key := range likeRegexCache {
+			delete(likeRegexCache, key)
+			break
+		}
+	}
 	likeRegexCache[pattern] = compiled
 	likeRegexCacheMu.Unlock()
 	return compiled, nil
 }
 
+// sqlLikeMatch returns true if string s matches the SQL LIKE pattern.
 func sqlLikeMatch(s, pattern string) bool {
 	re, err := compileLikeRegex(pattern)
 	if err != nil {
@@ -65,6 +85,9 @@ func sqlLikeMatch(s, pattern string) bool {
 	return re.MatchString(s)
 }
 
+// --- Query Entry Point ---
+
+// Query executes a SQL query string.
 func Query(query string) ([]utils.Record, error) {
 	lexer := NewLexer(query)
 	parser := NewParser(lexer)
@@ -74,6 +97,8 @@ func Query(query string) ([]utils.Record, error) {
 	}
 	return program.parseAndExecute()
 }
+
+// --- Query Statement Structures ---
 
 type QueryStatement struct {
 	With     *WithClause
@@ -133,6 +158,8 @@ func (qs *QueryStatement) String() string {
 	return qs.Query.String()
 }
 
+// --- SQL Structure ---
+
 type SQL struct {
 	With     *WithClause
 	Select   *SelectClause
@@ -184,7 +211,57 @@ func (query *SQL) String() string {
 	return strings.Join(parts, " ")
 }
 
+// --- Enhanced Index Optimization ---
+
+// EqualityCondition represents an equality predicate (field = value).
+type EqualityCondition struct {
+	Field string
+	Value string
+}
+
+// extractEqualityConditions recursively extracts equality conditions from a WHERE clause.
+func extractEqualityConditions(expr Expression) []EqualityCondition {
+	var conditions []EqualityCondition
+	switch e := expr.(type) {
+	case *BinaryExpression:
+		if e.Operator == "=" {
+			if ident, ok := e.Left.(*Identifier); ok {
+				if lit, ok := e.Right.(*Literal); ok {
+					conditions = append(conditions, EqualityCondition{
+						Field: ident.Value,
+						Value: fmt.Sprintf("%v", lit.Value),
+					})
+				}
+			}
+		} else if e.Operator == "AND" {
+			conditions = append(conditions, extractEqualityConditions(e.Left)...)
+			conditions = append(conditions, extractEqualityConditions(e.Right)...)
+		}
+	}
+	return conditions
+}
+
+// intersectRecords returns the intersection of two slices of records.
+func intersectRecords(a, b []utils.Record) []utils.Record {
+	var result []utils.Record
+	keys := make(map[string]bool)
+	for _, r := range a {
+		key := fmt.Sprintf("%v", r)
+		keys[key] = true
+	}
+	for _, r := range b {
+		key := fmt.Sprintf("%v", r)
+		if keys[key] {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+// --- executeQuery with Early Termination and Enhanced Index Optimization ---
+
 func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
+	// Load rows from the FROM clause if needed.
 	if len(rows) == 0 {
 		if query.From != nil {
 			var err error
@@ -197,7 +274,47 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		}
 	}
 	ctx := NewEvalContext()
+
 	var filteredRows []utils.Record
+
+	// Try to extract equality conditions for enhanced index optimization.
+	var eqConds []EqualityCondition
+	if query.Where != nil {
+		eqConds = extractEqualityConditions(query.Where)
+	}
+	if len(eqConds) > 0 {
+		var sets [][]utils.Record
+		for _, cond := range eqConds {
+			var set []utils.Record
+			for _, row := range rows {
+				if val, exists := row[cond.Field]; exists {
+					if fmt.Sprintf("%v", val) == cond.Value {
+						set = append(set, row)
+					}
+				}
+			}
+			sets = append(sets, set)
+		}
+		if len(sets) > 0 {
+			filteredRows = sets[0]
+			for i := 1; i < len(sets); i++ {
+				filteredRows = intersectRecords(filteredRows, sets[i])
+			}
+		}
+	} else {
+		// Fallback: full filtering.
+		for _, row := range rows {
+			if query.Where != nil {
+				result := ctx.evalExpression(query.Where, row)
+				if b, ok := result.(bool); !ok || !b {
+					continue
+				}
+			}
+			filteredRows = append(filteredRows, row)
+		}
+	}
+
+	// Early termination for simple queries (no GROUP BY, HAVING, ORDER BY, or aggregates).
 	hasAggregate := false
 	for _, expr := range query.Select.Fields {
 		_, underlying := unwrapAlias(expr)
@@ -212,48 +329,29 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	targetCount := -1
 	if simpleQuery && query.Limit != nil {
 		targetCount = query.Limit.Offset + query.Limit.Limit
-	}
-	indexApplied := false
-	if query.Where != nil {
-		if be, ok := query.Where.(*BinaryExpression); ok && be.Operator == "=" {
-			if ident, ok := be.Left.(*Identifier); ok {
-				if lit, ok := be.Right.(*Literal); ok {
-					indexApplied = true
-					keyName := ident.Value
-					filterValue := fmt.Sprintf("%v", lit.Value)
-					index := make(map[string][]utils.Record)
-					for _, row := range rows {
-						if val, exists := row[keyName]; exists {
-							keyStr := fmt.Sprintf("%v", val)
-							index[keyStr] = append(index[keyStr], row)
-						}
-					}
-					if recs, found := index[filterValue]; found {
-						filteredRows = recs
-					} else {
-						filteredRows = []utils.Record{}
+		// If no index-based filtering was applied, trim early.
+		if len(eqConds) == 0 {
+			var temp []utils.Record
+			for _, row := range rows {
+				if query.Where != nil {
+					result := ctx.evalExpression(query.Where, row)
+					if b, ok := result.(bool); !ok || !b {
+						continue
 					}
 				}
-			}
-		}
-	}
-	if !indexApplied {
-		for _, row := range rows {
-			if query.Where != nil {
-				result := ctx.evalExpression(query.Where, row)
-				if b, ok := result.(bool); !ok || !b {
-					continue
+				temp = append(temp, row)
+				if len(temp) >= targetCount {
+					break
 				}
 			}
-			filteredRows = append(filteredRows, row)
-			if targetCount > 0 && len(filteredRows) >= targetCount {
-				break
-			}
+			filteredRows = temp
 		}
 	}
 	ctx.CurrentResultSet = filteredRows
+
 	var resultRows []utils.Record
 	if query.GroupBy != nil {
+		// Process GROUP BY fully (no early termination).
 		groups := make(map[string][]utils.Record)
 		for _, row := range filteredRows {
 			keyVal := ctx.evalExpression(query.GroupBy.Fields[0], row)
@@ -377,6 +475,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			resultRows = append(resultRows, resultRow)
 		}
 	} else if hasAggregate {
+		// Process aggregates without GROUP BY.
 		resultRow := make(utils.Record)
 		for i, expr := range query.Select.Fields {
 			colName := getFieldName(expr, i)
@@ -490,6 +589,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		}
 		resultRows = append(resultRows, resultRow)
 	} else {
+		// Simple projection.
 		for _, row := range filteredRows {
 			newRow := make(utils.Record)
 			for i, expr := range query.Select.Fields {
@@ -557,6 +657,120 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	return resultRows, nil
 }
 
+// --- Refactored Join Functions ---
+
+func executeCrossJoin(leftRows, rightRows []utils.Record, alias string) []utils.Record {
+	var newResult []utils.Record
+	for _, leftRow := range leftRows {
+		for _, rightRow := range rightRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			newResult = append(newResult, merged)
+		}
+	}
+	return newResult
+}
+
+func executeLeftJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+	var newResult []utils.Record
+	for _, leftRow := range leftRows {
+		matched := false
+		for _, rightRow := range rightRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			ctx := NewEvalContext()
+			cond := ctx.evalExpression(joinOn, merged)
+			if b, ok := cond.(bool); ok && b {
+				newResult = append(newResult, merged)
+				matched = true
+			}
+		}
+		if !matched {
+			merged := utils.MergeRows(leftRow, nil, alias)
+			newResult = append(newResult, merged)
+		}
+	}
+	return newResult
+}
+
+func executeRightJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+	var newResult []utils.Record
+	for _, rightRow := range rightRows {
+		matched := false
+		for _, leftRow := range leftRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			ctx := NewEvalContext()
+			cond := ctx.evalExpression(joinOn, merged)
+			if b, ok := cond.(bool); ok && b {
+				newResult = append(newResult, merged)
+				matched = true
+			}
+		}
+		if !matched {
+			merged := utils.MergeRows(nil, rightRow, alias)
+			newResult = append(newResult, merged)
+		}
+	}
+	return newResult
+}
+
+func executeFullJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+	var newResult []utils.Record
+	leftMatched := make(map[string]bool)
+	for _, leftRow := range leftRows {
+		matched := false
+		for _, rightRow := range rightRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			ctx := NewEvalContext()
+			cond := ctx.evalExpression(joinOn, merged)
+			if b, ok := cond.(bool); ok && b {
+				newResult = append(newResult, merged)
+				matched = true
+				key := utils.RecordKey(leftRow, rightRow)
+				leftMatched[key] = true
+			}
+		}
+		if !matched {
+			merged := utils.MergeRows(leftRow, nil, alias)
+			newResult = append(newResult, merged)
+		}
+	}
+	for _, rightRow := range rightRows {
+		matched := false
+		for _, leftRow := range leftRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			ctx := NewEvalContext()
+			cond := ctx.evalExpression(joinOn, merged)
+			if b, ok := cond.(bool); ok && b {
+				key := utils.RecordKey(leftRow, rightRow)
+				if leftMatched[key] {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			merged := utils.MergeRows(nil, rightRow, alias)
+			newResult = append(newResult, merged)
+		}
+	}
+	return newResult
+}
+
+func executeDefaultJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+	var newResult []utils.Record
+	for _, leftRow := range leftRows {
+		for _, rightRow := range rightRows {
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			ctx := NewEvalContext()
+			cond := ctx.evalExpression(joinOn, merged)
+			if b, ok := cond.(bool); ok && b {
+				newResult = append(newResult, merged)
+			}
+		}
+	}
+	return newResult
+}
+
+// executeJoins applies all JOIN clauses sequentially.
 func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
 	currentRows := rows
 	for _, join := range query.Joins {
@@ -570,97 +784,17 @@ func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
 		}
 		joinType := strings.ToUpper(join.JoinType)
 		var newResult []utils.Record
-		if joinType == "CROSS" || joinType == "CROSS JOIN" {
-			for _, leftRow := range currentRows {
-				for _, rightRow := range joinRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					newResult = append(newResult, merged)
-				}
-			}
-		} else if joinType == "LEFT" || joinType == "LEFT JOIN" || joinType == "LEFT OUTER" || joinType == "LEFT OUTER JOIN" {
-			for _, leftRow := range currentRows {
-				matched := false
-				for _, rightRow := range joinRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					ctx := NewEvalContext()
-					cond := ctx.evalExpression(join.On, merged)
-					if b, ok := cond.(bool); ok && b {
-						newResult = append(newResult, merged)
-						matched = true
-					}
-				}
-				if !matched {
-					merged := utils.MergeRows(leftRow, nil, alias)
-					newResult = append(newResult, merged)
-				}
-			}
-		} else if joinType == "RIGHT" || joinType == "RIGHT JOIN" || joinType == "RIGHT OUTER" || joinType == "RIGHT OUTER JOIN" {
-			for _, rightRow := range joinRows {
-				matched := false
-				for _, leftRow := range currentRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					ctx := NewEvalContext()
-					cond := ctx.evalExpression(join.On, merged)
-					if b, ok := cond.(bool); ok && b {
-						newResult = append(newResult, merged)
-						matched = true
-					}
-				}
-				if !matched {
-					merged := utils.MergeRows(nil, rightRow, alias)
-					newResult = append(newResult, merged)
-				}
-			}
-		} else if joinType == "FULL" || joinType == "FULL JOIN" || joinType == "FULL OUTER" || joinType == "FULL OUTER JOIN" || joinType == "OUTER" || joinType == "OUTER JOIN" {
-			leftMatched := make(map[string]bool)
-			for _, leftRow := range currentRows {
-				matched := false
-				for _, rightRow := range joinRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					ctx := NewEvalContext()
-					cond := ctx.evalExpression(join.On, merged)
-					if b, ok := cond.(bool); ok && b {
-						newResult = append(newResult, merged)
-						matched = true
-						key := utils.RecordKey(leftRow, rightRow)
-						leftMatched[key] = true
-					}
-				}
-				if !matched {
-					merged := utils.MergeRows(leftRow, nil, alias)
-					newResult = append(newResult, merged)
-				}
-			}
-			for _, rightRow := range joinRows {
-				matched := false
-				for _, leftRow := range currentRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					ctx := NewEvalContext()
-					cond := ctx.evalExpression(join.On, merged)
-					if b, ok := cond.(bool); ok && b {
-						key := utils.RecordKey(leftRow, rightRow)
-						if leftMatched[key] {
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
-					merged := utils.MergeRows(nil, rightRow, alias)
-					newResult = append(newResult, merged)
-				}
-			}
-		} else {
-			for _, leftRow := range currentRows {
-				for _, rightRow := range joinRows {
-					merged := utils.MergeRows(leftRow, rightRow, alias)
-					ctx := NewEvalContext()
-					cond := ctx.evalExpression(join.On, merged)
-					if b, ok := cond.(bool); ok && b {
-						newResult = append(newResult, merged)
-					}
-				}
-			}
+		switch joinType {
+		case "CROSS", "CROSS JOIN":
+			newResult = executeCrossJoin(currentRows, joinRows, alias)
+		case "LEFT", "LEFT JOIN", "LEFT OUTER", "LEFT OUTER JOIN":
+			newResult = executeLeftJoin(currentRows, joinRows, alias, join.On)
+		case "RIGHT", "RIGHT JOIN", "RIGHT OUTER", "RIGHT OUTER JOIN":
+			newResult = executeRightJoin(currentRows, joinRows, alias, join.On)
+		case "FULL", "FULL JOIN", "FULL OUTER", "FULL OUTER JOIN", "OUTER", "OUTER JOIN":
+			newResult = executeFullJoin(currentRows, joinRows, alias, join.On)
+		default:
+			newResult = executeDefaultJoin(currentRows, joinRows, alias, join.On)
 		}
 		currentRows = newResult
 	}
