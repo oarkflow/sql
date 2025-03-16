@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/oarkflow/etl"
 	"github.com/oarkflow/etl/pkg/config"
@@ -104,6 +105,10 @@ func RunETL(configPath string) error {
 		return err
 	}
 	for _, id := range ids {
+		go func(manager *etl.Manager) {
+			time.Sleep(5 * time.Second)
+			manager.AdjustWorker(1, id)
+		}(manager)
 		if err := manager.Start(context.Background(), id); err != nil {
 			return err
 		}

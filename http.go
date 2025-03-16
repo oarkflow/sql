@@ -26,28 +26,23 @@ import (
 // Manager Implementation
 // -------------------------
 
-// Manager manages available ETL jobs.
 type Manager struct {
 	mu   sync.Mutex
 	etls map[string]*ETL
 }
 
-// NewManager creates a new Manager.
 func NewManager() *Manager {
 	return &Manager{
 		etls: make(map[string]*ETL),
 	}
 }
 
-// Prepare parses the configuration, prepares sources, mappers, loaders, etc., and creates one or more ETL jobs.
-// It returns a slice of prepared ETL job IDs.
+// Prepare creates ETL jobs based on the config and stores them in the manager.
 func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var preparedIDs []string
-
-	// Open destination DB if needed.
 	var destDB *sql.DB
 	var err error
 	if utils.IsSQLType(cfg.Destination.Type) {
@@ -58,7 +53,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		}
 		defer func() { _ = destDB.Close() }()
 	}
-
 	if cfg.Buffer == 0 {
 		cfg.Buffer = 50
 	}
@@ -71,7 +65,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		}
 	}
 
-	// Prepare sources.
 	var sourceFile string
 	var sources []contracts.Source
 	var sourcesToMigrate []string
@@ -119,7 +112,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		sources = append(sources, src)
 	}
 
-	// Prepare checkpoint settings.
 	checkpointFile := cfg.Checkpoint.File
 	checkpointField := cfg.Checkpoint.Field
 	if checkpointFile == "" {
@@ -129,7 +121,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		checkpointField = "id"
 	}
 
-	// For each table configuration, prepare an ETL job.
 	for _, tableCfg := range cfg.Tables {
 		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
 			continue
@@ -149,7 +140,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				return nil, err
 			}
 		}
-		// Build options for ETL.
 		var opts []Option
 		opts = append(opts, WithSources(sources...))
 		opts = append(opts, WithDestination(cfg.Destination, destDB, tableCfg))
@@ -234,7 +224,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		}
 		etlJob.SetTableConfig(tableCfg)
 		log.Printf("Prepared migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		// Store the prepared ETL job in the manager.
 		m.etls[etlJob.ID] = etlJob
 		preparedIDs = append(preparedIDs, etlJob.ID)
 	}
@@ -250,13 +239,9 @@ func (m *Manager) Start(ctx context.Context, etlID string) error {
 	if !ok {
 		return fmt.Errorf("no ETL job found with ID: %s", etlID)
 	}
-
-	// Setup graceful shutdown.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	Shutdown(cancel)
-
-	// Run the ETL pipeline.
 	if err := etlJob.Run(ctx); err != nil {
 		log.Printf("ETL job %s failed: %v", etlID, err)
 		return err
