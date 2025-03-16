@@ -11,6 +11,11 @@ import (
 )
 
 func main() {
+	manager := etl.NewManager()
+	manager.Serve(":8081")
+}
+
+func ma1in() {
 	paths := []string{
 		"assets/prod.yaml",
 		// "assets/multiple-source.yaml",

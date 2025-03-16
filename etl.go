@@ -51,12 +51,30 @@ type Plugin interface {
 	Init(e *ETL) error
 }
 
+type WorkerActivity struct {
+	Node      string    `json:"node"`
+	WorkerID  int       `json:"worker_id"`
+	Processed int64     `json:"processed"`
+	Failed    int64     `json:"failed"`
+	Timestamp time.Time `json:"timestamp"`
+	Activity  string    `json:"activity"`
+}
+
 type Metrics struct {
-	Extracted   int64 `json:"extracted"`
-	Mapped      int64 `json:"mapped"`
-	Transformed int64 `json:"transformed"`
-	Loaded      int64 `json:"loaded"`
-	Errors      int64 `json:"errors"`
+	Extracted        int64            `json:"extracted"`
+	Mapped           int64            `json:"mapped"`
+	Transformed      int64            `json:"transformed"`
+	Loaded           int64            `json:"loaded"`
+	Errors           int64            `json:"errors"`
+	WorkerActivities []WorkerActivity `json:"worker_activities"`
+	mu               sync.Mutex
+}
+
+func (m *Metrics) AddWorkerActivity(activity WorkerActivity) {
+	fmt.Println("Worker Activity")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WorkerActivities = append(m.WorkerActivities, activity)
 }
 
 func Shutdown(cancel context.CancelFunc) {
@@ -107,6 +125,10 @@ type ETL struct {
 	dashboardPass   string
 	dedupEnabled    bool
 	dedupField      string
+
+	CreatedAt time.Time
+	LastRunAt time.Time
+	Status    string
 }
 
 func defaultConfig() *ETL {
@@ -121,6 +143,8 @@ func defaultConfig() *ETL {
 		lookupStore:    make(map[string][]utils.Record),
 		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
 		metrics:        &Metrics{},
+		CreatedAt:      time.Now(),
+		Status:         "INACTIVE",
 	}
 }
 
@@ -158,6 +182,15 @@ func (e *ETL) AdjustWorker(newWorkerCount int) {
 		e.loaderWorkers = 1
 	}
 	log.Printf("[ETL %s] Adjusted worker count to %d and loader workers to %d", e.ID, e.workerCount, e.loaderWorkers)
+
+	e.metrics.AddWorkerActivity(WorkerActivity{
+		Node:      "ETL",
+		WorkerID:  -1,
+		Processed: 0,
+		Failed:    0,
+		Timestamp: time.Now(),
+		Activity:  fmt.Sprintf("Adjusted ETL worker count to %d (loader: %d)", e.workerCount, e.loaderWorkers),
+	})
 	if e.pipelineConfig != nil {
 		for nodeID, node := range e.pipelineConfig.Nodes {
 			if adj, ok := node.(Adjustable); ok {
@@ -192,11 +225,32 @@ func (e *ETL) Close() error {
 
 func (e *ETL) GetMetrics() Metrics {
 	return Metrics{
-		Extracted:   atomic.LoadInt64(&e.metrics.Extracted),
-		Mapped:      atomic.LoadInt64(&e.metrics.Mapped),
-		Transformed: atomic.LoadInt64(&e.metrics.Transformed),
-		Loaded:      atomic.LoadInt64(&e.metrics.Loaded),
-		Errors:      atomic.LoadInt64(&e.metrics.Errors),
+		Extracted:        atomic.LoadInt64(&e.metrics.Extracted),
+		Mapped:           atomic.LoadInt64(&e.metrics.Mapped),
+		Transformed:      atomic.LoadInt64(&e.metrics.Transformed),
+		Loaded:           atomic.LoadInt64(&e.metrics.Loaded),
+		Errors:           atomic.LoadInt64(&e.metrics.Errors),
+		WorkerActivities: e.metrics.WorkerActivities,
+	}
+}
+
+type Summary struct {
+	Metrics   Metrics `json:"metrics"`
+	ID        string  `json:"ID"`
+	Name      string  `json:"name"`
+	StartedAt string  `json:"started_at"`
+	LastRunAt string  `json:"last_run_at"`
+	Status    string  `json:"status"`
+}
+
+func (e *ETL) GetSummary() Summary {
+	return Summary{
+		Metrics:   e.GetMetrics(),
+		ID:        e.ID,
+		Name:      e.Name,
+		StartedAt: e.CreatedAt.Format(time.RFC3339),
+		LastRunAt: e.LastRunAt.Format(time.RFC3339),
+		Status:    e.Status,
 	}
 }
 
@@ -222,6 +276,7 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 				if err != nil {
 					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
 					atomic.AddInt64(&metrics.Errors, 1)
+					nextRecords = append(nextRecords, r)
 					continue
 				}
 				nextRecords = append(nextRecords, recs...)
@@ -232,6 +287,7 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 				if err != nil {
 					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
 					atomic.AddInt64(&metrics.Errors, 1)
+					nextRecords = append(nextRecords, r)
 					continue
 				}
 				nextRecords = append(nextRecords, r2)
@@ -243,6 +299,8 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 }
 
 func (e *ETL) Run(ctx context.Context) error {
+	e.LastRunAt = time.Now()
+	e.Status = "RUNNING"
 	if e.streamingMode {
 		log.Println("[ETL] Streaming mode is enabled.")
 	}
@@ -284,6 +342,8 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 		"normalize": &NormalizeNode{
 			schema:      e.normalizeSchema,
 			workerCount: e.workerCount,
+			metrics:     e.metrics,
+			NodeName:    "normalize",
 		},
 		"map": &MapNode{
 			mappers:     e.mappers,
@@ -291,6 +351,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			hooks:       e.hooks,
 			eventBus:    e.eventBus,
 			metrics:     e.metrics,
+			NodeName:    "map",
 		},
 		"transform": &TransformNode{
 			transformers: e.transformers,
@@ -298,6 +359,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			hooks:        e.hooks,
 			eventBus:     e.eventBus,
 			metrics:      e.metrics,
+			NodeName:     "transform",
 		},
 		"load": &LoaderNode{
 			loaders:         e.loaders,
@@ -317,6 +379,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			dedupField:      e.dedupField,
 			dedupCache:      make(map[string]struct{}),
 			metrics:         e.metrics,
+			NodeName:        "load",
 		},
 	}
 	edges := []dagEdge{
@@ -506,6 +569,8 @@ type NormalizeNode struct {
 	wg                 sync.WaitGroup
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
+	metrics            *Metrics
+	NodeName           string
 }
 
 func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -527,19 +592,27 @@ func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 func (nn *NormalizeNode) normalizeWorker(ctx context.Context, index int) {
 	defer nn.wg.Done()
 	var localCount int64 = 0
+	var localFailed int64 = 0
 	for {
 		if index >= int(atomic.LoadInt32(&nn.desiredWorkerCount)) {
-
 			nn.mu.Lock()
 			nn.workerProgress[index] = localCount
 			nn.mu.Unlock()
+			activity := WorkerActivity{
+				Node:      nn.NodeName,
+				WorkerID:  index,
+				Processed: localCount,
+				Failed:    localFailed,
+				Timestamp: time.Now(),
+				Activity:  "exited",
+			}
+			nn.metrics.AddWorkerActivity(activity)
 			log.Printf("[NormalizeNode Worker %d] exiting due to reduced worker count; processed %d records", index, localCount)
 			return
 		}
 		select {
 		case rec, ok := <-nn.inChan:
 			if !ok {
-
 				nn.mu.Lock()
 				nn.workerProgress[index] = localCount
 				nn.mu.Unlock()
@@ -553,6 +626,7 @@ func (nn *NormalizeNode) normalizeWorker(ctx context.Context, index int) {
 				nRec, err = utils.NormalizeRecord(rec, nn.schema)
 				if err != nil {
 					log.Printf("[NormalizeNode Worker %d] Error: %v", index, err)
+					localFailed++
 					continue
 				}
 			}
@@ -576,6 +650,15 @@ func (nn *NormalizeNode) AdjustWorker(newCount int) {
 		for i := oldCount; i < newCount; i++ {
 			nn.wg.Add(1)
 			go nn.normalizeWorker(context.Background(), i)
+			activity := WorkerActivity{
+				Node:      nn.NodeName,
+				WorkerID:  i,
+				Processed: 0,
+				Failed:    0,
+				Timestamp: time.Now(),
+				Activity:  "spawned",
+			}
+			nn.metrics.AddWorkerActivity(activity)
 		}
 		log.Printf("[NormalizeNode] Increased worker count from %d to %d", oldCount, newCount)
 	} else {
@@ -595,6 +678,7 @@ type MapNode struct {
 	wg                 sync.WaitGroup
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
+	NodeName           string
 }
 
 func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -616,11 +700,21 @@ func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config
 func (mn *MapNode) mapWorker(ctx context.Context, index int) {
 	defer mn.wg.Done()
 	var localCount int64 = 0
+	var localFailed int64 = 0
 	for {
 		if index >= int(atomic.LoadInt32(&mn.desiredWorkerCount)) {
 			mn.mu.Lock()
 			mn.workerProgress[index] = localCount
 			mn.mu.Unlock()
+			activity := WorkerActivity{
+				Node:      mn.NodeName,
+				WorkerID:  index,
+				Processed: localCount,
+				Failed:    localFailed,
+				Timestamp: time.Now(),
+				Activity:  "exited",
+			}
+			mn.metrics.AddWorkerActivity(activity)
 			log.Printf("[MapNode Worker %d] exiting due to reduced worker count; processed %d records", index, localCount)
 			return
 		}
@@ -643,6 +737,7 @@ func (mn *MapNode) mapWorker(ctx context.Context, index int) {
 			mapped, err := applyMappers(ctx, rec, mn.mappers, index)
 			if err != nil {
 				log.Printf("[MapNode Worker %d] Error: %v", index, err)
+				localFailed++
 				atomic.AddInt64(&mn.metrics.Errors, 1)
 				continue
 			}
@@ -677,6 +772,15 @@ func (mn *MapNode) AdjustWorker(newCount int) {
 		for i := oldCount; i < newCount; i++ {
 			mn.wg.Add(1)
 			go mn.mapWorker(context.Background(), i)
+			activity := WorkerActivity{
+				Node:      mn.NodeName,
+				WorkerID:  i,
+				Processed: 0,
+				Failed:    0,
+				Timestamp: time.Now(),
+				Activity:  "spawned",
+			}
+			mn.metrics.AddWorkerActivity(activity)
 		}
 		log.Printf("[MapNode] Increased worker count from %d to %d", oldCount, newCount)
 	} else {
@@ -696,6 +800,7 @@ type TransformNode struct {
 	wg                 sync.WaitGroup
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
+	NodeName           string
 }
 
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -731,11 +836,21 @@ func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ 
 func (tn *TransformNode) transformWorker(ctx context.Context, index int) {
 	defer tn.wg.Done()
 	var localCount int64 = 0
+	var localFailed int64 = 0
 	for {
 		if index >= int(atomic.LoadInt32(&tn.desiredWorkerCount)) {
 			tn.mu.Lock()
 			tn.workerProgress[index] = localCount
 			tn.mu.Unlock()
+			activity := WorkerActivity{
+				Node:      tn.NodeName,
+				WorkerID:  index,
+				Processed: localCount,
+				Failed:    localFailed,
+				Timestamp: time.Now(),
+				Activity:  "exited",
+			}
+			tn.metrics.AddWorkerActivity(activity)
 			log.Printf("[TransformNode Worker %d] exiting due to reduced worker count; processed %d records", index, localCount)
 			return
 		}
@@ -758,6 +873,7 @@ func (tn *TransformNode) transformWorker(ctx context.Context, index int) {
 			transformed, err := applyTransformers(ctx, rec, tn.transformers, index, tn.metrics)
 			if err != nil {
 				log.Printf("[TransformNode Worker %d] Error: %v", index, err)
+				localFailed++
 				atomic.AddInt64(&tn.metrics.Errors, 1)
 				continue
 			}
@@ -794,6 +910,15 @@ func (tn *TransformNode) AdjustWorker(newCount int) {
 		for i := oldCount; i < newCount; i++ {
 			tn.wg.Add(1)
 			go tn.transformWorker(context.Background(), i)
+			activity := WorkerActivity{
+				Node:      tn.NodeName,
+				WorkerID:  i,
+				Processed: 0,
+				Failed:    0,
+				Timestamp: time.Now(),
+				Activity:  "spawned",
+			}
+			tn.metrics.AddWorkerActivity(activity)
 		}
 		log.Printf("[TransformNode] Increased worker count from %d to %d", oldCount, newCount)
 	} else {
@@ -827,6 +952,7 @@ type LoaderNode struct {
 	wg                 sync.WaitGroup
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
+	NodeName           string
 }
 
 func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -865,11 +991,21 @@ func (ln *LoaderNode) batchRecords(ctx context.Context) {
 func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 	defer ln.wg.Done()
 	var localLoaded int64 = 0
+	var localFailed int64 = 0
 	for {
 		if index >= int(atomic.LoadInt32(&ln.desiredWorkerCount)) {
 			ln.mu.Lock()
 			ln.workerProgress[index] = localLoaded
 			ln.mu.Unlock()
+			activity := WorkerActivity{
+				Node:      ln.NodeName,
+				WorkerID:  index,
+				Processed: localLoaded,
+				Failed:    localFailed,
+				Timestamp: time.Now(),
+				Activity:  "exited",
+			}
+			ln.metrics.AddWorkerActivity(activity)
 			log.Printf("[LoaderNode Worker %d] exiting due to reduced worker count; loaded %d records", index, localLoaded)
 			return
 		}
@@ -913,6 +1049,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 			if ln.validations != nil && ln.validations.ValidateBeforeLoad != nil {
 				if err := ln.validations.ValidateBeforeLoad(ctx, batch); err != nil {
 					log.Printf("[LoaderNode Worker %d] ValidateBeforeLoad error: %v", index, err)
+					localFailed++
 					atomic.AddInt64(&ln.metrics.Errors, 1)
 					continue
 				}
@@ -920,6 +1057,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 			if ln.hooks != nil && ln.hooks.BeforeLoad != nil {
 				if err := ln.hooks.BeforeLoad(ctx, batch); err != nil {
 					log.Printf("[LoaderNode Worker %d] BeforeLoad hook error: %v", index, err)
+					localFailed++
 					atomic.AddInt64(&ln.metrics.Errors, 1)
 					continue
 				}
@@ -933,12 +1071,14 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 				if txnLoader, ok := loader.(contracts.Transactional); ok {
 					if err := txnLoader.Begin(storeCtx); err != nil {
 						log.Printf("[LoaderNode Worker %d] Begin transaction error: %v", index, err)
+						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
 						continue
 					}
 					if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
 						if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
 							log.Printf("[LoaderNode Worker %d] Table creation error: %v", index, err)
+							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
 							continue
 						}
@@ -949,12 +1089,14 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 					})
 					if err != nil {
 						log.Printf("[LoaderNode Worker %d] Batch load error (transaction): %v", index, err)
+						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
 						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 						continue
 					}
 					if err := txnLoader.Commit(storeCtx); err != nil {
 						log.Printf("[LoaderNode Worker %d] Commit error: %v", index, err)
+						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
 						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 						continue
@@ -967,6 +1109,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 					})
 					if err != nil {
 						log.Printf("[LoaderNode Worker %d] Batch load error: %v", index, err)
+						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
 						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
 						continue
@@ -980,6 +1123,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 					if cp > ln.lastCheckpoint {
 						if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
 							log.Printf("[LoaderNode Worker %d] Checkpoint error: %v", index, err)
+							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
 						} else {
 							ln.lastCheckpoint = cp
