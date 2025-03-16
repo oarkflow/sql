@@ -10,14 +10,14 @@ func (l *Lexer) NextToken() Token {
 	var tok Token
 	switch l.ch {
 	case '=':
-		tok = newToken(ASSIGN, l.ch)
+		tok = newToken(ASSIGN, l.ch, l.line, l.column)
 	case '!':
 		if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
 			tok = Token{Type: NOT_EQ, Literal: string(ch) + string(l.ch)}
 		} else {
-			tok = newToken(ILLEGAL, l.ch)
+			tok = newToken(ILLEGAL, l.ch, l.line, l.column)
 		}
 	case '<':
 		if l.peekChar() == '=' {
@@ -25,7 +25,7 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok = Token{Type: LTE, Literal: string(ch) + string(l.ch)}
 		} else {
-			tok = newToken(LT, l.ch)
+			tok = newToken(LT, l.ch, l.line, l.column)
 		}
 	case '>':
 		if l.peekChar() == '=' {
@@ -33,26 +33,26 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 			tok = Token{Type: GTE, Literal: string(ch) + string(l.ch)}
 		} else {
-			tok = newToken(GT, l.ch)
+			tok = newToken(GT, l.ch, l.line, l.column)
 		}
 	case '+':
-		tok = newToken(PLUS, l.ch)
+		tok = newToken(PLUS, l.ch, l.line, l.column)
 	case '-':
-		tok = newToken(MINUS, l.ch)
+		tok = newToken(MINUS, l.ch, l.line, l.column)
 	case '*':
-		tok = newToken(ASTERISK, l.ch)
+		tok = newToken(ASTERISK, l.ch, l.line, l.column)
 	case '/':
-		tok = newToken(SLASH, l.ch)
+		tok = newToken(SLASH, l.ch, l.line, l.column)
 	case ',':
-		tok = newToken(COMMA, l.ch)
+		tok = newToken(COMMA, l.ch, l.line, l.column)
 	case ';':
-		tok = newToken(SEMICOLON, l.ch)
+		tok = newToken(SEMICOLON, l.ch, l.line, l.column)
 	case '(':
-		tok = newToken(LPAREN, l.ch)
+		tok = newToken(LPAREN, l.ch, l.line, l.column)
 	case ')':
-		tok = newToken(RPAREN, l.ch)
+		tok = newToken(RPAREN, l.ch, l.line, l.column)
 	case '?':
-		tok = newToken(PARAM, l.ch)
+		tok = newToken(PARAM, l.ch, l.line, l.column)
 	case '\'':
 		tok.Type = STRING
 		tok.Literal = l.readString()
@@ -78,7 +78,7 @@ func (l *Lexer) NextToken() Token {
 			tok.Literal = num
 			return tok
 		} else {
-			tok = newToken(ILLEGAL, l.ch)
+			tok = newToken(ILLEGAL, l.ch, l.line, l.column)
 		}
 	}
 	l.readChar()
@@ -120,10 +120,17 @@ func (l *Lexer) readString() string {
 	var sb strings.Builder
 	l.readChar()
 	for {
-		if l.ch == 0 || l.ch == '\'' {
+		if l.ch == 0 {
 			break
 		}
-		if l.ch == '\\' {
+		if l.ch == '\'' {
+			if l.peekChar() == '\'' {
+				sb.WriteByte('\'')
+				l.readChar()
+			} else {
+				break
+			}
+		} else if l.ch == '\\' {
 			l.readChar()
 			switch l.ch {
 			case 'n':
@@ -161,10 +168,12 @@ type Lexer struct {
 	position     int
 	readPosition int
 	ch           byte
+	line         int
+	column       int
 }
 
 func NewLexer(input string) *Lexer {
-	l := &Lexer{input: input}
+	l := &Lexer{input: input, line: 1, column: 0}
 	l.readChar()
 	return l
 }
@@ -177,6 +186,12 @@ func (l *Lexer) readChar() {
 	}
 	l.position = l.readPosition
 	l.readPosition++
+	if l.ch == '\n' {
+		l.line++
+		l.column = 0
+	} else {
+		l.column++
+	}
 }
 
 func (l *Lexer) peekChar() byte {
@@ -213,15 +228,32 @@ func (l *Lexer) skipLineComment() {
 func (l *Lexer) skipBlockComment() {
 	l.readChar()
 	l.readChar()
-	for {
+	depth := 1
+	for depth > 0 {
 		if l.ch == 0 {
 			break
+		}
+		if l.ch == '/' && l.peekChar() == '*' {
+			l.readChar()
+			l.readChar()
+			depth++
+			continue
 		}
 		if l.ch == '*' && l.peekChar() == '/' {
 			l.readChar()
 			l.readChar()
-			break
+			depth--
+			continue
 		}
 		l.readChar()
 	}
+}
+
+func (l *Lexer) Reset(input string) {
+	l.input = input
+	l.position = 0
+	l.readPosition = 0
+	l.line = 1
+	l.column = 0
+	l.readChar()
 }

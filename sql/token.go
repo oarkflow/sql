@@ -21,7 +21,7 @@ var (
 		GTE:      5,
 		BETWEEN:  5,
 		LPAREN:   30,
-		// Precedences for IN, LIKE, and NOT.
+
 		IN:   5,
 		LIKE: 5,
 		NOT:  5,
@@ -239,10 +239,23 @@ func lookupKeyword(ident string) TokenType {
 type Token struct {
 	Type    TokenType
 	Literal string
+	Line    int
+	Column  int
 }
 
-func newToken(tokenType TokenType, ch byte) Token {
-	return Token{Type: tokenType, Literal: string(ch)}
+func newToken(tokenType TokenType, ch byte, line int, column int) Token {
+	return Token{Type: tokenType, Literal: string(ch), Line: line, Column: column}
+}
+
+func (t Token) Precedence() int {
+	if p, ok := precedences[t.Type]; ok {
+		return p
+	}
+	return 0
+}
+
+func (t Token) String() string {
+	return fmt.Sprintf("Token(%s, %q, Line: %d, Column: %d)", t.Type, t.Literal, t.Line, t.Column)
 }
 
 func isIdentifierChar(ch byte) bool {
@@ -280,7 +293,6 @@ func getFieldName(expr Expression, index int) string {
 	return fmt.Sprintf("col%d", index)
 }
 
-// sqlDateFormatToGoLayout converts simple SQL date formats to Go layouts.
 func sqlDateFormatToGoLayout(sqlFormat string) string {
 	layout := sqlFormat
 	layout = strings.ReplaceAll(layout, "YYYY", "2006")
