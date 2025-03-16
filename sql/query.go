@@ -197,11 +197,19 @@ func (query *SQL) String() string {
 	return strings.Join(parts, " ")
 }
 
-func loadDataForSubquery() []utils.Record {
-	return []utils.Record{}
-}
-
 func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
+	if rows == nil || len(rows) == 0 {
+        if query.From != nil {
+            var err error
+            rows, err = query.From.loadData()
+            if err != nil {
+                return nil, err
+            }
+        } else {
+            rows = []utils.Record{}
+        }
+    }
+	
 	ctx := NewEvalContext()
 	var filteredRows []utils.Record
 

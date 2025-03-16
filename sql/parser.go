@@ -46,13 +46,8 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 	stmt := &QueryStatement{}
 	if p.curToken.Type == WITH {
 		stmt.With = p.parseWithClause()
-		for p.curToken.Type != SELECT && p.curToken.Type != EOF {
-			p.nextToken()
-		}
-		if p.curToken.Type != SELECT {
-			p.errors = append(p.errors, "SQL must begin with SELECT after WITH clause")
-			return nil
-		}
+		// Advance one token to start parsing the main query
+		p.nextToken()
 	}
 	if p.curToken.Type != SELECT {
 		p.errors = append(p.errors, "SQL must begin with SELECT")
@@ -60,6 +55,19 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 	}
 	query := p.parseSelectQuery()
 	stmt.Query = query
+
+	// If a WITH clause exists, look up a bare identifier in FROM among the CTEs.
+	if stmt.With != nil && stmt.Query.From != nil && stmt.Query.From.Source == "" {
+		for _, cte := range stmt.With.CTEs {
+			if strings.EqualFold(cte.Name, stmt.Query.From.Name) {
+				// Replace the bare table reference with the CTE subquery.
+				stmt.Query.From.Subquery = cte.Query
+				break
+			}
+		}
+	}
+
+	// Handle compound queries if present.
 	if p.peekToken.Type == UNION || p.peekToken.Type == INTERSECT || p.peekToken.Type == EXCEPT {
 		compOp := p.peekToken.Type
 		p.nextToken()
@@ -80,32 +88,44 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 
 func (p *Parser) parseWithClause() *WithClause {
 	withClause := &WithClause{}
-	p.nextToken()
+	p.nextToken() // Consume WITH token
+
 	for {
 		if p.curToken.Type != IDENT {
 			p.errors = append(p.errors, "Expected CTE name, got "+string(p.curToken.Type))
 			return nil
 		}
 		cteName := p.curToken.Literal
+
 		if !p.expectPeek(AS) {
 			return nil
 		}
 		if !p.expectPeek(LPAREN) {
 			return nil
 		}
-		p.nextToken()
-		cteQuery := p.parseSelectQuery()
-		if !p.expectPeek(RPAREN) {
-			p.errors = append(p.errors, "Expected closing parenthesis for CTE")
+		// p.expectPeek(LPAREN) already advanced the token to LPAREN; now move inside.
+		p.nextToken() // Now p.curToken should be the first token of the CTE query
+
+		cteStmt := p.ParseQueryStatement()
+		if cteStmt == nil || cteStmt.Query == nil {
+			p.errors = append(p.errors, "Invalid CTE query for "+cteName)
 			return nil
 		}
-		withClause.CTEs = append(withClause.CTEs, CTE{Name: cteName, Query: cteQuery})
+
+		// After the inner query returns, we expect the next token to be the closing RPAREN.
+		if !p.expectPeek(RPAREN) {
+			p.errors = append(p.errors, "Expected closing parenthesis for CTE "+cteName+", got "+string(p.peekToken.Type)+" instead")
+			return nil
+		}
+		withClause.CTEs = append(withClause.CTEs, CTE{Name: cteName, Query: cteStmt.Query})
+
 		if p.peekToken.Type != COMMA {
 			break
 		}
-		p.nextToken()
-		p.nextToken()
+		p.nextToken() // Consume comma
+		p.nextToken() // Move to the next CTE name
 	}
+
 	return withClause
 }
 
@@ -209,6 +229,52 @@ func (p *Parser) parseSelectExpression() Expression {
 }
 
 func (p *Parser) parseTableReference() *TableReference {
+	// If the current token is an identifier...
+	if p.curToken.Type == IDENT {
+		// Check if it is followed by an LPAREN. If so, it's a function call.
+		if p.peekToken.Type == LPAREN {
+			sourceFunc := strings.ToLower(p.curToken.Literal)
+			if strings.HasPrefix(sourceFunc, "read_") {
+				tr := &TableReference{Source: sourceFunc}
+				// Consume the LPAREN token.
+				if !p.expectPeek(LPAREN) {
+					return nil
+				}
+				// Advance inside the function call.
+				p.nextToken()
+				if p.curToken.Type != STRING {
+					p.errors = append(p.errors, "Data source function expects a string literal argument")
+					return nil
+				}
+				tr.Name = p.curToken.Literal
+				if !p.expectPeek(RPAREN) {
+					return nil
+				}
+				// Check for an alias if present.
+				if p.peekToken.Type == AS {
+					p.nextToken()
+					p.nextToken()
+					if p.curToken.Type == IDENT {
+						tr.Alias = p.curToken.Literal
+					}
+				} else if p.peekToken.Type == IDENT {
+					alias := p.peekToken.Literal
+					if !isReservedAlias(alias) {
+						p.nextToken()
+						tr.Alias = p.curToken.Literal
+					}
+				}
+				return tr
+			} else {
+				// If the function name does not start with "read_", treat it as a CTE reference.
+				return &TableReference{Name: p.curToken.Literal}
+			}
+		} else {
+			// A bare identifier is assumed to be a reference to a CTE.
+			return &TableReference{Name: p.curToken.Literal}
+		}
+	}
+	// If the current token is LPAREN, assume it's a subquery.
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
@@ -237,39 +303,8 @@ func (p *Parser) parseTableReference() *TableReference {
 			return nil
 		}
 	}
-	tr := &TableReference{}
-	sourceFunc := strings.ToLower(p.curToken.Literal)
-	if !strings.HasPrefix(sourceFunc, "read_") {
-		p.errors = append(p.errors, "Table must be specified using a data source function (e.g. read_file, read_db, read_api)")
-		return nil
-	}
-	tr.Source = sourceFunc
-	if !p.expectPeek(LPAREN) {
-		return nil
-	}
-	p.nextToken()
-	if p.curToken.Type != STRING {
-		p.errors = append(p.errors, "Data source function expects a string literal argument")
-		return nil
-	}
-	tr.Name = p.curToken.Literal
-	if !p.expectPeek(RPAREN) {
-		return nil
-	}
-	if p.peekToken.Type == AS {
-		p.nextToken()
-		p.nextToken()
-		if p.curToken.Type == IDENT {
-			tr.Alias = p.curToken.Literal
-		}
-	} else if p.peekToken.Type == IDENT {
-		alias := p.peekToken.Literal
-		if !isReservedAlias(alias) {
-			p.nextToken()
-			tr.Alias = p.curToken.Literal
-		}
-	}
-	return tr
+	p.errors = append(p.errors, "Table must be specified using a data source function (e.g. read_file, read_db, read_api) or as a CTE reference")
+	return nil
 }
 
 func (p *Parser) parseJoinClause() *JoinClause {

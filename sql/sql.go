@@ -88,38 +88,46 @@ func readService(identifier string) ([]utils.Record, error) {
 		return nil, fmt.Errorf("unsupported integration type: %s", integration.Type)
 	}
 }
+func loadDataForSubquery() []utils.Record {
+    // Returning nil signals the subquery to load its own FROM clause.
+    return nil
+}
+
 
 func (tr *TableReference) loadData() ([]utils.Record, error) {
-	if tr.Subquery != nil {
-		return tr.Subquery.executeQuery(loadDataForSubquery())
-	}
-	tableKey := strings.ToLower(tr.Source) + ":" + tr.Name
-	switch strings.ToLower(tr.Source) {
-	case "read_file":
-		fi, err := os.Stat(tr.Name)
-		if err == nil {
-			modTime := fi.ModTime()
-			if entry, exists := tableCache[tableKey]; exists {
-				if entry.modTime.Equal(modTime) {
-					return entry.rows, nil
-				}
-			}
-			rows, err := fileutil.ProcessFile(tr.Name)
-			if err != nil {
-				return nil, err
-			}
-			tableCache[tableKey] = tableCacheEntry{
-				rows:    rows,
-				modTime: modTime,
-			}
-			return rows, nil
-		}
-		return nil, nil
-	case "read_service":
-		return readService(tr.Name)
-	default:
-		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
-	}
+    // If there's a subquery (e.g. a CTE reference), execute it.
+    if tr.Subquery != nil {
+        // Pass nil to signal that the subquery should load its own FROM data.
+        return tr.Subquery.executeQuery(nil)
+    }
+
+    // Otherwise, load data based on the data source.
+    switch strings.ToLower(tr.Source) {
+    case "read_file":
+        fi, err := os.Stat(tr.Name)
+        if err == nil {
+            modTime := fi.ModTime()
+            if entry, exists := tableCache[strings.ToLower(tr.Source)+":"+tr.Name]; exists {
+                if entry.modTime.Equal(modTime) {
+                    return entry.rows, nil
+                }
+            }
+            rows, err := fileutil.ProcessFile(tr.Name)
+            if err != nil {
+                return nil, err
+            }
+            tableCache[strings.ToLower(tr.Source)+":"+tr.Name] = tableCacheEntry{
+                rows:    rows,
+                modTime: modTime,
+            }
+            return rows, nil
+        }
+        return nil, nil
+    case "read_service":
+        return readService(tr.Name)
+    default:
+        return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
+    }
 }
 
 type Node interface {
