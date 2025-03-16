@@ -2,11 +2,14 @@ package config
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	"github.com/oarkflow/json"
 
 	"gopkg.in/yaml.v3"
 )
@@ -87,12 +90,36 @@ type AggregatorConfig struct {
 }
 
 func Load(path string) (*Config, error) {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".yaml":
+		return LoadYaml(path)
+	case ".json":
+		return LoadJson(path)
+	}
+	return nil, errors.New("unsupported file format")
+}
+
+func LoadYaml(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var cfg Config
 	err = yaml.Unmarshal(data, &cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func LoadJson(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	err = json.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err
 	}

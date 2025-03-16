@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -20,6 +18,8 @@ import (
 
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/expr"
+	"github.com/oarkflow/json"
+	"github.com/oarkflow/xid"
 
 	"github.com/oarkflow/etl/pkg/adapters"
 	"github.com/oarkflow/etl/pkg/checkpoints"
@@ -31,6 +31,10 @@ import (
 	"github.com/oarkflow/etl/pkg/utils"
 	"github.com/oarkflow/etl/pkg/utils/sqlutil"
 )
+
+func init() {
+	expr.AddFunction("lookupIn", LookupInGlobal)
+}
 
 type LifecycleHooks struct {
 	BeforeExtract   func(ctx context.Context) error
@@ -48,40 +52,6 @@ type Validations struct {
 	ValidateAfterExtract  func(ctx context.Context, recordCount int) error
 	ValidateBeforeLoad    func(ctx context.Context, batch []utils.Record) error
 	ValidateAfterLoad     func(ctx context.Context, batch []utils.Record) error
-}
-
-type Event struct {
-	Name    string
-	Payload interface{}
-}
-
-type EventHandler func(Event)
-
-type EventBus struct {
-	handlers map[string][]EventHandler
-	mu       sync.RWMutex
-}
-
-func NewEventBus() *EventBus {
-	return &EventBus{
-		handlers: make(map[string][]EventHandler),
-	}
-}
-
-func (eb *EventBus) Subscribe(eventName string, handler EventHandler) {
-	eb.mu.Lock()
-	defer eb.mu.Unlock()
-	eb.handlers[eventName] = append(eb.handlers[eventName], handler)
-}
-
-func (eb *EventBus) Publish(eventName string, payload interface{}) {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-	if hs, ok := eb.handlers[eventName]; ok {
-		for _, h := range hs {
-			go h(Event{Name: eventName, Payload: payload})
-		}
-	}
 }
 
 type Plugin interface {
@@ -108,6 +78,8 @@ func Shutdown(cancel context.CancelFunc) {
 }
 
 type ETL struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
 	sources         []contracts.Source
 	mappers         []contracts.Mapper
 	transformers    []contracts.Transformer
@@ -115,6 +87,7 @@ type ETL struct {
 	lookups         []contracts.LookupLoader
 	checkpointStore contracts.CheckpointStore
 	circuitBreaker  *transactions.CircuitBreaker
+	tableCfg        config.TableMapping
 	workerCount     int
 	loaderWorkers   int
 	batchSize       int
@@ -159,8 +132,10 @@ func defaultConfig() *ETL {
 	}
 }
 
-func NewETL(opts ...Option) *ETL {
+func NewETL(id, name string, opts ...Option) *ETL {
 	e := defaultConfig()
+	e.ID = id
+	e.Name = name
 	for _, opt := range opts {
 		if err := opt(e); err != nil {
 			log.Printf("Error applying option: %v", err)
@@ -174,6 +149,10 @@ func NewETL(opts ...Option) *ETL {
 		}
 	}
 	return e
+}
+
+func (e *ETL) SetTableConfig(tableCfg config.TableMapping) {
+	e.tableCfg = tableCfg
 }
 
 func Run(cfg *config.Config, options ...Option) error {
@@ -300,7 +279,6 @@ func Run(cfg *config.Config, options ...Option) error {
 			}
 			opts = append(opts, WithDeduplication(cfg.Deduplication.Field))
 		}
-
 		if tableCfg.NormalizeSchema != nil {
 			opts = append(opts, WithNormalizeSchema(tableCfg.NormalizeSchema))
 		}
@@ -326,8 +304,8 @@ func Run(cfg *config.Config, options ...Option) error {
 				tableCfg.ValueField,
 			))
 		}
-		etlJob := NewETL(opts...)
-		go etlJob.StartDashboard(":8080")
+		id := xid.New().String()
+		etlJob := NewETL(id, id, opts...)
 		var lookups []contracts.LookupLoader
 		if len(cfg.Lookups) > 0 {
 			for _, lkup := range cfg.Lookups {
@@ -351,7 +329,6 @@ func Run(cfg *config.Config, options ...Option) error {
 			}
 		}
 		etlJob.lookups = append(etlJob.lookups, lookups...)
-		expr.AddFunction("lookupIn", etlJob.lookupIn)
 		for _, loader := range etlJob.loaders {
 			err = loader.Setup(ctx)
 			if err != nil {
@@ -359,8 +336,9 @@ func Run(cfg *config.Config, options ...Option) error {
 				return err
 			}
 		}
+		etlJob.SetTableConfig(tableCfg)
 		log.Printf("Starting migration: %s -> %s", tableCfg.OldName, tableCfg.NewName)
-		if err := etlJob.Run(ctx, tableCfg); err != nil {
+		if err := etlJob.Run(ctx); err != nil {
 			log.Printf("ETL DAG job failed: %v", err)
 			return err
 		}
@@ -445,7 +423,7 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 	return records, nil
 }
 
-func (e *ETL) Run(ctx context.Context, tableCfg config.TableMapping) error {
+func (e *ETL) Run(ctx context.Context) error {
 	if e.streamingMode {
 		log.Println("[ETL] Streaming mode is enabled.")
 	}
@@ -456,28 +434,10 @@ func (e *ETL) Run(ctx context.Context, tableCfg config.TableMapping) error {
 	if e.pipelineConfig == nil {
 		e.pipelineConfig = e.buildDefaultPipeline()
 	}
-	err := e.runPipeline(ctx, e.pipelineConfig, tableCfg)
+	err := e.runPipeline(ctx, e.pipelineConfig)
 	elapsed := time.Since(overallStart)
 	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
 	return err
-}
-
-func (e *ETL) StartDashboard(addr string) {
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != e.dashboardUser || pass != e.dashboardPass {
-			w.Header().Set("WWW-Authenticate", `Basic realm="ETL Dashboard"`)
-			http.Error(w, "Unauthorized.", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		data, _ := json.MarshalIndent(e.GetMetrics(), "", "  ")
-		w.Write(data)
-	})
-	log.Printf("Starting dashboard on %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Printf("Dashboard server error: %v", err)
-	}
 }
 
 func (e *ETL) GetMetrics() Metrics {
@@ -487,6 +447,97 @@ func (e *ETL) GetMetrics() Metrics {
 		Transformed: atomic.LoadInt64(&e.metrics.Transformed),
 		Loaded:      atomic.LoadInt64(&e.metrics.Loaded),
 		Errors:      atomic.LoadInt64(&e.metrics.Errors),
+	}
+}
+
+func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
+	var wg sync.WaitGroup
+	out := make(chan utils.Record)
+	output := func(c <-chan utils.Record) {
+		for rec := range c {
+			out <- rec
+		}
+		wg.Done()
+	}
+	wg.Add(len(channels))
+	for _, c := range channels {
+		go output(c)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
+}
+
+func (e *ETL) StreamingMode() bool {
+	return e.streamingMode
+}
+
+func (e *ETL) DistributedMode() bool {
+	return e.distributedMode
+}
+
+func (e *ETL) EventBus() *EventBus {
+	return e.eventBus
+}
+
+func (e *ETL) buildDefaultPipeline() *PipelineConfig {
+	nodes := map[string]contracts.Node{
+		"source": &SourceNode{
+			sources:       e.sources,
+			rawChanBuffer: e.rawChanBuffer,
+			hooks:         e.hooks,
+			validations:   e.validations,
+			eventBus:      e.eventBus,
+			metrics:       e.metrics,
+		},
+		"normalize": &NormalizeNode{
+			schema:      e.normalizeSchema,
+			workerCount: e.workerCount,
+		},
+		"map": &MapNode{
+			mappers:     e.mappers,
+			workerCount: e.workerCount,
+			hooks:       e.hooks,
+			eventBus:    e.eventBus,
+			metrics:     e.metrics,
+		},
+		"transform": &TransformNode{
+			transformers: e.transformers,
+			workerCount:  e.workerCount,
+			hooks:        e.hooks,
+			eventBus:     e.eventBus,
+			metrics:      e.metrics,
+		},
+		"load": &LoaderNode{
+			loaders:         e.loaders,
+			workerCount:     e.loaderWorkers,
+			batchSize:       e.batchSize,
+			retryCount:      e.retryCount,
+			retryDelay:      e.retryDelay,
+			circuitBreaker:  e.circuitBreaker,
+			checkpointStore: e.checkpointStore,
+			checkpointFunc:  e.checkpointFunc,
+			cpMutex:         &e.cpMutex,
+			lastCheckpoint:  e.lastCheckpoint,
+			hooks:           e.hooks,
+			validations:     e.validations,
+			eventBus:        e.eventBus,
+			dedupEnabled:    e.dedupEnabled,
+			dedupField:      e.dedupField,
+			metrics:         e.metrics,
+		},
+	}
+	edges := []dagEdge{
+		{Source: "source", Target: "normalize"},
+		{Source: "normalize", Target: "map"},
+		{Source: "map", Target: "transform"},
+		{Source: "transform", Target: "load"},
+	}
+	return &PipelineConfig{
+		Nodes: nodes,
+		Edges: edges,
 	}
 }
 
@@ -953,7 +1004,7 @@ type PipelineConfig struct {
 	Edges []dagEdge
 }
 
-func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, tableCfg config.TableMapping) error {
+func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
 	nodes := make(map[string]*dagNode)
 	for id, node := range pc.Nodes {
 		nodes[id] = &dagNode{
@@ -984,7 +1035,7 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, tableCfg conf
 		} else {
 			input = mergeChannels(currentNode.inChs)
 		}
-		outCh, err := currentNode.pn.Process(ctx, input, tableCfg)
+		outCh, err := currentNode.pn.Process(ctx, input, e.tableCfg)
 		if err != nil {
 			return fmt.Errorf("error running node %s: %v", currentID, err)
 		}
@@ -1005,130 +1056,4 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, tableCfg conf
 		}
 	}
 	return nil
-}
-
-func mergeChannels(channels []<-chan utils.Record) <-chan utils.Record {
-	var wg sync.WaitGroup
-	out := make(chan utils.Record)
-	output := func(c <-chan utils.Record) {
-		for rec := range c {
-			out <- rec
-		}
-		wg.Done()
-	}
-	wg.Add(len(channels))
-	for _, c := range channels {
-		go output(c)
-	}
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-	return out
-}
-
-func (e *ETL) buildDefaultPipeline() *PipelineConfig {
-	nodes := map[string]contracts.Node{
-		"source": &SourceNode{
-			sources:       e.sources,
-			rawChanBuffer: e.rawChanBuffer,
-			hooks:         e.hooks,
-			validations:   e.validations,
-			eventBus:      e.eventBus,
-			metrics:       e.metrics,
-		},
-		"normalize": &NormalizeNode{
-			schema:      e.normalizeSchema,
-			workerCount: e.workerCount,
-		},
-		"map": &MapNode{
-			mappers:     e.mappers,
-			workerCount: e.workerCount,
-			hooks:       e.hooks,
-			eventBus:    e.eventBus,
-			metrics:     e.metrics,
-		},
-		"transform": &TransformNode{
-			transformers: e.transformers,
-			workerCount:  e.workerCount,
-			hooks:        e.hooks,
-			eventBus:     e.eventBus,
-			metrics:      e.metrics,
-		},
-		"load": &LoaderNode{
-			loaders:         e.loaders,
-			workerCount:     e.loaderWorkers,
-			batchSize:       e.batchSize,
-			retryCount:      e.retryCount,
-			retryDelay:      e.retryDelay,
-			circuitBreaker:  e.circuitBreaker,
-			checkpointStore: e.checkpointStore,
-			checkpointFunc:  e.checkpointFunc,
-			cpMutex:         &e.cpMutex,
-			lastCheckpoint:  e.lastCheckpoint,
-			hooks:           e.hooks,
-			validations:     e.validations,
-			eventBus:        e.eventBus,
-			dedupEnabled:    e.dedupEnabled,
-			dedupField:      e.dedupField,
-			metrics:         e.metrics,
-		},
-	}
-	edges := []dagEdge{
-		{Source: "source", Target: "normalize"},
-		{Source: "normalize", Target: "map"},
-		{Source: "map", Target: "transform"},
-		{Source: "transform", Target: "load"},
-	}
-	return &PipelineConfig{
-		Nodes: nodes,
-		Edges: edges,
-	}
-}
-
-func (e *ETL) lookupIn(args ...any) (any, error) {
-	if len(args) != 4 {
-		return nil, fmt.Errorf("lookupIn requires exactly 4 arguments")
-	}
-	datasetKey, ok := args[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("lookupIn: first argument must be string (lookup dataset key)")
-	}
-	lookupField, ok := args[1].(string)
-	if !ok {
-		return nil, fmt.Errorf("lookupIn: second argument must be string (lookup field name)")
-	}
-	sourceValStr := fmt.Sprintf("%v", args[2])
-	targetField, ok := args[3].(string)
-	if !ok {
-		return nil, fmt.Errorf("lookupIn: fourth argument must be string (target field name)")
-	}
-	cacheKey := datasetKey + ":" + lookupField + ":" + sourceValStr + ":" + targetField
-	if cached, found := e.lookupInCache.Load(cacheKey); found {
-		return cached, nil
-	}
-	dataset, exists := e.lookupStore[datasetKey]
-	if !exists {
-		return nil, fmt.Errorf("lookupIn: no lookup dataset found for key %s", datasetKey)
-	}
-	for _, row := range dataset {
-		if fmt.Sprintf("%v", row[lookupField]) == sourceValStr {
-			result := row[targetField]
-			e.lookupInCache.Store(cacheKey, result)
-			return result, nil
-		}
-	}
-	return nil, fmt.Errorf("lookupIn: no matching value for %s in dataset %s", sourceValStr, datasetKey)
-}
-
-func (e *ETL) StreamingMode() bool {
-	return e.streamingMode
-}
-
-func (e *ETL) DistributedMode() bool {
-	return e.distributedMode
-}
-
-func (e *ETL) EventBus() *EventBus {
-	return e.eventBus
 }

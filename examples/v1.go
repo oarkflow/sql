@@ -25,7 +25,7 @@ func main() {
 }
 
 func RunETL(configPath string) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadYaml(configPath)
 	if err != nil {
 		log.Printf("Error loading config: %v", err)
 		return err
