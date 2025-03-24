@@ -1,20 +1,23 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/date"
-	"github.com/oarkflow/json"
 )
 
+// Data type mappings for different drivers.
 var (
 	mysqlDataTypes = map[string]string{
 		"int64":       "BIGINT",
@@ -74,14 +77,16 @@ var (
 	}
 )
 
+// FieldSchema holds the detected schema for a field.
 type FieldSchema struct {
-	FieldName       string
-	DataType        string
-	IsNullable      bool
-	IsPrimaryKey    bool
-	MaxStringLength int
+	FieldName       string `json:"field_name"`
+	DataType        string `json:"data_type"`
+	IsNullable      bool   `json:"is_nullable"`
+	IsPrimaryKey    bool   `json:"is_primary_key"`
+	MaxStringLength int    `json:"max_string_length"`
 }
 
+// FieldStats aggregates statistics and heuristics for a field.
 type FieldStats struct {
 	countNonNull         int
 	nullable             bool
@@ -103,6 +108,12 @@ type FieldStats struct {
 	stringAsDateCount    int
 	stringAsJsonCount    int
 	stringAsUUIDCount    int
+	mu                   sync.Mutex // protect concurrent updates
+}
+
+// Logging helper for warnings and errors.
+func warnf(format string, args ...interface{}) {
+	log.Printf("[WARN] "+format, args...)
 }
 
 func dereference(value any) any {
@@ -182,7 +193,6 @@ func isJSONString(s string) bool {
 	}
 	if (s[start] == '{' && s[end] == '}') || (s[start] == '[' && s[end] == ']') {
 		var js interface{}
-
 		if err := json.Unmarshal([]byte(s[start:end+1]), &js); err == nil {
 			return true
 		}
@@ -201,6 +211,8 @@ func isStringUUID(s string) bool {
 }
 
 func updateNumericRange(stats *FieldStats, num float64) {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
 	if !stats.numericInitialized {
 		stats.minNumeric = num
 		stats.maxNumeric = num
@@ -225,177 +237,258 @@ func updateSchema(schema map[string]FieldSchema, field, finalType string, stats 
 	}
 }
 
+// DetectSchema processes the sample data concurrently to detect field schemas.
 func DetectSchema(data []map[string]any, sampleSize int) map[string]FieldSchema {
+	schema := make(map[string]FieldSchema)
+	fieldStats := make(map[string]*FieldStats)
+	var mu sync.Mutex
 
-	var schema map[string]FieldSchema
-	if len(data) > 0 {
-		schema = make(map[string]FieldSchema, len(data[0]))
-	} else {
-		schema = make(map[string]FieldSchema)
-	}
-	fieldStats := make(map[string]*FieldStats, len(schema))
+	// Determine effective sample size.
 	totalSize := len(data)
 	if sampleSize > totalSize {
 		sampleSize = totalSize
 	}
-	for i := 0; i < sampleSize; i++ {
-		row := data[i]
-		for key, origValue := range row {
-			value := dereference(origValue)
-			if _, ok := fieldStats[key]; !ok {
-				fieldStats[key] = &FieldStats{
-					uniqueValues:       make(map[string]bool, sampleSize),
-					typeCounts:         make(map[string]int, 8),
-					numericAllIntegral: true,
-				}
-			}
-			stats := fieldStats[key]
 
-			valStr := fastString(value)
-			if value != nil {
-				if stats.uniqueValues[valStr] {
-					stats.duplicateFound = true
-				} else {
-					stats.uniqueValues[valStr] = true
+	workerCount := 4
+	rowsCh := make(chan map[string]any, sampleSize)
+	var wg sync.WaitGroup
+
+	// Worker function to update fieldStats concurrently.
+	worker := func() {
+		defer wg.Done()
+		for row := range rowsCh {
+			for key, origValue := range row {
+				value := dereference(origValue)
+				mu.Lock()
+				stats, exists := fieldStats[key]
+				if !exists {
+					stats = &FieldStats{
+						uniqueValues:       make(map[string]bool, sampleSize),
+						typeCounts:         make(map[string]int),
+						numericAllIntegral: true,
+					}
+					fieldStats[key] = stats
 				}
-			}
-			if value == nil {
-				stats.nullable = true
-				continue
-			}
-			stats.countNonNull++
-			switch v := value.(type) {
-			case json.RawMessage:
-				stats.typeCounts["json"]++
-			case []byte:
-				stats.typeCounts["bytes"]++
-			case int, int8, int16, int32, int64:
-				stats.typeCounts["int"]++
-				stats.hasNumeric = true
-				var num float64
-				switch t := v.(type) {
-				case int:
-					num = float64(t)
-				case int8:
-					num = float64(t)
-				case int16:
-					num = float64(t)
-				case int32:
-					num = float64(t)
-				case int64:
-					num = float64(t)
+				mu.Unlock()
+
+				valStr := fastString(value)
+				stats.mu.Lock()
+				if value != nil {
+					if stats.uniqueValues[valStr] {
+						stats.duplicateFound = true
+					} else {
+						stats.uniqueValues[valStr] = true
+					}
 				}
-				updateNumericRange(stats, num)
-			case uint, uint8, uint16, uint32, uint64:
-				stats.typeCounts["int"]++
-				stats.hasNumeric = true
-				var num float64
-				switch t := v.(type) {
-				case uint:
-					num = float64(t)
-				case uint8:
-					num = float64(t)
-				case uint16:
-					num = float64(t)
-				case uint32:
-					num = float64(t)
-				case uint64:
-					num = float64(t)
+				stats.mu.Unlock()
+
+				if value == nil {
+					stats.mu.Lock()
+					stats.nullable = true
+					stats.mu.Unlock()
+					continue
 				}
-				updateNumericRange(stats, num)
-			case float32:
-				f := float64(v)
-				stats.hasNumeric = true
-				if f != math.Trunc(f) {
-					stats.numericAllIntegral = false
-					stats.typeCounts["float"]++
-				} else {
+				stats.mu.Lock()
+				stats.countNonNull++
+				stats.mu.Unlock()
+				switch v := value.(type) {
+				case json.RawMessage:
+					stats.mu.Lock()
+					stats.typeCounts["json"]++
+					stats.mu.Unlock()
+				case []byte:
+					stats.mu.Lock()
+					stats.typeCounts["bytes"]++
+					stats.mu.Unlock()
+				case int, int8, int16, int32, int64:
+					stats.mu.Lock()
 					stats.typeCounts["int"]++
-				}
-				updateNumericRange(stats, f)
-			case float64:
-				f := v
-				stats.hasNumeric = true
-				if f != math.Trunc(f) {
-					stats.numericAllIntegral = false
-					stats.typeCounts["float"]++
-				} else {
+					stats.hasNumeric = true
+					stats.mu.Unlock()
+					var num float64
+					switch t := v.(type) {
+					case int:
+						num = float64(t)
+					case int8:
+						num = float64(t)
+					case int16:
+						num = float64(t)
+					case int32:
+						num = float64(t)
+					case int64:
+						num = float64(t)
+					}
+					updateNumericRange(stats, num)
+				case uint, uint8, uint16, uint32, uint64:
+					stats.mu.Lock()
 					stats.typeCounts["int"]++
-				}
-				updateNumericRange(stats, f)
-			case json.Number:
-				stats.typeCounts["json.Number"]++
-				stats.hasNumeric = true
-				if i, err := v.Int64(); err == nil {
-					updateNumericRange(stats, float64(i))
-				} else if f, err := v.Float64(); err == nil {
+					stats.hasNumeric = true
+					stats.mu.Unlock()
+					var num float64
+					switch t := v.(type) {
+					case uint:
+						num = float64(t)
+					case uint8:
+						num = float64(t)
+					case uint16:
+						num = float64(t)
+					case uint32:
+						num = float64(t)
+					case uint64:
+						num = float64(t)
+					}
+					updateNumericRange(stats, num)
+				case float32:
+					f := float64(v)
+					stats.mu.Lock()
+					stats.hasNumeric = true
 					if f != math.Trunc(f) {
 						stats.numericAllIntegral = false
 						stats.typeCounts["float"]++
 					} else {
 						stats.typeCounts["int"]++
 					}
+					stats.mu.Unlock()
 					updateNumericRange(stats, f)
-				}
-			case bool:
-				stats.typeCounts["bool"]++
-			case time.Time:
-				stats.typeCounts["time"]++
-			case complex64, complex128:
-				stats.typeCounts["complex"]++
-			case string:
-				stats.typeCounts["string"]++
-				stats.totalStringCount++
-				if len(v) > stats.maxStringLength {
-					stats.maxStringLength = len(v)
-				}
-				if isStringTime(v) {
-					stats.stringAsTimeCount++
-				}
-				if isStringDate(v) {
-					stats.stringAsDateCount++
-				}
-				if isStringComplex(v) {
-					stats.stringAsComplexCount++
-				}
-				if ok, _ := isStringBool(v); ok {
-					stats.stringAsBoolCount++
-				}
-				if isJSONString(v) {
-					stats.stringAsJsonCount++
-				}
-				if isStringUUID(v) {
-					stats.stringAsUUIDCount++
-				}
-				if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-					stats.stringAsIntCount++
+				case float64:
+					f := v
+					stats.mu.Lock()
 					stats.hasNumeric = true
-					updateNumericRange(stats, float64(i))
-				} else if f, err := strconv.ParseFloat(v, 64); err == nil {
 					if f != math.Trunc(f) {
-						stats.stringAsFloatCount++
 						stats.numericAllIntegral = false
+						stats.typeCounts["float"]++
 					} else {
-						stats.stringAsIntCount++
+						stats.typeCounts["int"]++
 					}
-					stats.hasNumeric = true
+					stats.mu.Unlock()
 					updateNumericRange(stats, f)
-				}
-			default:
-				rv := reflect.ValueOf(v)
-				switch rv.Kind() {
-				case reflect.Slice, reflect.Array:
-					stats.typeCounts["slice"]++
-				case reflect.Map:
-					stats.typeCounts["map"]++
-				case reflect.Struct:
-					stats.typeCounts["struct"]++
+				case json.Number:
+					stats.mu.Lock()
+					stats.typeCounts["json.Number"]++
+					stats.hasNumeric = true
+					stats.mu.Unlock()
+					if i, err := v.Int64(); err == nil {
+						updateNumericRange(stats, float64(i))
+					} else if f, err := v.Float64(); err == nil {
+						stats.mu.Lock()
+						if f != math.Trunc(f) {
+							stats.numericAllIntegral = false
+							stats.typeCounts["float"]++
+						} else {
+							stats.typeCounts["int"]++
+						}
+						stats.mu.Unlock()
+						updateNumericRange(stats, f)
+					} else {
+						warnf("Failed to parse json.Number: %v", v)
+					}
+				case bool:
+					stats.mu.Lock()
+					stats.typeCounts["bool"]++
+					stats.mu.Unlock()
+				case time.Time:
+					stats.mu.Lock()
+					stats.typeCounts["time"]++
+					stats.mu.Unlock()
+				case complex64, complex128:
+					stats.mu.Lock()
+					stats.typeCounts["complex"]++
+					stats.mu.Unlock()
+				case string:
+					stats.mu.Lock()
+					stats.typeCounts["string"]++
+					stats.totalStringCount++
+					if len(v) > stats.maxStringLength {
+						stats.maxStringLength = len(v)
+					}
+					stats.mu.Unlock()
+					if isStringTime(v) {
+						stats.mu.Lock()
+						stats.stringAsTimeCount++
+						stats.mu.Unlock()
+					}
+					if isStringDate(v) {
+						stats.mu.Lock()
+						stats.stringAsDateCount++
+						stats.mu.Unlock()
+					}
+					if isStringComplex(v) {
+						stats.mu.Lock()
+						stats.stringAsComplexCount++
+						stats.mu.Unlock()
+					}
+					if ok, _ := isStringBool(v); ok {
+						stats.mu.Lock()
+						stats.stringAsBoolCount++
+						stats.mu.Unlock()
+					}
+					if isJSONString(v) {
+						stats.mu.Lock()
+						stats.stringAsJsonCount++
+						stats.mu.Unlock()
+					}
+					if isStringUUID(v) {
+						stats.mu.Lock()
+						stats.stringAsUUIDCount++
+						stats.mu.Unlock()
+					}
+					if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+						stats.mu.Lock()
+						stats.stringAsIntCount++
+						stats.hasNumeric = true
+						stats.mu.Unlock()
+						updateNumericRange(stats, float64(i))
+					} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+						stats.mu.Lock()
+						if f != math.Trunc(f) {
+							stats.stringAsFloatCount++
+							stats.numericAllIntegral = false
+						} else {
+							stats.stringAsIntCount++
+						}
+						stats.hasNumeric = true
+						stats.mu.Unlock()
+						updateNumericRange(stats, f)
+					}
 				default:
-					stats.typeCounts[reflect.TypeOf(v).String()]++
+					rv := reflect.ValueOf(v)
+					switch rv.Kind() {
+					case reflect.Slice, reflect.Array:
+						stats.mu.Lock()
+						stats.typeCounts["slice"]++
+						stats.mu.Unlock()
+					case reflect.Map:
+						stats.mu.Lock()
+						stats.typeCounts["map"]++
+						stats.mu.Unlock()
+					case reflect.Struct:
+						stats.mu.Lock()
+						stats.typeCounts["struct"]++
+						stats.mu.Unlock()
+					default:
+						stats.mu.Lock()
+						stats.typeCounts[reflect.TypeOf(v).String()]++
+						stats.mu.Unlock()
+					}
 				}
 			}
 		}
 	}
+
+	// Start worker goroutines.
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
+	}
+
+	// Feed the rows into the channel.
+	for i := 0; i < sampleSize; i++ {
+		rowsCh <- data[i]
+	}
+	close(rowsCh)
+	wg.Wait()
+
+	// Now decide on the final type for each field.
 	for field, stats := range fieldStats {
 		finalType := "unknown"
 		total := stats.countNonNull
@@ -455,12 +548,13 @@ func DetectSchema(data []map[string]any, sampleSize int) map[string]FieldSchema 
 	return schema
 }
 
+// SetPrimaryKey marks the given keys as primary keys.
 func SetPrimaryKey(schema map[string]FieldSchema, keys ...string) map[string]FieldSchema {
 	if len(keys) == 0 {
 		return schema
 	}
 	for field, s := range schema {
-		if slices.Contains(keys, field) {
+		if contains(keys, field) {
 			s.IsPrimaryKey = true
 		} else {
 			s.IsPrimaryKey = false
@@ -470,12 +564,13 @@ func SetPrimaryKey(schema map[string]FieldSchema, keys ...string) map[string]Fie
 	return schema
 }
 
+// SetNullable sets fields as nullable.
 func SetNullable(schema map[string]FieldSchema, keys ...string) map[string]FieldSchema {
 	if len(keys) == 0 {
 		return schema
 	}
 	for field, s := range schema {
-		if slices.Contains(keys, field) {
+		if contains(keys, field) {
 			s.IsNullable = true
 		}
 		schema[field] = s
@@ -483,6 +578,16 @@ func SetNullable(schema map[string]FieldSchema, keys ...string) map[string]Field
 	return schema
 }
 
+func contains(arr []string, s string) bool {
+	for _, a := range arr {
+		if a == s {
+			return true
+		}
+	}
+	return false
+}
+
+// MapDataTypeToDBType maps the detected type to a database-specific type.
 func MapDataTypeToDBType(field FieldSchema, driver string) string {
 	var mapping map[string]string
 	switch driver {
@@ -509,6 +614,7 @@ func MapDataTypeToDBType(field FieldSchema, driver string) string {
 	return "TEXT"
 }
 
+// Data generation helper.
 var names = []string{"Alice", "Bob", "Charlie", "David", "Eve"}
 
 func generateRandomRow(i int) map[string]any {
@@ -556,27 +662,43 @@ func generateRandomRow(i int) map[string]any {
 }
 
 func main() {
+	// Command-line flags for configuration.
+	var (
+		totalRows  = flag.Int("rows", 1000000, "Total number of rows to generate")
+		sampleSize = flag.Int("sample", 100, "Sample size for schema detection")
+		driver     = flag.String("driver", "postgres", "Database driver (mysql, postgres, sqlite)")
+		outJSON    = flag.Bool("json", false, "Output schema as JSON")
+	)
+	flag.Parse()
+
 	rand.Seed(time.Now().UnixNano())
-	totalRows := 1000000
-	data := make([]map[string]any, totalRows)
-	fmt.Printf("Generating %d rows of data...\n", totalRows)
-	for i := 0; i < totalRows; i++ {
+	data := make([]map[string]any, *totalRows)
+	fmt.Printf("Generating %d rows of data...\n", *totalRows)
+	for i := 0; i < *totalRows; i++ {
 		data[i] = generateRandomRow(i)
 	}
+	// Shuffle the rows to randomize the sample.
 	rand.Shuffle(len(data), func(i, j int) {
 		data[i], data[j] = data[j], data[i]
 	})
-	sampleSize := 100
-	sampleData := data[:sampleSize]
-	fmt.Printf("Detecting schema based on a random sample of %d rows...\n", sampleSize)
-	schema := DetectSchema(sampleData, sampleSize)
+	fmt.Printf("Detecting schema based on a random sample of %d rows...\n", *sampleSize)
+	schema := DetectSchema(data, *sampleSize)
 	schema = SetPrimaryKey(schema, "id")
 	schema = SetNullable(schema, "rating")
-	driver := "postgres"
-	fmt.Printf("Mapping types for driver: %s\n", driver)
-	for _, field := range schema {
-		dbType := MapDataTypeToDBType(field, driver)
-		fmt.Printf("Field: %-15s GoType: %-10s Nullable: %-5v PrimaryKey: %-5v MaxStrLen: %-4d -> DB Type: %s\n",
-			field.FieldName, field.DataType, field.IsNullable, field.IsPrimaryKey, field.MaxStringLength, dbType)
+
+	// Map the Go types to database types.
+	if *outJSON {
+		out, err := json.MarshalIndent(schema, "", "  ")
+		if err != nil {
+			log.Fatalf("Failed to marshal schema: %v", err)
+		}
+		fmt.Println(string(out))
+	} else {
+		fmt.Printf("Mapping types for driver: %s\n", *driver)
+		for _, field := range schema {
+			dbType := MapDataTypeToDBType(field, *driver)
+			fmt.Printf("Field: %-15s GoType: %-10s Nullable: %-5v PrimaryKey: %-5v MaxStrLen: %-4d -> DB Type: %s\n",
+				field.FieldName, field.DataType, field.IsNullable, field.IsPrimaryKey, field.MaxStringLength, dbType)
+		}
 	}
 }
