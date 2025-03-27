@@ -15,6 +15,7 @@ import (
 
 	"github.com/oarkflow/expr"
 	"github.com/oarkflow/json"
+	"github.com/oarkflow/transaction"
 
 	"github.com/oarkflow/etl/pkg/adapters"
 	"github.com/oarkflow/etl/pkg/config"
@@ -1102,7 +1103,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 						continue
 					}
 				} else {
-					err := transactions.RunInTransaction(storeCtx, func(tx *transactions.Transaction) error {
+					err := transaction.RunInTransaction(storeCtx, func(tx *transaction.Transaction) error {
 						return transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
 							return loader.StoreBatch(storeCtx, batch)
 						})
