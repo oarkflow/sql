@@ -77,13 +77,17 @@ var (
 	}
 )
 
+var globalWorkerCount int = 4
+
 // FieldSchema holds the detected schema for a field.
 type FieldSchema struct {
-	FieldName       string `json:"field_name"`
-	DataType        string `json:"data_type"`
-	IsNullable      bool   `json:"is_nullable"`
-	IsPrimaryKey    bool   `json:"is_primary_key"`
-	MaxStringLength int    `json:"max_string_length"`
+	FieldName       string  `json:"field_name"`
+	DataType        string  `json:"data_type"`
+	IsNullable      bool    `json:"is_nullable"`
+	IsPrimaryKey    bool    `json:"is_primary_key"`
+	MaxStringLength int     `json:"max_string_length"`
+	MinValue        float64 `json:"min_value,omitempty"`
+	MaxValue        float64 `json:"max_value,omitempty"`
 }
 
 // FieldStats aggregates statistics and heuristics for a field.
@@ -228,12 +232,19 @@ func updateNumericRange(stats *FieldStats, num float64) {
 }
 
 func updateSchema(schema map[string]FieldSchema, field, finalType string, stats *FieldStats) {
+	minVal, maxVal := 0.0, 0.0
+	if stats.hasNumeric && stats.numericInitialized {
+		minVal = stats.minNumeric
+		maxVal = stats.maxNumeric
+	}
 	schema[field] = FieldSchema{
 		FieldName:       field,
 		DataType:        finalType,
 		IsNullable:      stats.nullable,
 		IsPrimaryKey:    false,
 		MaxStringLength: stats.maxStringLength,
+		MinValue:        minVal,
+		MaxValue:        maxVal,
 	}
 }
 
@@ -249,7 +260,7 @@ func DetectSchema(data []map[string]any, sampleSize int) map[string]FieldSchema 
 		sampleSize = totalSize
 	}
 
-	workerCount := 4
+	workerCount := globalWorkerCount
 	rowsCh := make(chan map[string]any, sampleSize)
 	var wg sync.WaitGroup
 
@@ -664,12 +675,17 @@ func generateRandomRow(i int) map[string]any {
 func main() {
 	// Command-line flags for configuration.
 	var (
-		totalRows  = flag.Int("rows", 1000000, "Total number of rows to generate")
-		sampleSize = flag.Int("sample", 100, "Sample size for schema detection")
-		driver     = flag.String("driver", "postgres", "Database driver (mysql, postgres, sqlite)")
-		outJSON    = flag.Bool("json", false, "Output schema as JSON")
+		totalRows   = flag.Int("rows", 1000000, "Total number of rows to generate")
+		sampleSize  = flag.Int("sample", 100, "Sample size for schema detection")
+		driver      = flag.String("driver", "postgres", "Database driver (mysql, postgres, sqlite)")
+		outJSON     = flag.Bool("json", false, "Output schema as JSON")
+		flagWorkers = flag.Int("workers", 4, "Number of concurrent workers for schema detection")
+		tableName   = flag.String("table", "my_table", "Name of the table to generate SQL for")
+		createSQL   = flag.Bool("createSQL", true, "Output CREATE TABLE SQL statement")
 	)
 	flag.Parse()
+	// Set the global worker count.
+	globalWorkerCount = *flagWorkers
 
 	rand.Seed(time.Now().UnixNano())
 	data := make([]map[string]any, *totalRows)
@@ -693,6 +709,29 @@ func main() {
 			log.Fatalf("Failed to marshal schema: %v", err)
 		}
 		fmt.Println(string(out))
+	} else if *createSQL {
+		// Generate CREATE TABLE SQL statement.
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", *tableName))
+		first := true
+		for _, field := range schema {
+			if !first {
+				sb.WriteString(",\n")
+			}
+			first = false
+			dbType := MapDataTypeToDBType(field, *driver)
+			nullStr := "NOT NULL"
+			if field.IsNullable {
+				nullStr = ""
+			}
+			pkStr := ""
+			if field.IsPrimaryKey {
+				pkStr = " PRIMARY KEY"
+			}
+			sb.WriteString(fmt.Sprintf("    %s %s %s%s", field.FieldName, dbType, nullStr, pkStr))
+		}
+		sb.WriteString("\n);")
+		fmt.Println(sb.String())
 	} else {
 		fmt.Printf("Mapping types for driver: %s\n", *driver)
 		for _, field := range schema {

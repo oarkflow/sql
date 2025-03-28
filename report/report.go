@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/oarkflow/json"
-
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/process"
@@ -52,7 +51,8 @@ type Snapshot struct {
 	DiskUsage  *disk.UsageStat         // Disk usage for the specified path.
 	SwapUsage  *mem.SwapMemoryStat     // Swap memory usage.
 	// GoMemStats holds detailed runtime memory statistics.
-	GoMemStats *runtime.MemStats
+	GoMemStats     *runtime.MemStats
+	GoroutineCount int // new: current number of goroutines
 }
 
 // Snapshot collects a resource usage snapshot.
@@ -109,14 +109,15 @@ func (m *Monitor) Snapshot() (*Snapshot, error) {
 	runtime.ReadMemStats(&ms)
 
 	return &Snapshot{
-		Timestamp:  t,
-		CPUTime:    cpuTime,
-		Memory:     memInfo.RSS,
-		IOCounters: ioCounters, // This will be nil on macOS
-		Threads:    threads,
-		DiskUsage:  diskUsage,
-		SwapUsage:  swapUsage,
-		GoMemStats: &ms,
+		Timestamp:      t,
+		CPUTime:        cpuTime,
+		Memory:         memInfo.RSS,
+		IOCounters:     ioCounters, // This will be nil on macOS
+		Threads:        threads,
+		DiskUsage:      diskUsage,
+		SwapUsage:      swapUsage,
+		GoMemStats:     &ms,
+		GoroutineCount: runtime.NumGoroutine(), // new: record goroutine count
 	}, nil
 }
 
@@ -187,8 +188,9 @@ type SnapshotDiff struct {
 	DiskUsedDiff     int64         `json:"disk_used_diff"`      // Difference in disk used bytes.
 	SwapUsedDiff     int64         `json:"swap_used_diff"`      // Difference in swap used bytes.
 	// Runtime memory differences from Go's runtime.ReadMemStats.
-	HeapAllocDiff int64 `json:"heap_alloc_diff"` // Change in heap allocation.
-	HeapSysDiff   int64 `json:"heap_sys_diff"`   // Change in memory obtained from system.
+	HeapAllocDiff      int64 `json:"heap_alloc_diff"`      // Change in heap allocation.
+	HeapSysDiff        int64 `json:"heap_sys_diff"`        // Change in memory obtained from system.
+	GoroutineCountDiff int32 `json:"goroutine_count_diff"` // new: difference in goroutine count
 }
 
 // Diff computes the difference between the current snapshot and a previous one.
@@ -208,27 +210,29 @@ func (s *Snapshot) Diff(prev *Snapshot) *SnapshotDiff {
 
 	heapAllocDiff := int64(s.GoMemStats.HeapAlloc) - int64(prev.GoMemStats.HeapAlloc)
 	heapSysDiff := int64(s.GoMemStats.HeapSys) - int64(prev.GoMemStats.HeapSys)
+	goroutineDiff := int32(s.GoroutineCount - prev.GoroutineCount) // new
 
 	return &SnapshotDiff{
-		Duration:         duration,
-		CPUPercent:       cpuPercent,
-		MemoryDiff:       memDiff,
-		IOReadCountDiff:  ioReadCountDiff,
-		IOWriteCountDiff: ioWriteCountDiff,
-		IOReadBytesDiff:  ioReadBytesDiff,
-		IOWriteBytesDiff: ioWriteBytesDiff,
-		ThreadsDiff:      threadsDiff,
-		DiskUsedDiff:     diskUsedDiff,
-		SwapUsedDiff:     swapUsedDiff,
-		HeapAllocDiff:    heapAllocDiff,
-		HeapSysDiff:      heapSysDiff,
+		Duration:           duration,
+		CPUPercent:         cpuPercent,
+		MemoryDiff:         memDiff,
+		IOReadCountDiff:    ioReadCountDiff,
+		IOWriteCountDiff:   ioWriteCountDiff,
+		IOReadBytesDiff:    ioReadBytesDiff,
+		IOWriteBytesDiff:   ioWriteBytesDiff,
+		ThreadsDiff:        threadsDiff,
+		DiskUsedDiff:       diskUsedDiff,
+		SwapUsedDiff:       swapUsedDiff,
+		HeapAllocDiff:      heapAllocDiff,
+		HeapSysDiff:        heapSysDiff,
+		GoroutineCountDiff: goroutineDiff, // new
 	}
 }
 
 // ToString returns a human-readable summary of the snapshot difference.
 func (d *SnapshotDiff) ToString() string {
 	return fmt.Sprintf(
-		"Duration: %v\nCPU/Memory Usage: %.2f%%/%s\nIO Read/Write: (%d/%s)/(%d/%s)\nThread Usage: %d\nDisk Usage: %s\nSwap Usage: %s\nHeapAlloc: %s\nHeapSys: %s",
+		"Duration: %v\nCPU/Memory Usage: %.2f%%/%s\nIO Read/Write: (%d/%s)/(%d/%s)\nThread/Goroutine Usage: %d/%d\nDisk Usage: %s\nSwap Usage: %s\nHeapAlloc: %s\nHeapSys: %s",
 		d.Duration,
 		d.CPUPercent,
 		FormatBytes(d.MemoryDiff),
@@ -237,6 +241,7 @@ func (d *SnapshotDiff) ToString() string {
 		d.IOWriteCountDiff,
 		FormatBytes(d.IOWriteBytesDiff),
 		d.ThreadsDiff,
+		d.GoroutineCountDiff, // new
 		FormatBytes(d.DiskUsedDiff),
 		FormatBytes(d.SwapUsedDiff),
 		FormatBytes(d.HeapAllocDiff),

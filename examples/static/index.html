@@ -101,6 +101,23 @@
                     </div>
                 </div>
             </div>
+            <!-- Step 7: Export Configuration -->
+            <div class="step hidden" data-step="7">
+                <h2 class="text-xl font-semibold mb-3">7. Export Configuration</h2>
+                <div class="mb-4">
+                    <label for="configFormat" class="block mb-1">Configuration Format</label>
+                    <select id="configFormat" class="border p-2">
+                        <option value="yaml">YAML</option>
+                        <option value="json">JSON</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <button id="generateConfig" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded">Generate Configuration</button>
+                </div>
+                <div>
+                    <textarea id="configOutput" class="border p-2 w-full" rows="10" placeholder="Configuration output..."></textarea>
+                </div>
+            </div>
         </div>
 
         <!-- Navigation Buttons -->
@@ -166,7 +183,10 @@
             <option value="Database">Database</option>
           </select>
         </div>
-        <!-- Configurations per type -->
+        <div class="mt-2 sampleData hidden">
+          <label class="block text-sm font-semibold">Sample Data & Fields</label>
+          <div class="text-xs text-gray-600">Loading...</div>
+        </div>
         <div class="config-fields mt-2 hidden" data-type="REST">
           <label class="block">API Endpoint</label>
           <input type="text" class="border p-2 w-full" placeholder="https://api.example.com/data" />
@@ -201,13 +221,43 @@
             sourceDiv.querySelectorAll('.config-fields').forEach(div => {
                 div.classList.toggle('hidden', div.getAttribute('data-type') !== selected);
             });
+            // Instead of automatically fetching sample data, add a button to load sample data.
+            const sampleContainer = sourceDiv.querySelector('.sampleData');
+            if (selected) {
+                sampleContainer.classList.remove('hidden');
+                sampleContainer.innerHTML = `<button type="button" class="loadSampleData bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded">Load Sample Data</button>`;
+                sampleContainer.querySelector('.loadSampleData').addEventListener('click', () => {
+                    // Gather additional source configuration from visible config-fields
+                    const configDiv = sourceDiv.querySelector(`.config-fields[data-type="${selected}"]`);
+                    let sourceData = {};
+                    if (configDiv) {
+                        configDiv.querySelectorAll('input').forEach(input => {
+                            sourceData[input.placeholder || input.name || 'field'] = input.value;
+                        });
+                    }
+                    fetch(`/api/source`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            type: selected,
+                            sourceData: sourceData
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        sampleContainer.innerHTML = `<label class="block text-sm font-semibold">Sample Data & Fields</label>
+                            <pre class="text-xs text-gray-600">${JSON.stringify(data, null, 2)}</pre>`;
+                    })
+                    .catch(err => {
+                        sampleContainer.innerHTML = `<div class="text-xs text-red-600">Error loading sample data</div>`;
+                    });
+                });
+            } else {
+                sampleContainer.classList.add('hidden');
+            }
         });
         return sourceDiv;
     }
-    document.getElementById('addSource').addEventListener('click', () => {
-        const sourceElement = createSource();
-        document.getElementById('sourcesContainer').appendChild(sourceElement);
-    });
 
     // ----------------------
     // Destination Component
@@ -235,12 +285,12 @@
           <input type="text" class="border p-2 w-full" placeholder="https://api.example.com/endpoint" />
         </div>
         <div class="config-fields mt-2 hidden" data-type="CSV">
-          <label class="block">CSV File</label>
-          <input type="file" class="border p-2 w-full" />
+          <label class="block">File Name</label>
+          <input type="text" class="border p-2 w-full" placeholder="Enter CSV file name" />
         </div>
         <div class="config-fields mt-2 hidden" data-type="JSON">
-          <label class="block">JSON File</label>
-          <input type="file" class="border p-2 w-full" />
+          <label class="block">File Name</label>
+          <input type="text" class="border p-2 w-full" placeholder="Enter JSON file name" />
         </div>
         <div class="config-fields mt-2 hidden" data-type="Database">
           <label class="block">Host</label>
@@ -253,6 +303,10 @@
           <input type="password" class="border p-2 w-full" placeholder="password" />
           <label class="block mt-2">Database</label>
           <input type="text" class="border p-2 w-full" placeholder="database" />
+          <div class="mt-2 fieldDetails hidden">
+            <label class="block text-sm font-semibold">Field Details</label>
+            <div class="text-xs text-gray-600">Loading...</div>
+          </div>
         </div>
       `;
         destDiv.querySelector('.removeDestination').addEventListener('click', () => {
@@ -264,13 +318,26 @@
             destDiv.querySelectorAll('.config-fields').forEach(div => {
                 div.classList.toggle('hidden', div.getAttribute('data-type') !== selected);
             });
+            // For Database type, add a button that loads field details on click.
+            if (selected === "Database") {
+                const fieldDetails = destDiv.querySelector('.fieldDetails');
+                fieldDetails.classList.remove('hidden');
+                fieldDetails.innerHTML = `<button type="button" class="loadFieldDetails bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded">Load Field Details</button>`;
+                fieldDetails.querySelector('.loadFieldDetails').addEventListener('click', () => {
+                    fetch(`/api/destination/fields?type=Database`)
+                      .then(res => res.json())
+                      .then(data => {
+                          fieldDetails.innerHTML = `<label class="block text-sm font-semibold">Field Details</label>
+                            <pre class="text-xs text-gray-600">${JSON.stringify(data, null, 2)}</pre>`;
+                      })
+                      .catch(err => {
+                          fieldDetails.innerHTML = `<div class="text-xs text-red-600">Error loading field details</div>`;
+                      });
+                });
+            }
         });
         return destDiv;
     }
-    document.getElementById('addDestination').addEventListener('click', () => {
-        const destElement = createDestination();
-        document.getElementById('destinationContainer').appendChild(destElement);
-    });
 
     // ----------------------
     // Mapping Component (for source to target table)
@@ -317,34 +384,58 @@
         const mapperDiv = document.createElement('div');
         mapperDiv.className = 'p-4 border rounded mb-4';
         mapperDiv.innerHTML = `
-        <div class="flex justify-between items-center">
+        <div class="flex justify-between items-center mb-2">
           <h3 class="font-semibold">Field Mapper</h3>
-          <button type="button" class="removeMapper bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove</button>
+          <button type="button" class="removeMapper bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded">Remove Mapper</button>
         </div>
-        <div class="mt-2 grid grid-cols-2 gap-4">
-          <div>
-            <label class="block">Target Field</label>
-            <select class="border p-2 w-full">
-              <option value="">Select Field</option>
-              <option value="field1">Field1</option>
-              <option value="field2">Field2</option>
+        <div class="mappingRows">
+          <!-- Mapping Row Template -->
+          <div class="mappingRow flex items-center gap-4 mb-2">
+            <select class="targetField border p-2">
+              <option value="">Select Target Field</option>
+              <option value="dest_field1">dest_field1</option>
+              <option value="dest_field2">dest_field2</option>
             </select>
-          </div>
-          <div>
-            <label class="block">Source Type</label>
-            <select class="sourceTypeMapping border p-2 w-full">
-              <option value="field">Field</option>
-              <option value="expression">Expression</option>
+            <select class="sourceField border p-2">
+              <option value="">Select Source Field</option>
+              <option value="source_field1">source_field1</option>
+              <option value="source_field2">source_field2</option>
             </select>
+            <button type="button" class="removeRow bg-red-400 hover:bg-red-500 text-white px-2 py-1 rounded">Remove</button>
           </div>
         </div>
-        <div class="mt-2">
-          <label class="block">Source Field / Expression</label>
-          <input type="text" class="sourceMappingInput border p-2 w-full" placeholder="Enter field or expression" />
-        </div>
-      `;
+        <button type="button" class="addRow bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded">Add Mapping Row</button>
+        `;
         mapperDiv.querySelector('.removeMapper').addEventListener('click', () => {
             mapperDiv.remove();
+        });
+        // Remove individual mapping row
+        mapperDiv.querySelectorAll('.removeRow').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.target.closest('.mappingRow').remove();
+            });
+        });
+        // Add new mapping row on button click
+        mapperDiv.querySelector('.addRow').addEventListener('click', () => {
+            const newRow = document.createElement('div');
+            newRow.className = 'mappingRow flex items-center gap-4 mb-2';
+            newRow.innerHTML = `
+              <select class="targetField border p-2">
+                <option value="">Select Target Field</option>
+                <option value="dest_field1">dest_field1</option>
+                <option value="dest_field2">dest_field2</option>
+              </select>
+              <select class="sourceField border p-2">
+                <option value="">Select Source Field</option>
+                <option value="source_field1">source_field1</option>
+                <option value="source_field2">source_field2</option>
+              </select>
+              <button type="button" class="removeRow bg-red-400 hover:bg-red-500 text-white px-2 py-1 rounded">Remove</button>
+            `;
+            newRow.querySelector('.removeRow').addEventListener('click', () => {
+                newRow.remove();
+            });
+            mapperDiv.querySelector('.mappingRows').appendChild(newRow);
         });
         return mapperDiv;
     }
@@ -444,6 +535,40 @@
     document.getElementById('keyValueTable').addEventListener('change', (e) => {
         document.getElementById('keyValueConfig').classList.toggle('hidden', !e.target.checked);
     });
+
+    // ----------------------
+    // Generate Configuration for Export Step
+    // ----------------------
+    function generateConfig() {
+        // Placeholder: collect minimal ETL configuration data.
+        const config = {
+            sources: [], // TODO: iterate through source elements and collect data
+            destination: {}, // TODO: collect destination data
+            mapping: [], // TODO: collect mappings
+            fieldMappers: [], // TODO: collect field mappers
+            aggregators: [], // TODO: collect aggregator configs
+            transformers: [], // TODO: collect transformer configs
+            etl: {
+                keyValueTable: document.getElementById('keyValueTable').checked,
+                batchSize: document.getElementById('batchSize').value,
+                migrate: document.getElementById('migrate').checked,
+                cloneSource: document.getElementById('cloneSource').checked,
+                update: document.getElementById('update').checked,
+                delete: document.getElementById('delete').checked
+                // ... add other ETL config fields as needed.
+            }
+        };
+        const format = document.getElementById('configFormat').value;
+        let output = "";
+        if (format === "json") {
+            output = JSON.stringify(config, null, 2);
+        } else {
+            // Simple YAML conversion placeholder.
+            output = "yaml: |\n  " + JSON.stringify(config, null, 2).replace(/\n/g, "\n  ");
+        }
+        document.getElementById('configOutput').value = output;
+    }
+    document.getElementById('generateConfig').addEventListener('click', generateConfig);
 
     // Initialize default elements for each dynamic component on page load
     window.addEventListener('DOMContentLoaded', () => {

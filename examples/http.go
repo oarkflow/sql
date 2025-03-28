@@ -1,5 +1,6 @@
 package main // main.go
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -50,13 +51,19 @@ func runETLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run the ETL process in a separate goroutine.
-	go func(cfg config.Config) {
-		log.Println("Starting ETL process...")
-		etl.Run(&cfg)
-		log.Println("ETL process completed.")
-	}(currentConfig)
-
+	manager := etl.NewManager()
+	manager.Prepare(&currentConfig)
+	ids, err := manager.Prepare(&currentConfig)
+	if err != nil {
+		panic(err)
+	}
+	for _, id := range ids {
+		go func(id string) {
+			if err := manager.Start(context.Background(), id); err != nil {
+				panic(err)
+			}
+		}(id)
+	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ETL process started"))
 }
