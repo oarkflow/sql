@@ -118,6 +118,11 @@ const (
 )
 
 func lookupKeyword(ident string) TokenType {
+	// If the identifier contains a dot then it is a qualified name,
+	// so we treat it as a generic identifier.
+	if strings.Contains(ident, ".") {
+		return IDENT
+	}
 	switch strings.ToUpper(ident) {
 	case "SELECT":
 		return SELECT
@@ -236,6 +241,16 @@ func lookupKeyword(ident string) TokenType {
 	}
 }
 
+func isReservedAlias(s string) bool {
+	for _, r := range reserved {
+		// Use EqualFold for case-insensitive matching.
+		if strings.EqualFold(s, r) {
+			return true
+		}
+	}
+	return false
+}
+
 type Token struct {
 	Type    TokenType
 	Literal string
@@ -264,15 +279,6 @@ func isIdentifierChar(ch byte) bool {
 
 func isDigit(ch byte) bool {
 	return '0' <= ch && ch <= '9'
-}
-
-func isReservedAlias(s string) bool {
-	for _, r := range reserved {
-		if strings.ToUpper(s) == r {
-			return true
-		}
-	}
-	return false
 }
 
 func unwrapAlias(expr Expression) (string, Expression) {

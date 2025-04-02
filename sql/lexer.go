@@ -94,6 +94,14 @@ func (l *Lexer) readIdentifier() string {
 			l.readChar() // consume '*'
 			break
 		}
+		// If current char is '.' and not forming a qualified star then
+		// require the following char to be letter or underscore; otherwise break.
+		if l.ch == '.' && l.peekChar() != 0 && l.peekChar() != '*' {
+			r := rune(l.peekChar())
+			if !unicode.IsLetter(r) && r != '_' {
+				break
+			}
+		}
 		if !isIdentifierChar(l.ch) {
 			break
 		}
