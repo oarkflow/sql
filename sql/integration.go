@@ -113,17 +113,19 @@ func (r *RESTIntegration) Name() string {
 }
 
 func (r *RESTIntegration) ReadData(source string) ([]utils.Record, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
 	reqBody, _ := json.Marshal(r.Body)
-	req, err := http.NewRequest(strings.ToUpper(r.Method), r.buildURL(), bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	headers := map[string]string{}
+	hasContentType := false
 	for key, value := range r.Headers {
-		req.Header.Set(key, value)
+		if key == "Content-Type" {
+			hasContentType = true
+		}
+		headers[key] = value
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	if !hasContentType {
+		headers["Content-Type"] = "application/json"
+	}
+	resp, err := sendRequest(strings.ToUpper(r.Method), r.buildURL(), headers, bytes.NewReader(reqBody), 10*time.Second, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -182,24 +184,11 @@ func (w *WebIntegration) Name() string {
 }
 
 func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
-	client := &http.Client{
-		Timeout: w.Timeout,
-	}
-	if w.ProxyURL != "" {
-		if proxyURL, err := url.Parse(w.ProxyURL); err == nil {
-			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
-			}
-		}
-	}
-	req, err := http.NewRequest("GET", w.Endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	headers := map[string]string{}
 	if w.UserAgent != "" {
-		req.Header.Set("User-Agent", w.UserAgent)
+		headers["User-Agent"] = w.UserAgent
 	}
-	resp, err := client.Do(req)
+	resp, err := sendRequest("GET", w.Endpoint, headers, nil, w.Timeout, w.ProxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to GET %s: %w", w.Endpoint, err)
 	}
@@ -305,4 +294,24 @@ func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
 	}
 	record := utils.Record{"content": string(body)}
 	return []utils.Record{record}, nil
+}
+
+// Added common request helper function
+func sendRequest(method, endpoint string, headers map[string]string, body io.Reader, timeout time.Duration, proxyURL string) (*http.Response, error) {
+	client := &http.Client{Timeout: timeout}
+	if proxyURL != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil {
+			client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(parsed),
+			}
+		}
+	}
+	req, err := http.NewRequest(method, endpoint, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return client.Do(req)
 }
