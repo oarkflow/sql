@@ -41,7 +41,7 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 		}
 		return rows, nil
 	case "read_service":
-		return readService(tr.Name)
+		return ReadService(tr.Name)
 	default:
 		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
 	}

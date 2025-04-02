@@ -9,7 +9,6 @@ import (
 	goccy "github.com/goccy/go-json"
 	"github.com/oarkflow/json"
 
-	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/sql"
 )
 
@@ -25,7 +24,7 @@ func init() {
 }
 
 func main() {
-	sql.AddIntegration("test_db", sql.Integration{
+	/* sql.AddIntegration("test_db", sql.Integration{
 		Type: "postgres",
 		DataConfig: &config.DataConfig{
 			Driver:   "postgres",
@@ -43,8 +42,24 @@ func main() {
 	sql.AddIntegration("comments", sql.Integration{
 		Type:     "rest",
 		Endpoint: "https://jsonplaceholder.typicode.com/comments",
+	}) */
+	sql.AddIntegration("articles", sql.Integration{
+		Type:     "web",
+		Endpoint: "http://metalsucks.net",
+		// CSS selector for row container; here it selects each article element.
+		Rules: "article",
+		// These options are not used in the multi-target branch.
+		Target:       "text",
+		OutputFormat: "string",
+		FieldMappings: []sql.FieldMapping{
+			{
+				Field:    "title",
+				Selector: ".post-title a", // Adjust the relative selector as needed.
+				Target:   "text",
+			},
+		},
 	})
-	bytes, err := os.ReadFile("query.sql")
+	bytes, err := os.ReadFile("crawl.sql")
 	if err != nil {
 		panic(err)
 	}
