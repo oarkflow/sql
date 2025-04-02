@@ -1,40 +1,27 @@
 package sql
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/PuerkitoBio/goquery" // HTML crawling
+	"github.com/PuerkitoBio/goquery"
+	"github.com/oarkflow/json"
 
 	"github.com/oarkflow/etl/pkg/adapters"
 	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
-// FieldMapping defines how to extract a specific field from a row.
-type FieldMapping struct {
-	Field    string `json:"field"`    // Name of the field in the output record
-	Selector string `json:"selector"` // CSS selector relative to the row container
-	Target   string `json:"target"`   // Extraction method: "text", "html", or "attr:xxx"
-}
-
-// Integration represents various integration types. For web integrations,
-// it now supports both a single extraction rule (Rules, Target, OutputFormat)
-// and a more structured approach using FieldMappings (e.g. for tables).
-type Integration struct {
-	Type          string
-	DataConfig    *config.DataConfig // used for SQL (mysql, postgres, etc.)
-	Endpoint      string             // used for REST and web integrations
-	Method        string
-	Rules         string         // CSS selector rule for either a full-page extraction or for row selection in a table
-	Target        string         // Target extraction for single value extraction ("text", "html", or "attr:xxx")
-	OutputFormat  string         // Desired output format: "string", "json", or empty for raw slice
-	FieldMappings []FieldMapping // New: mapping for multi-target extraction (e.g., table columns)
+type Integration interface {
+	Type() string
+	Name() string
+	ReadData(source string) ([]utils.Record, error)
 }
 
 var (
@@ -42,15 +29,13 @@ var (
 	integrationRegistry = make(map[string]Integration)
 )
 
-// AddIntegration adds a new integration or updates an existing one.
-func AddIntegration(key string, integration Integration) {
+func RegisterIntegration(key string, integration Integration) {
 	irMu.Lock()
 	defer irMu.Unlock()
 	integrationRegistry[key] = integration
 }
 
-// RemoveIntegration removes an integration by its key.
-func RemoveIntegration(key string) error {
+func UnregisterIntegration(key string) error {
 	irMu.Lock()
 	defer irMu.Unlock()
 	if _, exists := integrationRegistry[key]; !exists {
@@ -67,38 +52,39 @@ func ReadService(identifier string) ([]utils.Record, error) {
 	if len(parts) > 1 {
 		source = parts[1]
 	}
-	// Read integration safely
 	irMu.RLock()
 	integration, exists := integrationRegistry[integrationKey]
 	irMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("integration not found: %s", integrationKey)
 	}
-	switch strings.ToLower(integration.Type) {
-	case "mysql", "postgres", "sqlite", "sqlite3":
-		return readSQLIntegration(integration, source)
-	case "rest":
-		return readRESTIntegration(integration)
-	case "web":
-		return readWebIntegration(integration)
-	default:
-		return nil, fmt.Errorf("unsupported integration type: %s", integration.Type)
-	}
+	return integration.ReadData(source)
 }
 
-func readSQLIntegration(integration Integration, source string) ([]utils.Record, error) {
-	if integration.DataConfig == nil {
+type SQLIntegration struct {
+	DataConfig *config.DataConfig
+}
+
+func (s *SQLIntegration) Type() string {
+	return "sql"
+}
+
+func (s *SQLIntegration) Name() string {
+	return "SQLIntegration"
+}
+
+func (s *SQLIntegration) ReadData(source string) ([]utils.Record, error) {
+	if s.DataConfig == nil {
 		return nil, fmt.Errorf("no data config provided for SQL integration")
 	}
 	if source == "" {
 		return nil, fmt.Errorf("no table name provided for SQL integration")
 	}
-	db, err := config.OpenDB(*integration.DataConfig)
+	db, err := config.OpenDB(*s.DataConfig)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-
 	src := adapters.NewSQLAdapterAsSource(db, source, "")
 	ctx := context.Background()
 	err = src.Setup(ctx)
@@ -108,42 +94,106 @@ func readSQLIntegration(integration Integration, source string) ([]utils.Record,
 	return src.LoadData()
 }
 
-func readRESTIntegration(integration Integration) ([]utils.Record, error) {
-	if integration.Method == "" {
-		integration.Method = "GET"
-	}
-	data, err := utils.Request[[]utils.Record](integration.Endpoint, integration.Method, nil)
-	if err != nil {
-		// Attempt to parse a single record response
-		singleData, err := utils.Request[utils.Record](integration.Endpoint, integration.Method, nil)
-		if err != nil {
-			return nil, err
-		}
-		return []utils.Record{singleData}, nil
-	}
-	return data, nil
+type RESTIntegration struct {
+	Endpoint     string
+	Method       string
+	Headers      map[string]string
+	Body         interface{}
+	QueryParams  map[string]string
+	OutputFormat string
 }
 
-func readWebIntegration(integration Integration) ([]utils.Record, error) {
-	resp, err := http.Get(integration.Endpoint)
+func (r *RESTIntegration) Type() string {
+	return "rest"
+}
+
+func (r *RESTIntegration) Name() string {
+	return "RESTIntegration"
+}
+
+func (r *RESTIntegration) ReadData(source string) ([]utils.Record, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	reqBody, _ := json.Marshal(r.Body)
+	req, err := http.NewRequest(strings.ToUpper(r.Method), r.buildURL(), bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("failed to GET %s: %w", integration.Endpoint, err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	for key, value := range r.Headers {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
+	var records []utils.Record
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	err = json.Unmarshal(data, &records)
+	if err != nil {
+		var singleRecord utils.Record
+		err = json.Unmarshal(data, &singleRecord)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+		records = append(records, singleRecord)
+	}
+	return records, nil
+}
 
-	// Parse the HTML document
+func (r *RESTIntegration) buildURL() string {
+	if len(r.QueryParams) == 0 {
+		return r.Endpoint
+	}
+	var params []string
+	for key, value := range r.QueryParams {
+		params = append(params, fmt.Sprintf("%s=%s", key, value))
+	}
+	return fmt.Sprintf("%s?%s", r.Endpoint, strings.Join(params, "&"))
+}
+
+type FieldMapping struct {
+	Field    string `json:"field"`
+	Selector string `json:"selector"`
+	Target   string `json:"target"`
+}
+
+type WebIntegration struct {
+	Endpoint      string
+	Rules         string
+	Target        string
+	OutputFormat  string
+	FieldMappings []FieldMapping
+}
+
+func (w *WebIntegration) Type() string {
+	return "web"
+}
+
+func (w *WebIntegration) Name() string {
+	return "WebIntegration"
+}
+
+func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
+	resp, err := http.Get(w.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to GET %s: %w", w.Endpoint, err)
+	}
+	defer resp.Body.Close()
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse HTML from %s: %w", integration.Endpoint, err)
+		return nil, fmt.Errorf("failed to parse HTML from %s: %w", w.Endpoint, err)
 	}
 
-	// If field mappings are provided, treat the result as a table or list with multiple columns.
-	if len(integration.FieldMappings) > 0 {
+	if len(w.FieldMappings) > 0 {
 		var records []utils.Record
-		doc.Find(integration.Rules).Each(func(i int, row *goquery.Selection) {
+		doc.Find(w.Rules).Each(func(i int, row *goquery.Selection) {
 			record := make(utils.Record)
 			var fieldValues []string
-			for _, mapping := range integration.FieldMappings {
+			for _, mapping := range w.FieldMappings {
 				elem := row.Find(mapping.Selector)
 				var value string
 				switch {
@@ -164,24 +214,17 @@ func readWebIntegration(integration Integration) ([]utils.Record, error) {
 				record[mapping.Field] = value
 				fieldValues = append(fieldValues, value)
 			}
-			// If OutputFormat is "string", also merge all fields into a "content" field.
-			if integration.OutputFormat == "string" {
-				record["content"] = strings.Join(fieldValues, " | ")
-			}
 			records = append(records, record)
 		})
 		return records, nil
 	}
-
-	// Fallback: single target extraction using integration.Target.
-	if integration.Rules != "" {
-		// Use default target "text" if not specified.
-		target := integration.Target
+	if w.Rules != "" {
+		target := w.Target
 		if target == "" {
 			target = "text"
 		}
 		var results []interface{}
-		doc.Find(integration.Rules).Each(func(i int, s *goquery.Selection) {
+		doc.Find(w.Rules).Each(func(i int, s *goquery.Selection) {
 			var extracted interface{}
 			switch {
 			case target == "text":
@@ -204,10 +247,8 @@ func readWebIntegration(integration Integration) ([]utils.Record, error) {
 			}
 			results = append(results, extracted)
 		})
-
-		switch integration.OutputFormat {
+		switch w.OutputFormat {
 		case "string":
-			// Concatenate all string results.
 			var stringResults []string
 			for _, r := range results {
 				if str, ok := r.(string); ok {
@@ -217,9 +258,7 @@ func readWebIntegration(integration Integration) ([]utils.Record, error) {
 			joined := strings.Join(stringResults, "\n")
 			record := utils.Record{"content": joined}
 			return []utils.Record{record}, nil
-
 		case "json":
-			// Attempt to join and unmarshal the result as JSON.
 			var stringResults []string
 			for _, r := range results {
 				if str, ok := r.(string); ok {
@@ -234,18 +273,14 @@ func readWebIntegration(integration Integration) ([]utils.Record, error) {
 			}
 			record := utils.Record{"content": parsed}
 			return []utils.Record{record}, nil
-
 		default:
-			// Return raw slice of extracted results.
 			record := utils.Record{"content": results}
 			return []utils.Record{record}, nil
 		}
 	}
-
-	// Final fallback: return the full page content.
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response from %s: %w", integration.Endpoint, err)
+		return nil, fmt.Errorf("failed to read response from %s: %w", w.Endpoint, err)
 	}
 	record := utils.Record{"content": string(body)}
 	return []utils.Record{record}, nil

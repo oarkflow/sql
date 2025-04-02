@@ -2,30 +2,15 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"time"
 
-	goccy "github.com/goccy/go-json"
-	"github.com/oarkflow/json"
-
+	"github.com/oarkflow/etl/pkg/config"
 	"github.com/oarkflow/etl/sql"
 )
 
-func init() {
-	json.SetMarshaler(goccy.Marshal)
-	json.SetUnmarshaler(goccy.Unmarshal)
-	json.SetDecoder(func(reader io.Reader) json.IDecoder {
-		return goccy.NewDecoder(reader)
-	})
-	json.SetEncoder(func(writer io.Writer) json.IEncoder {
-		return goccy.NewEncoder(writer)
-	})
-}
-
 func main() {
-	/* sql.AddIntegration("test_db", sql.Integration{
-		Type: "postgres",
+	sql.RegisterIntegration("test_db", &sql.SQLIntegration{
 		DataConfig: &config.DataConfig{
 			Driver:   "postgres",
 			Host:     "127.0.0.1",
@@ -35,37 +20,39 @@ func main() {
 			Database: "clear_dev",
 		},
 	})
-	sql.AddIntegration("posts", sql.Integration{
-		Type:     "rest",
+	sql.RegisterIntegration("posts", &sql.RESTIntegration{
 		Endpoint: "https://jsonplaceholder.typicode.com/posts",
 	})
-	sql.AddIntegration("comments", sql.Integration{
-		Type:     "rest",
+	sql.RegisterIntegration("comments", &sql.RESTIntegration{
 		Endpoint: "https://jsonplaceholder.typicode.com/comments",
-	}) */
-	sql.AddIntegration("articles", sql.Integration{
-		Type:     "web",
-		Endpoint: "http://metalsucks.net",
-		// CSS selector for row container; here it selects each article element.
-		Rules: "article",
-		// These options are not used in the multi-target branch.
+	})
+	sql.RegisterIntegration("articles", &sql.WebIntegration{
+		Endpoint:     "http://metalsucks.net",
+		Rules:        "article",
 		Target:       "text",
 		OutputFormat: "string",
 		FieldMappings: []sql.FieldMapping{
 			{
 				Field:    "title",
-				Selector: ".post-title a", // Adjust the relative selector as needed.
+				Selector: ".post-title a",
 				Target:   "text",
 			},
 		},
 	})
-	bytes, err := os.ReadFile("crawl.sql")
-	if err != nil {
-		panic(err)
+	queries := []string{
+		"query.sql",
+		"crawl.sql",
+		"db_query.sql",
 	}
-	queryStr := string(bytes)
-	start := time.Now()
-	fmt.Println(sql.Query(queryStr))
-	fmt.Println("Took", time.Since(start))
-	fmt.Println()
+	for _, query := range queries {
+		bytes, err := os.ReadFile(query)
+		if err != nil {
+			panic(err)
+		}
+		queryStr := string(bytes)
+		start := time.Now()
+		fmt.Println(sql.Query(queryStr))
+		fmt.Println("Took", time.Since(start))
+		fmt.Println()
+	}
 }
