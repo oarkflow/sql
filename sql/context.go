@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/convert"
+
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -56,6 +57,19 @@ func (ctx *EvalContext) evalExpression(expr Expression, row utils.Record) any {
 }
 
 func (ctx *EvalContext) evalIdentifier(id *Identifier, row utils.Record) any {
+	// Support for alias fields: check full key first then fallback.
+	if strings.Contains(id.Value, ".") {
+		// Try full key (e.g. "t1.work_item_id")
+		if val, ok := row[id.Value]; ok {
+			return val
+		}
+		// Split alias and field; then try field-only lookup.
+		parts := strings.SplitN(id.Value, ".", 2)
+		if val, ok := row[parts[1]]; ok {
+			return val
+		}
+		return nil
+	}
 	upperVal := strings.ToUpper(id.Value)
 	if upperVal == "CURRENT_DATE" {
 		return time.Now().Format("2006-01-02")

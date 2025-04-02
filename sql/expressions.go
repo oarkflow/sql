@@ -68,6 +68,15 @@ func (s *Star) ExpressionNode()      {}
 func (s *Star) TokenLiteral() string { return "*" }
 func (s *Star) String() string       { return "*" }
 
+// Add new expression type for qualified star (e.g., p.*)
+type QualifiedStar struct {
+	Alias string
+}
+
+func (qs *QualifiedStar) ExpressionNode()      {}
+func (qs *QualifiedStar) TokenLiteral() string { return qs.Alias + ".*" }
+func (qs *QualifiedStar) String() string       { return qs.Alias + ".*" }
+
 type AliasExpression struct {
 	Expr  Expression
 	Alias string

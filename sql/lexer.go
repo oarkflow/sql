@@ -87,7 +87,16 @@ func (l *Lexer) NextToken() Token {
 
 func (l *Lexer) readIdentifier() string {
 	start := l.position
-	for isIdentifierChar(l.ch) {
+	for {
+		// If current char is '.' and next char is '*' then include them in the identifier.
+		if l.ch == '.' && l.peekChar() == '*' {
+			l.readChar() // consume '.'
+			l.readChar() // consume '*'
+			break
+		}
+		if !isIdentifierChar(l.ch) {
+			break
+		}
 		l.readChar()
 	}
 	return l.input[start:l.position]

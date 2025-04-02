@@ -36,9 +36,13 @@ func main() {
 			Database: "clear_dev",
 		},
 	})
-	sql.AddIntegration("test_rest", sql.Integration{
+	sql.AddIntegration("posts", sql.Integration{
 		Type:     "rest",
 		Endpoint: "https://jsonplaceholder.typicode.com/posts",
+	})
+	sql.AddIntegration("comments", sql.Integration{
+		Type:     "rest",
+		Endpoint: "https://jsonplaceholder.typicode.com/comments",
 	})
 	bytes, err := os.ReadFile("query.sql")
 	if err != nil {

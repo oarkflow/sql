@@ -138,10 +138,16 @@ func (p *Parser) parseSelectQuery() *SQL {
 		query.Distinct = true
 	}
 	query.Select = p.parseSelectClause()
-	if !p.expectPeek(FROM) {
+	// --- Begin change ---
+	// Ensure the FROM token is explicitly consumed.
+	if p.peekToken.Type == FROM {
+		p.nextToken() // consume FROM
+	} else if p.curToken.Type != FROM {
+		p.errors = append(p.errors, fmt.Sprintf("expected FROM token, got %s instead", p.peekToken.Type))
 		return nil
 	}
 	p.nextToken()
+	// --- End change ---
 	query.From = p.parseTableReference()
 	for p.peekTokenIsOneOf([]TokenType{INNER, LEFT, RIGHT, FULL, CROSS, JOIN}) {
 		p.nextToken()
@@ -203,11 +209,13 @@ func (p *Parser) parseSelectClause() *SelectClause {
 }
 
 func (p *Parser) parseSelectExpression() Expression {
+	// Check for qualified star (e.g. "p.*")
+	if p.curToken.Type == IDENT && strings.HasSuffix(p.curToken.Literal, ".*") {
+		alias := strings.TrimSuffix(p.curToken.Literal, ".*")
+		return &QualifiedStar{Alias: alias}
+	}
 	if p.curToken.Type == ASTERISK {
 		return &Star{}
-	}
-	if p.curToken.Type == CASE {
-		return p.parseCaseExpression()
 	}
 	expr := p.parseExpression(0)
 	if p.peekToken.Type == AS {

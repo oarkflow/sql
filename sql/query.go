@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/convert"
+
 	"github.com/oarkflow/etl/pkg/utils"
 )
 
@@ -305,7 +306,9 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 		for _, cond := range conds {
 			var set []utils.Record
 			for _, row := range rows {
-				if val, exists := row[cond.Field]; exists {
+				// Use evalExpression to apply alias rules
+				val := ctx.evalExpression(&Identifier{Value: cond.Field}, row)
+				if val != nil {
 					keyStr := fmt.Sprintf("%v", val)
 					if evaluateCondition(keyStr, cond.Operator, cond.Value) {
 						set = append(set, row)
@@ -606,11 +609,21 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			for i, expr := range query.Select.Fields {
 				colName := getFieldName(expr, i)
 				_, underlying := unwrapAlias(expr)
-				if _, ok := underlying.(*Star); ok {
+				switch underlying := underlying.(type) {
+				case *Star:
 					for k, v := range row {
 						newRow[k] = v
 					}
-				} else {
+				case *QualifiedStar:
+					prefix := underlying.Alias + "."
+					for k, v := range row {
+						if strings.HasPrefix(k, prefix) {
+							// Remove alias prefix from the final column name.
+							newKey := strings.TrimPrefix(k, prefix)
+							newRow[newKey] = v
+						}
+					}
+				default:
 					newRow[colName] = ctx.evalExpression(underlying, row)
 				}
 			}
