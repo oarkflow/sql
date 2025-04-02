@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +99,7 @@ type RESTIntegration struct {
 	Endpoint     string
 	Method       string
 	Headers      map[string]string
-	Body         interface{}
+	Body         any
 	QueryParams  map[string]string
 	OutputFormat string
 }
@@ -167,6 +168,9 @@ type WebIntegration struct {
 	Target        string
 	OutputFormat  string
 	FieldMappings []FieldMapping
+	Timeout       time.Duration // request timeout duration
+	UserAgent     string        // custom user agent header
+	ProxyURL      string        // URL for proxy settings
 }
 
 func (w *WebIntegration) Type() string {
@@ -178,7 +182,24 @@ func (w *WebIntegration) Name() string {
 }
 
 func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
-	resp, err := http.Get(w.Endpoint)
+	client := &http.Client{
+		Timeout: w.Timeout,
+	}
+	if w.ProxyURL != "" {
+		if proxyURL, err := url.Parse(w.ProxyURL); err == nil {
+			client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(proxyURL),
+			}
+		}
+	}
+	req, err := http.NewRequest("GET", w.Endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if w.UserAgent != "" {
+		req.Header.Set("User-Agent", w.UserAgent)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to GET %s: %w", w.Endpoint, err)
 	}
@@ -223,9 +244,9 @@ func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
 		if target == "" {
 			target = "text"
 		}
-		var results []interface{}
+		var results []any
 		doc.Find(w.Rules).Each(func(i int, s *goquery.Selection) {
-			var extracted interface{}
+			var extracted any
 			switch {
 			case target == "text":
 				extracted = s.Text()
@@ -266,7 +287,7 @@ func (w *WebIntegration) ReadData(source string) ([]utils.Record, error) {
 				}
 			}
 			joined := strings.Join(stringResults, "\n")
-			var parsed interface{}
+			var parsed any
 			if err := json.Unmarshal([]byte(joined), &parsed); err != nil {
 				record := utils.Record{"content": joined}
 				return []utils.Record{record}, nil
