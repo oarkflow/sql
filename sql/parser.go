@@ -235,42 +235,44 @@ func (p *Parser) parseSelectExpression() Expression {
 }
 
 func (p *Parser) parseTableReference() *TableReference {
+	// If the current token is an identifier, check for a dot to indicate a qualified reference.
 	if p.curToken.Type == IDENT {
-		if p.peekToken.Type == LPAREN {
-			sourceFunc := strings.ToLower(p.curToken.Literal)
-			if strings.HasPrefix(sourceFunc, "read_") {
-				tr := &TableReference{Source: sourceFunc}
-				if !p.expectPeek(LPAREN) {
-					return nil
-				}
-				p.nextToken()
-				if p.curToken.Type != STRING {
-					p.errors = append(p.errors, "Data source function expects a string literal argument")
-					return nil
-				}
-				tr.Name = p.curToken.Literal
-				if !p.expectPeek(RPAREN) {
-					return nil
-				}
-				if p.peekToken.Type == AS {
-					p.nextToken()
-					p.nextToken()
-					if p.curToken.Type == IDENT {
-						tr.Alias = p.curToken.Literal
-					}
-				} else if p.peekToken.Type == IDENT {
-					alias := p.peekToken.Literal
-					if !isReservedAlias(alias) {
-						p.nextToken()
-						tr.Alias = p.curToken.Literal
-					}
-				}
-				return tr
+		// Check if next token is a dot (integration qualified reference)
+		if p.peekToken.Type == DOT {
+			integrationKey := p.curToken.Literal
+			fmt.Println(integrationKey)
+			p.nextToken() // consume dot
+			p.nextToken() // table name token
+			ref := &TableReference{
+				Source: integrationKey, // integration key from the qualified name
+				Name:   p.curToken.Literal,
 			}
-			return &TableReference{Name: p.curToken.Literal}
+			// Optional alias detection
+			if p.peekToken.Type == AS {
+				p.nextToken() // consume AS
+				p.nextToken()
+				if p.curToken.Type == IDENT {
+					ref.Alias = p.curToken.Literal
+				}
+			} else if p.peekToken.Type == IDENT && !isReservedAlias(p.peekToken.Literal) {
+				p.nextToken()
+				ref.Alias = p.curToken.Literal
+			}
+			return ref
 		}
-		return &TableReference{Name: p.curToken.Literal}
+		// Otherwise, treat it as a plain table reference.
+		ref := &TableReference{
+			Name: p.curToken.Literal,
+			// Source is left empty. Integration resolution will occur later.
+		}
+		// Check for an optional alias (if the next token is an identifier and not a reserved keyword).
+		if p.peekToken.Type == IDENT && !isReservedAlias(p.peekToken.Literal) {
+			p.nextToken()
+			ref.Alias = p.curToken.Literal
+		}
+		return ref
 	}
+	// If the token is '(', it may be a subquery.
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
@@ -299,7 +301,7 @@ func (p *Parser) parseTableReference() *TableReference {
 			return nil
 		}
 	}
-	p.errors = append(p.errors, "Table must be specified using a data source function (e.g. read_file, read_db, read_api) or as a CTE reference")
+	p.errors = append(p.errors, "Table must be specified as a plain identifier (or qualified with a dot) or a subquery")
 	return nil
 }
 

@@ -41,8 +41,8 @@ func main() {
 	})
 	queries := []string{
 		"query.sql",
-		"crawl.sql",
-		"db_query.sql",
+		// "crawl.sql",
+		// "db_query.sql",
 	}
 	for _, query := range queries {
 		bytes, err := os.ReadFile(query)

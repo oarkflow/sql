@@ -52,6 +52,8 @@ func ReadService(identifier string) ([]utils.Record, error) {
 	var source string
 	if len(parts) > 1 {
 		source = parts[1]
+	} else {
+		source = "default"
 	}
 	irMu.RLock()
 	integration, exists := integrationRegistry[integrationKey]

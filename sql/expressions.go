@@ -18,8 +18,13 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 		return tr.Subquery.executeQuery(nil)
 	}
 
-	switch strings.ToLower(tr.Source) {
-	case "read_file":
+	// For plain table references (e.g. "posts"), use the table name as integration key
+	// and default the table name to "default"
+	if strings.TrimSpace(tr.Source) == "" {
+		tr.Source, tr.Name = tr.Name, "default"
+	}
+
+	if strings.ToLower(tr.Source) == "read_file" {
 		fi, err := os.Stat(tr.Name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to stat file %s: %w", tr.Name, err)
@@ -40,10 +45,12 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 			modTime: modTime,
 		}
 		return rows, nil
-	case "read_service":
-		return ReadService(tr.Name)
-	default:
-		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
+	} else {
+		fmt.Println("Source", tr.Source, tr.Name)
+		r, err := ReadService(tr.Source + "." + tr.Name)
+		fmt.Println(r)
+		fmt.Println("****************************************")
+		return r, err
 	}
 }
 

@@ -113,8 +113,8 @@ const (
 	ROW_NUMBER = "ROW_NUMBER"
 	RANK       = "RANK"
 	DENSE_RANK = "DENSE_RANK"
-
-	CASE = "CASE"
+	DOT        = "."
+	CASE       = "CASE"
 )
 
 func lookupKeyword(ident string) TokenType {
