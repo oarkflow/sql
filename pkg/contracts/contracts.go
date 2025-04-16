@@ -87,5 +87,8 @@ type Flushable interface {
 type Appender[T any] interface {
 	Append(record T) error
 	AppendBatch(records []T) error
+	DeleteRecord(predicate func(T) bool) error
+	SearchRecords(predicate func(T) bool) ([]T, error)
+	ForEach(callback func(T)) error
 	Close() error
 }
