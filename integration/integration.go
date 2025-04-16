@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -66,6 +67,16 @@ type APIConfig struct {
 	CircuitBreakerThreshold int               `json:"circuit_breaker_threshold"`
 }
 
+func (cfg APIConfig) Validate() error {
+	if cfg.URL == "" {
+		return errors.New("APIConfig: URL must be provided")
+	}
+	if cfg.Method == "" {
+		return errors.New("APIConfig: HTTP method must be provided")
+	}
+	return nil
+}
+
 type SMTPConfig struct {
 	Server            string        `json:"server"`
 	Port              int           `json:"port"`
@@ -74,6 +85,16 @@ type SMTPConfig struct {
 	UseSTARTTLS       bool          `json:"use_starttls"`
 	ConnectionTimeout time.Duration `json:"connection_timeout"`
 	MaxConnections    int           `json:"max_connections"`
+}
+
+func (cfg SMTPConfig) Validate() error {
+	if cfg.Server == "" {
+		return errors.New("SMTPConfig: server must be provided")
+	}
+	if cfg.Port == 0 {
+		return errors.New("SMTPConfig: port must be provided")
+	}
+	return nil
 }
 
 type SMPPConfig struct {
@@ -85,6 +106,16 @@ type SMPPConfig struct {
 	RetryCount int    `json:"retry_count"`
 }
 
+func (cfg SMPPConfig) Validate() error {
+	if cfg.Host == "" {
+		return errors.New("SMPPConfig: host must be provided")
+	}
+	if cfg.Port == 0 {
+		return errors.New("SMPPConfig: port must be provided")
+	}
+	return nil
+}
+
 type DatabaseConfig struct {
 	Driver          string        `json:"driver"`
 	Host            string        `json:"host"`
@@ -94,6 +125,16 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
+}
+
+func (cfg DatabaseConfig) Validate() error {
+	if cfg.Driver == "" {
+		return errors.New("DatabaseConfig: driver must be provided")
+	}
+	if cfg.Host == "" || cfg.Database == "" {
+		return errors.New("DatabaseConfig: host and database must be provided")
+	}
+	return nil
 }
 
 type Service struct {
@@ -715,6 +756,59 @@ func loadConfig(path string) (*Config, error) {
 	if err = json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+	// Validate each service's configuration.
+	for i, svc := range cfg.Services {
+		switch svc.Type {
+		case ServiceTypeAPI:
+			{
+				b, _ := json.Marshal(svc.Config)
+				var apiCfg APIConfig
+				if err := json.Unmarshal(b, &apiCfg); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				if err := apiCfg.Validate(); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				cfg.Services[i].Config = apiCfg
+			}
+		case ServiceTypeSMTP:
+			{
+				b, _ := json.Marshal(svc.Config)
+				var smtpCfg SMTPConfig
+				if err := json.Unmarshal(b, &smtpCfg); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				if err := smtpCfg.Validate(); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				cfg.Services[i].Config = smtpCfg
+			}
+		case ServiceTypeSMPP:
+			{
+				b, _ := json.Marshal(svc.Config)
+				var smppCfg SMPPConfig
+				if err := json.Unmarshal(b, &smppCfg); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				if err := smppCfg.Validate(); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				cfg.Services[i].Config = smppCfg
+			}
+		case ServiceTypeDB:
+			{
+				b, _ := json.Marshal(svc.Config)
+				var dbCfg DatabaseConfig
+				if err := json.Unmarshal(b, &dbCfg); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				if err := dbCfg.Validate(); err != nil {
+					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+				}
+				cfg.Services[i].Config = dbCfg
+			}
+		}
+	}
 	return &cfg, nil
 }
 
@@ -754,6 +848,34 @@ func main() {
 		cancel()
 		if err := integration.Shutdown(context.Background()); err != nil {
 			log.Printf("Error during shutdown: %v", err)
+		}
+	}()
+
+	// Listen for SIGHUP to support configuration reload without downtime.
+	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(reloadCh, syscall.SIGHUP)
+	go func() {
+		for {
+			<-reloadCh
+			log.Println("Received SIGHUP: Reloading configuration...")
+			newCfg, err := loadConfig(*configPath)
+			if err != nil {
+				log.Printf("Failed to reload config: %v", err)
+				continue
+			}
+			// Update services.
+			for _, svc := range newCfg.Services {
+				if err := serviceStore.UpdateService(svc); err != nil {
+					_ = serviceStore.AddService(svc)
+				}
+			}
+			// Update credentials.
+			for _, cred := range newCfg.Credentials {
+				if err := credentialStore.UpdateCredential(cred); err != nil {
+					_ = credentialStore.AddCredential(cred)
+				}
+			}
+			log.Println("Configuration reloaded successfully.")
 		}
 	}()
 
