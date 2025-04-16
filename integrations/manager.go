@@ -482,7 +482,7 @@ type EmailPayload struct {
 
 type HTTPResponse struct {
 	StatusCode int
-	Body       []byte
+	Body       json.RawMessage
 	Headers    map[string][]string
 }
 
