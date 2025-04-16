@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	stdJs
 	"fmt"
 	"io"
 	"math/rand"
@@ -482,7 +483,7 @@ type EmailPayload struct {
 
 type HTTPResponse struct {
 	StatusCode int
-	Body       json.RawMessage
+	Body       stdJson.RawMessage
 	Headers    map[string][]string
 }
 
