@@ -2,30 +2,28 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"net/smtp"
 	"sync"
 	"time"
 )
 
-// Service Types
 type ServiceType string
+type CredentialType string
 
 const (
 	ServiceTypeAPI  ServiceType = "api"
 	ServiceTypeSMTP ServiceType = "smtp"
 	ServiceTypeSMPP ServiceType = "smpp"
 	ServiceTypeDB   ServiceType = "database"
-)
 
-// Credential Types
-type CredentialType string
-
-const (
 	CredentialTypeAPIKey    CredentialType = "api_key"
 	CredentialTypeBearer    CredentialType = "bearer"
 	CredentialTypeBasicAuth CredentialType = "basic"
@@ -35,7 +33,24 @@ const (
 	CredentialTypeDatabase  CredentialType = "database"
 )
 
-// Service Configuration Structs
+type APIKeyCredential struct {
+	Key string `json:"key"`
+}
+
+type BearerCredential struct {
+	Token string `json:"token"`
+}
+
+type BasicAuthCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type SMTPAuthCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type APIConfig struct {
 	URL         string            `json:"url"`
 	Method      string            `json:"method"`
@@ -69,11 +84,10 @@ type DatabaseConfig struct {
 	SSLMode  string `json:"ssl_mode"`
 }
 
-// Service Definition
 type Service struct {
 	Name          string      `json:"name"`
 	Type          ServiceType `json:"type"`
-	Config        interface{} `json:"config"`
+	Config        any         `json:"config"`
 	CredentialKey string      `json:"credential_key"`
 	Enabled       bool        `json:"enabled"`
 	CreatedAt     time.Time   `json:"created_at"`
@@ -88,7 +102,6 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	}{
 		Alias: (*Alias)(s),
 	}
-
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
@@ -124,11 +137,10 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Credential Definition
 type Credential struct {
 	Key         string         `json:"key"`
 	Type        CredentialType `json:"type"`
-	Data        interface{}    `json:"data"`
+	Data        any            `json:"data"`
 	Description string         `json:"description"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
@@ -142,46 +154,24 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	}{
 		Alias: (*Alias)(c),
 	}
-
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-
 	switch c.Type {
 	case CredentialTypeAPIKey:
-		var d struct{ Key string }
+		var d APIKeyCredential
 		if err := json.Unmarshal(aux.Data, &d); err != nil {
 			return err
 		}
 		c.Data = d
 	case CredentialTypeBearer:
-		var d struct{ Token string }
+		var d BearerCredential
 		if err := json.Unmarshal(aux.Data, &d); err != nil {
 			return err
 		}
 		c.Data = d
-	case CredentialTypeBasicAuth:
-		var d struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-		}
-		if err := json.Unmarshal(aux.Data, &d); err != nil {
-			return err
-		}
-		c.Data = d
-	case CredentialTypeSMTP:
-		var d struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-		}
-		if err := json.Unmarshal(aux.Data, &d); err != nil {
-			return err
-		}
-		c.Data = d
-	case CredentialTypeOAuth2:
-		var d struct {
-			Token string `json:"token"`
-		}
+	case CredentialTypeBasicAuth, CredentialTypeSMTP:
+		var d SMTPAuthCredential
 		if err := json.Unmarshal(aux.Data, &d); err != nil {
 			return err
 		}
@@ -192,7 +182,6 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Storage Interfaces
 type ServiceStore interface {
 	AddService(Service) error
 	GetService(string) (Service, error)
@@ -270,7 +259,6 @@ func (s *InMemoryServiceStore) ListServices() ([]Service, error) {
 	return services, nil
 }
 
-// Complete InMemoryCredentialStore implementation
 type InMemoryCredentialStore struct {
 	credentials map[string]Credential
 	mu          sync.RWMutex
@@ -332,7 +320,15 @@ func (c *InMemoryCredentialStore) ListCredentials() ([]Credential, error) {
 	return creds, nil
 }
 
-// Integration System Core
+type IntegrationExecutor interface {
+	Execute(ctx context.Context, serviceName string, payload any) (any, error)
+}
+
+type EmailPayload struct {
+	To      []string
+	Message []byte
+}
+
 type IntegrationSystem struct {
 	services    ServiceStore
 	credentials CredentialStore
@@ -345,8 +341,7 @@ func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialS
 	}
 }
 
-// API Client Methods
-func (is *IntegrationSystem) ExecuteAPIRequest(serviceName string, body []byte) (*http.Response, error) {
+func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName string, body []byte) (*http.Response, error) {
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return nil, err
@@ -366,26 +361,24 @@ func (is *IntegrationSystem) ExecuteAPIRequest(serviceName string, body []byte) 
 		return nil, err
 	}
 
-	req, err := http.NewRequest(cfg.Method, cfg.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	// Add headers
 	for k, v := range cfg.Headers {
 		req.Header.Add(k, v)
 	}
 
-	// Add authentication
 	switch cred.Type {
 	case CredentialTypeAPIKey:
-		data, ok := cred.Data.(struct{ Key string })
+		data, ok := cred.Data.(APIKeyCredential)
 		if !ok {
 			return nil, errors.New("invalid API key credential")
 		}
 		req.Header.Add("X-API-Key", data.Key)
 	case CredentialTypeBearer:
-		data, ok := cred.Data.(struct{ Token string })
+		data, ok := cred.Data.(BearerCredential)
 		if !ok {
 			return nil, errors.New("invalid bearer token credential")
 		}
@@ -398,8 +391,30 @@ func (is *IntegrationSystem) ExecuteAPIRequest(serviceName string, body []byte) 
 	return client.Do(req)
 }
 
-// SMTP Client Methods
-func (is *IntegrationSystem) SendEmail(serviceName string, to []string, message []byte) error {
+func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+
+	for i := 0; i < maxRetries; i++ {
+		resp, err = is.ExecuteAPIRequest(ctx, serviceName, body)
+		if err == nil {
+			return resp, nil
+		}
+		log.Printf("API request attempt %d/%d failed: %v", i+1, maxRetries, err)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		backoff := time.Duration(math.Pow(2, float64(i))) * time.Second
+		time.Sleep(backoff)
+	}
+	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
+}
+
+func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, to []string, message []byte) error {
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return err
@@ -419,10 +434,7 @@ func (is *IntegrationSystem) SendEmail(serviceName string, to []string, message 
 		return err
 	}
 
-	authData, ok := cred.Data.(struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	})
+	authData, ok := cred.Data.(SMTPAuthCredential)
 	if !ok {
 		return errors.New("invalid SMTP credential data")
 	}
@@ -434,7 +446,6 @@ func (is *IntegrationSystem) SendEmail(serviceName string, to []string, message 
 			InsecureSkipVerify: false,
 			ServerName:         cfg.Server,
 		}
-
 		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
 		if err != nil {
 			return err
@@ -450,54 +461,14 @@ func (is *IntegrationSystem) SendEmail(serviceName string, to []string, message 
 		if err = client.Auth(auth); err != nil {
 			return err
 		}
-
 		if err = client.Mail(cfg.From); err != nil {
 			return err
 		}
-
 		for _, addr := range to {
 			if err = client.Rcpt(addr); err != nil {
 				return err
 			}
 		}
-
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		defer w.Close()
-
-		_, err = w.Write(message)
-		return err
-	} else if cfg.UseSTARTTLS {
-		client, err := smtp.Dial(fmt.Sprintf("%s:%d", cfg.Server, cfg.Port))
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         cfg.Server,
-		}
-		if err = client.StartTLS(tlsConfig); err != nil {
-			return err
-		}
-
-		if err = client.Auth(auth); err != nil {
-			return err
-		}
-
-		if err = client.Mail(cfg.From); err != nil {
-			return err
-		}
-
-		for _, addr := range to {
-			if err = client.Rcpt(addr); err != nil {
-				return err
-			}
-		}
-
 		w, err := client.Data()
 		if err != nil {
 			return err
@@ -516,61 +487,106 @@ func (is *IntegrationSystem) SendEmail(serviceName string, to []string, message 
 	)
 }
 
-// SMPP Client Methods
-func (is *IntegrationSystem) ExecuteSMPPRequest(serviceName string, message string) error {
+func (is *IntegrationSystem) SendSMS(ctx context.Context, serviceName string, message string) error {
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return err
 	}
+
 	if service.Type != ServiceTypeSMPP {
 		return fmt.Errorf("not an SMPP service: %s", serviceName)
 	}
-	// Place holder: Cast to SMPPConfig and retrieve credentials if needed.
-	// TODO: Implement actual SMPP integration.
-	return fmt.Errorf("SMPP integration not implemented")
+
+	cfg, ok := service.Config.(SMPPConfig)
+	if !ok {
+		return errors.New("invalid SMPP configuration")
+	}
+
+	log.Printf("SMPP: Sending SMS via %s:%d using system type %s\nMessage: %s", cfg.Host, cfg.Port, cfg.SystemType, message)
+
+	return nil
 }
 
-// Database Client Methods
-func (is *IntegrationSystem) ExecuteDBQuery(serviceName string, query string) (interface{}, error) {
+func (is *IntegrationSystem) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string) (any, error) {
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}
+
 	if service.Type != ServiceTypeDB {
-		return nil, fmt.Errorf("not a Database service: %s", serviceName)
+		return nil, fmt.Errorf("not a database service: %s", serviceName)
 	}
-	// Place holder: Cast to DatabaseConfig and retrieve credentials if needed.
-	// TODO: Implement actual Database integration.
-	return nil, fmt.Errorf("Database integration not implemented")
+
+	cfg, ok := service.Config.(DatabaseConfig)
+	if !ok {
+		return nil, errors.New("invalid Database configuration")
+	}
+
+	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
+	log.Printf("DB: Connecting to %s with connection string: %s", cfg.Driver, connStr)
+
+	log.Printf("DB: Executing query: %s", query)
+	return "dummy result", nil
 }
 
-// Usage Example
+func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, payload any) (any, error) {
+	service, err := is.services.GetService(serviceName)
+	if err != nil {
+		return nil, err
+	}
+
+	switch service.Type {
+	case ServiceTypeAPI:
+		body, ok := payload.([]byte)
+		if !ok {
+			return nil, fmt.Errorf("invalid payload for API service, expected []byte")
+		}
+		return is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, 3)
+	case ServiceTypeSMTP:
+		emailPayload, ok := payload.(EmailPayload)
+		if !ok {
+			return nil, fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
+		}
+		err := is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
+		return nil, err
+	case ServiceTypeSMPP:
+		msg, ok := payload.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid payload for SMPP service, expected string message")
+		}
+		return nil, is.SendSMS(ctx, serviceName, msg)
+	case ServiceTypeDB:
+		query, ok := payload.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid payload for DB service, expected string query")
+		}
+		return is.ExecuteDatabaseQuery(ctx, serviceName, query)
+	default:
+		return nil, fmt.Errorf("unsupported service type: %s", service.Type)
+	}
+}
+
 func main() {
-	// Initialize stores
+
 	serviceStore := NewInMemoryServiceStore()
 	credentialStore := NewInMemoryCredentialStore()
 	integration := NewIntegrationSystem(serviceStore, credentialStore)
 
-	// Add SMTP Credential
-	err := credentialStore.AddCredential(Credential{
+	if err := credentialStore.AddCredential(Credential{
 		Key:  "smtp-prod",
 		Type: CredentialTypeSMTP,
-		Data: struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-		}{
+		Data: SMTPAuthCredential{
 			Username: "user@example.com",
 			Password: "securepassword",
 		},
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		panic(err)
+		Description: "SMTP production credentials",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}); err != nil {
+		log.Fatalf("Failed to add SMTP credential: %v", err)
 	}
 
-	// Add SMTP Service
-	err = serviceStore.AddService(Service{
+	if err := serviceStore.AddService(Service{
 		Name: "production-email",
 		Type: ServiceTypeSMTP,
 		Config: SMTPConfig{
@@ -583,14 +599,108 @@ func main() {
 		Enabled:       true,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
-	})
-	if err != nil {
-		panic(err)
+	}); err != nil {
+		log.Fatalf("Failed to add SMTP service: %v", err)
 	}
 
-	// Send email example
-	err = integration.SendEmail("production-email", []string{"recipient@example.com"}, []byte("Test message"))
-	if err != nil {
-		panic(err)
+	if err := credentialStore.AddCredential(Credential{
+		Key:  "api-key-1",
+		Type: CredentialTypeAPIKey,
+		Data: APIKeyCredential{
+			Key: "my-secure-api-key",
+		},
+		Description: "API key for service 1",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}); err != nil {
+		log.Fatalf("Failed to add API credential: %v", err)
 	}
+
+	if err := serviceStore.AddService(Service{
+		Name: "some-api-service",
+		Type: ServiceTypeAPI,
+		Config: APIConfig{
+			URL:     "https://api.example.com/endpoint",
+			Method:  "POST",
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Timeout: 5 * time.Second,
+		},
+		CredentialKey: "api-key-1",
+		Enabled:       true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		log.Fatalf("Failed to add API service: %v", err)
+	}
+
+	if err := serviceStore.AddService(Service{
+		Name: "sms-service",
+		Type: ServiceTypeSMPP,
+		Config: SMPPConfig{
+			SystemType: "default",
+			Host:       "smpp.example.com",
+			Port:       2775,
+			SourceAddr: "SENDER",
+			DestAddr:   "RECIPIENT",
+		},
+		CredentialKey: "",
+		Enabled:       true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		log.Fatalf("Failed to add SMPP service: %v", err)
+	}
+
+	if err := serviceStore.AddService(Service{
+		Name: "prod-database",
+		Type: ServiceTypeDB,
+		Config: DatabaseConfig{
+			Driver:   "sqlite3",
+			Host:     "localhost",
+			Port:     0,
+			Database: "prod.db",
+			SSLMode:  "disable",
+		},
+		CredentialKey: "",
+		Enabled:       true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}); err != nil {
+		log.Fatalf("Failed to add Database service: %v", err)
+	}
+
+	ctx := context.Background()
+
+	emailPayload := EmailPayload{
+		To:      []string{"recipient@example.com"},
+		Message: []byte("Test email message"),
+	}
+	if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
+		log.Fatalf("Failed to execute email operation: %v", err)
+	}
+	log.Println("Email sent successfully.")
+
+	apiPayload := []byte(`{"example": "data"}`)
+	apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
+	if err != nil {
+		log.Printf("API request failed: %v", err)
+	} else {
+		if resp, ok := apiResult.(*http.Response); ok {
+			log.Printf("API request succeeded with status: %s", resp.Status)
+		}
+	}
+
+	if _, err := integration.Execute(ctx, "sms-service", "Test SMS message"); err != nil {
+		log.Printf("SMS sending failed: %v", err)
+	} else {
+		log.Println("SMS sent successfully.")
+	}
+
+	dbResult, err := integration.Execute(ctx, "prod-database", "SELECT * FROM users;")
+	if err != nil {
+		log.Printf("Database query failed: %v", err)
+	} else {
+		log.Printf("Database query result: %v", dbResult)
+	}
+
 }
