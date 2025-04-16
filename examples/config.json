@@ -63,13 +63,13 @@
             "name": "some-api-service",
             "type": "rest",
             "config": {
-                "url": "https://jsonplaceholder.typicode.com/posts/100",
+                "url": "https://dummyjson.com/users",
                 "method": "GET",
+                "data_key": "users",
                 "headers": {
                     "Content-Type": "application/json",
                     "X-Request-ID": "unique-request-id"
                 },
-                "content_type": "application/json",
                 "timeout": "10s",
                 "tls_insecure_skip_verify": false,
                 "retry_count": 3,

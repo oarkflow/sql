@@ -16,6 +16,7 @@ import (
 
 	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
+	"github.com/oarkflow/json/jsonparser"
 	"github.com/oarkflow/log"
 	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/squealx/connection"
@@ -499,7 +500,8 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 			break
 		}
 		maxRetries := 3
-		if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.RetryCount > 0 {
+		apiCfg, ok := service.Config.(APIConfig)
+		if ok && apiCfg.RetryCount > 0 {
 			maxRetries = apiCfg.RetryCount
 		}
 		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, maxRetries)
@@ -511,6 +513,9 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 			if err != nil {
 				execErr = err
 			} else {
+				if apiCfg.DataKey != "" {
+					body, _, _, err = jsonparser.Get(body, apiCfg.DataKey)
+				}
 				res = &HTTPResponse{
 					StatusCode: resp.StatusCode,
 					Body:       body,

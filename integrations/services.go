@@ -93,7 +93,6 @@ type APIConfig struct {
 	Headers                 map[string]string `json:"headers"`
 	DataKey                 string            `json:"data_key"`
 	RequestBody             string            `json:"request_body"`
-	ContentType             string            `json:"content_type"`
 	Timeout                 string            `json:"timeout"` // e.g., "10s"
 	TLSInsecureSkipVerify   bool              `json:"tls_insecure_skip_verify"`
 	RetryCount              int               `json:"retry_count"`
