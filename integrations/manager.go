@@ -482,9 +482,9 @@ type EmailPayload struct {
 }
 
 type HTTPResponse struct {
-	StatusCode int
-	Body       stdJson.RawMessage
-	Headers    map[string][]string
+	StatusCode int                 `json:"status_code"`
+	Body       stdJson.RawMessage  `json:"body"`
+	Headers    map[string][]string `json:"headers"`
 }
 
 // Execute dispatches an operation based on service type.
