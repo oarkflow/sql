@@ -55,21 +55,25 @@ type SMTPAuthCredential struct {
 }
 
 type APIConfig struct {
-	URL                   string            `json:"url"`
-	Method                string            `json:"method"`
-	Headers               map[string]string `json:"headers"`
-	RequestBody           string            `json:"request_body"`
-	ContentType           string            `json:"content_type"`
-	Timeout               time.Duration     `json:"timeout"`
-	TLSInsecureSkipVerify bool              `json:"tls_insecure_skip_verify"`
+	URL                     string            `json:"url"`
+	Method                  string            `json:"method"`
+	Headers                 map[string]string `json:"headers"`
+	RequestBody             string            `json:"request_body"`
+	ContentType             string            `json:"content_type"`
+	Timeout                 time.Duration     `json:"timeout"`
+	TLSInsecureSkipVerify   bool              `json:"tls_insecure_skip_verify"`
+	RetryCount              int               `json:"retry_count"`
+	CircuitBreakerThreshold int               `json:"circuit_breaker_threshold"`
 }
 
 type SMTPConfig struct {
-	Server      string `json:"server"`
-	Port        int    `json:"port"`
-	From        string `json:"from"`
-	UseTLS      bool   `json:"use_tls"`
-	UseSTARTTLS bool   `json:"use_starttls"`
+	Server            string        `json:"server"`
+	Port              int           `json:"port"`
+	From              string        `json:"from"`
+	UseTLS            bool          `json:"use_tls"`
+	UseSTARTTLS       bool          `json:"use_starttls"`
+	ConnectionTimeout time.Duration `json:"connection_timeout"`
+	MaxConnections    int           `json:"max_connections"`
 }
 
 type SMPPConfig struct {
@@ -78,14 +82,18 @@ type SMPPConfig struct {
 	Port       int    `json:"port"`
 	SourceAddr string `json:"source_addr"`
 	DestAddr   string `json:"dest_addr"`
+	RetryCount int    `json:"retry_count"`
 }
 
 type DatabaseConfig struct {
-	Driver   string `json:"driver"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	SSLMode  string `json:"ssl_mode"`
+	Driver          string        `json:"driver"`
+	Host            string        `json:"host"`
+	Port            int           `json:"port"`
+	Database        string        `json:"database"`
+	SSLMode         string        `json:"ssl_mode"`
+	MaxOpenConns    int           `json:"max_open_conns"`
+	MaxIdleConns    int           `json:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
 }
 
 type Service struct {
@@ -324,6 +332,38 @@ func (c *InMemoryCredentialStore) ListCredentials() ([]Credential, error) {
 	return creds, nil
 }
 
+type CircuitBreaker struct {
+	failureCount int
+	threshold    int
+	openUntil    time.Time
+	lock         sync.Mutex
+}
+
+func NewCircuitBreaker(threshold int) *CircuitBreaker {
+	return &CircuitBreaker{threshold: threshold}
+}
+
+func (cb *CircuitBreaker) AllowRequest() bool {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	return time.Now().After(cb.openUntil)
+}
+
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	cb.failureCount = 0
+}
+
+func (cb *CircuitBreaker) RecordFailure(cooldown time.Duration) {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	cb.failureCount++
+	if cb.failureCount >= cb.threshold {
+		cb.openUntil = time.Now().Add(cooldown)
+	}
+}
+
 type Integrator interface {
 	Execute(ctx context.Context, serviceName string, payload any) (any, error)
 	HealthCheck(ctx context.Context) error
@@ -336,15 +376,36 @@ type EmailPayload struct {
 }
 
 type IntegrationSystem struct {
-	services    ServiceStore
-	credentials CredentialStore
+	services        ServiceStore
+	credentials     CredentialStore
+	circuitBreakers map[string]*CircuitBreaker
+	cbLock          sync.Mutex
 }
 
 func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore) *IntegrationSystem {
 	return &IntegrationSystem{
-		services:    serviceStore,
-		credentials: credentialStore,
+		services:        serviceStore,
+		credentials:     credentialStore,
+		circuitBreakers: make(map[string]*CircuitBreaker),
 	}
+}
+
+func (is *IntegrationSystem) getCircuitBreaker(serviceName string) *CircuitBreaker {
+	is.cbLock.Lock()
+	defer is.cbLock.Unlock()
+	cb, exists := is.circuitBreakers[serviceName]
+	if !exists {
+		threshold := 3 // default
+		service, err := is.services.GetService(serviceName)
+		if err == nil && service.Type == ServiceTypeAPI {
+			if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.CircuitBreakerThreshold > 0 {
+				threshold = apiCfg.CircuitBreakerThreshold
+			}
+		}
+		cb = NewCircuitBreaker(threshold)
+		is.circuitBreakers[serviceName] = cb
+	}
+	return cb
 }
 
 func getHTTPClient(apiCfg APIConfig) *http.Client {
@@ -519,34 +580,54 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	if err != nil {
 		return nil, err
 	}
+	cb := is.getCircuitBreaker(serviceName)
+	if !cb.AllowRequest() {
+		return nil, fmt.Errorf("service %s is temporarily unavailable due to repeated failures", serviceName)
+	}
+	var res any
+	var execErr error
 	switch service.Type {
 	case ServiceTypeAPI:
 		body, ok := payload.([]byte)
 		if !ok {
-			return nil, fmt.Errorf("invalid payload for API service, expected []byte")
+			execErr = fmt.Errorf("invalid payload for API service, expected []byte")
+			break
 		}
-		return is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, 3)
+		maxRetries := 3
+		if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.RetryCount > 0 {
+			maxRetries = apiCfg.RetryCount
+		}
+		res, execErr = is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, maxRetries)
 	case ServiceTypeSMTP:
 		emailPayload, ok := payload.(EmailPayload)
 		if !ok {
-			return nil, fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
+			execErr = fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
+			break
 		}
-		return nil, is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
+		execErr = is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
 	case ServiceTypeSMPP:
 		msg, ok := payload.(string)
 		if !ok {
-			return nil, fmt.Errorf("invalid payload for SMPP service, expected string message")
+			execErr = fmt.Errorf("invalid payload for SMPP service, expected string message")
+			break
 		}
-		return nil, is.SendSMS(ctx, serviceName, msg)
+		execErr = is.SendSMS(ctx, serviceName, msg)
 	case ServiceTypeDB:
 		query, ok := payload.(string)
 		if !ok {
-			return nil, fmt.Errorf("invalid payload for DB service, expected string query")
+			execErr = fmt.Errorf("invalid payload for DB service, expected string query")
+			break
 		}
-		return is.ExecuteDatabaseQuery(ctx, serviceName, query)
+		res, execErr = is.ExecuteDatabaseQuery(ctx, serviceName, query)
 	default:
-		return nil, fmt.Errorf("unsupported service type: %s", service.Type)
+		execErr = fmt.Errorf("unsupported service type: %s", service.Type)
 	}
+	if execErr != nil {
+		cb.RecordFailure(30 * time.Second)
+	} else {
+		cb.RecordSuccess()
+	}
+	return res, execErr
 }
 
 func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
