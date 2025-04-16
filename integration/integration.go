@@ -324,12 +324,6 @@ func (c *InMemoryCredentialStore) ListCredentials() ([]Credential, error) {
 	return creds, nil
 }
 
-type IntegrationExecutor interface {
-	Execute(ctx context.Context, serviceName string, payload any) (any, error)
-	HealthCheck(ctx context.Context) error
-}
-
-// New interface that standardizes integration execution across services
 type Integrator interface {
 	Execute(ctx context.Context, serviceName string, payload any) (any, error)
 	HealthCheck(ctx context.Context) error
@@ -367,11 +361,9 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	if err != nil {
 		return nil, err
 	}
-
 	if service.Type != ServiceTypeAPI {
 		return nil, fmt.Errorf("not an API service: %s", serviceName)
 	}
-
 	cfg, ok := service.Config.(APIConfig)
 	if !ok {
 		return nil, errors.New("invalid API configuration")
@@ -385,11 +377,9 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	if err != nil {
 		return nil, err
 	}
-
 	for k, v := range cfg.Headers {
 		req.Header.Add(k, v)
 	}
-
 	switch cred.Type {
 	case CredentialTypeAPIKey:
 		data, ok := cred.Data.(APIKeyCredential)
@@ -406,12 +396,10 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	default:
 		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 	}
-
 	client := getHTTPClient(cfg)
 	return client.Do(req)
 }
 
-// Modified ExecuteAPIRequestWithRetry to add exponential backoff with jitter.
 func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
 	var resp *http.Response
 	var err error
@@ -439,11 +427,9 @@ func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, 
 	if err != nil {
 		return err
 	}
-
 	if service.Type != ServiceTypeSMTP {
 		return fmt.Errorf("not an SMTP service: %s", serviceName)
 	}
-
 	cfg, ok := service.Config.(SMTPConfig)
 	if !ok {
 		return errors.New("invalid SMTP configuration")
@@ -453,31 +439,24 @@ func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, 
 	if err != nil {
 		return err
 	}
-
 	authData, ok := cred.Data.(SMTPAuthCredential)
 	if !ok {
 		return errors.New("invalid SMTP credential data")
 	}
-
 	auth := smtp.PlainAuth("", authData.Username, authData.Password, cfg.Server)
 
 	if cfg.UseTLS {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         cfg.Server,
-		}
+		tlsConfig := &tls.Config{InsecureSkipVerify: false, ServerName: cfg.Server}
 		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-
 		client, err := smtp.NewClient(conn, cfg.Server)
 		if err != nil {
 			return err
 		}
 		defer client.Close()
-
 		if err = client.Auth(auth); err != nil {
 			return err
 		}
@@ -497,14 +476,7 @@ func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, 
 		_, err = w.Write(message)
 		return err
 	}
-
-	return smtp.SendMail(
-		fmt.Sprintf("%s:%d", cfg.Server, cfg.Port),
-		auth,
-		cfg.From,
-		to,
-		message,
-	)
+	return smtp.SendMail(fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), auth, cfg.From, to, message)
 }
 
 func (is *IntegrationSystem) SendSMS(ctx context.Context, serviceName string, message string) error {
@@ -512,16 +484,13 @@ func (is *IntegrationSystem) SendSMS(ctx context.Context, serviceName string, me
 	if err != nil {
 		return err
 	}
-
 	if service.Type != ServiceTypeSMPP {
 		return fmt.Errorf("not an SMPP service: %s", serviceName)
 	}
-
 	cfg, ok := service.Config.(SMPPConfig)
 	if !ok {
 		return errors.New("invalid SMPP configuration")
 	}
-
 	log.Printf("SMPP: Sending SMS via %s:%d using system type %s\nMessage: %s", cfg.Host, cfg.Port, cfg.SystemType, message)
 
 	return nil
@@ -532,19 +501,15 @@ func (is *IntegrationSystem) ExecuteDatabaseQuery(ctx context.Context, serviceNa
 	if err != nil {
 		return nil, err
 	}
-
 	if service.Type != ServiceTypeDB {
 		return nil, fmt.Errorf("not a database service: %s", serviceName)
 	}
-
 	cfg, ok := service.Config.(DatabaseConfig)
 	if !ok {
 		return nil, errors.New("invalid Database configuration")
 	}
-
 	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
 	log.Printf("DB: Connecting to %s with connection string: %s", cfg.Driver, connStr)
-
 	log.Printf("DB: Executing query: %s", query)
 	return "dummy result", nil
 }
@@ -554,7 +519,6 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	if err != nil {
 		return nil, err
 	}
-
 	switch service.Type {
 	case ServiceTypeAPI:
 		body, ok := payload.([]byte)
@@ -567,8 +531,7 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 		if !ok {
 			return nil, fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
 		}
-		err := is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
-		return nil, err
+		return nil, is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
 	case ServiceTypeSMPP:
 		msg, ok := payload.(string)
 		if !ok {
@@ -586,7 +549,6 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	}
 }
 
-// Modified HealthCheck to run checks concurrently for better performance and fault tolerance.
 func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 	services, err := is.services.ListServices()
 	if err != nil {
@@ -622,10 +584,7 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 					return
 				}
 				if cfg.UseTLS {
-					tlsConfig := &tls.Config{
-						InsecureSkipVerify: false,
-						ServerName:         cfg.Server,
-					}
+					tlsConfig := &tls.Config{InsecureSkipVerify: false, ServerName: cfg.Server}
 					conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
 					if err != nil {
 						errCh <- fmt.Errorf("health check failed for SMTP service %s: %v", s.Name, err)
@@ -633,8 +592,6 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 					}
 					conn.Close()
 				}
-			default:
-				// No specific health check needed.
 			}
 		}(service)
 	}
@@ -663,7 +620,6 @@ func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// Add production-ready configuration structure.
 type Config struct {
 	Credentials []Credential `json:"credentials"`
 	Services    []Service    `json:"services"`
@@ -681,7 +637,6 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Modified main to support graceful shutdown via OS signals.
 func main() {
 	configPath := flag.String("config", "config.json", "Path to configuration file")
 	flag.Parse()
@@ -691,7 +646,6 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize stores from configuration.
 	serviceStore := NewInMemoryServiceStore()
 	credentialStore := NewInMemoryCredentialStore()
 	integration := NewIntegrationSystem(serviceStore, credentialStore)
@@ -711,7 +665,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Setup signal handling for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, os.Kill)
 	go func() {
@@ -729,7 +682,36 @@ func main() {
 		log.Println("All services are healthy.")
 	}
 
-	// Production usage logic goes here.
+	emailPayload := EmailPayload{
+		To:      []string{"recipient@example.com"},
+		Message: []byte("Test email message"),
+	}
+	if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
+		log.Fatalf("Email operation failed: %v", err)
+	}
+	log.Println("Email sent successfully.")
+
+	apiPayload := []byte(`{"example": "data"}`)
+	apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
+	if err != nil {
+		log.Printf("API request failed: %v", err)
+	} else if resp, ok := apiResult.(*http.Response); ok {
+		log.Printf("API request succeeded with status: %s", resp.Status)
+	}
+
+	if _, err := integration.Execute(ctx, "sms-service", "Test SMS message"); err != nil {
+		log.Printf("SMS operation failed: %v", err)
+	} else {
+		log.Println("SMS sent successfully.")
+	}
+
+	dbResult, err := integration.Execute(ctx, "prod-database", "SELECT * FROM users;")
+	if err != nil {
+		log.Printf("Database query failed: %v", err)
+	} else {
+		log.Printf("Database query result: %v", dbResult)
+	}
+
 	<-ctx.Done()
 	log.Println("Exiting integration system.")
 }
