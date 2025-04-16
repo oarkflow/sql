@@ -1,0 +1,19 @@
+{
+    "config": {
+        "system_type": "production",
+        "host": "smpp.example.com",
+        "port": 2775,
+        "source_addr": "SENDER",
+        "dest_addr": "RECIPIENT",
+        "retry_count": 3
+    },
+    "credentials": {
+        "key": "smpp-service-key",
+        "type": "smpp",
+        "data": {
+            "username": "smpp_user",
+            "password": "smpp_password"
+        },
+        "description": "SMPP credential for SMS service"
+    }
+}

@@ -1,0 +1,24 @@
+{
+    "config": {
+        "endpoint": "https://example.com",
+        "rules": ".item",
+        "target": "body",
+        "output_format": "json",
+        "field_mappings": [
+            {
+                "field": "title",
+                "selector": "h1",
+                "target": "text"
+            },
+            {
+                "field": "content",
+                "selector": ".content",
+                "target": "html"
+            }
+        ],
+        "timeout": "10s",
+        "user_agent": "MyWebCrawler/1.0",
+        "proxy_url": "http://proxy.example.com:8080"
+    },
+    "credentials": { }
+}

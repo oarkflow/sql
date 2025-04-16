@@ -1,0 +1,35 @@
+{
+    "config": {
+        "url": "https://api.example.com/data",
+        "method": "GET",
+        "data_key": "results",
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "timeout": "10s",
+        "tls_insecure_skip_verify": false,
+        "retry_count": 3,
+        "circuit_breaker_threshold": 5,
+        "auth_headers": {
+            "oauth2": {
+                "header": "Authorization",
+                "prefix": "Bearer "
+            }
+        }
+    },
+    "credentials": {
+        "key": "oauth2-api-service-key",
+        "type": "oauth2",
+        "data": {
+            "client_id": "your-client-id",
+            "client_secret": "your-client-secret",
+            "auth_url": "https://auth.example.com/authorize",
+            "token_url": "https://auth.example.com/token",
+            "scope": "read write",
+            "access_token": "initial-access-token",
+            "refresh_token": "your-refresh-token",
+            "expires_at": "2025-04-16T00:00:00Z"
+        },
+        "description": "OAuth2 credential for REST API service"
+    }
+}

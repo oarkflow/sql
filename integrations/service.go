@@ -122,6 +122,13 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		s.Config = cfg
+	// New case for WebCrawler integration.
+	case ServiceTypeWebCrawler:
+		var cfg WebCrawlerConfig
+		if err := json.Unmarshal(aux.Config, &cfg); err != nil {
+			return err
+		}
+		s.Config = cfg
 	default:
 		return fmt.Errorf("unknown service type: %s", s.Type)
 	}

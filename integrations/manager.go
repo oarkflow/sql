@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/json/jsonparser"
@@ -89,6 +90,14 @@ func (is *Manager) Logger() *log.Logger {
 	return is.logger
 }
 
+func (is *Manager) ServiceList() ([]Service, error) {
+	return is.services.ListServices()
+}
+
+func (is *Manager) GetService(service string) (Service, error) {
+	return is.services.GetService(service)
+}
+
 func (is *Manager) AddCB(name string, cb *CircuitBreaker) {
 	is.Lock()
 	defer is.Unlock()
@@ -107,7 +116,7 @@ func (is *Manager) getCircuitBreaker(serviceName string, threshold int) *Circuit
 }
 
 func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, body any) (*http.Response, error) {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +220,7 @@ func (is *Manager) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName s
 // ExecuteGraphQLRequest is similar to APIRequest but for GraphQL.
 func (is *Manager) ExecuteGraphQLRequest(ctx context.Context, serviceName string, query string) (*http.Response, error) {
 	// For GraphQL, we use HTTP POST with a JSON payload
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +248,7 @@ func (is *Manager) ExecuteGraphQLRequest(ctx context.Context, serviceName string
 
 // ExecuteSOAPRequest sends an XML SOAP request.
 func (is *Manager) ExecuteSOAPRequest(ctx context.Context, serviceName string, xmlBody []byte) (*http.Response, error) {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +269,7 @@ func (is *Manager) ExecuteSOAPRequest(ctx context.Context, serviceName string, x
 // ExecuteGRPCRequest simulates a gRPC call.
 func (is *Manager) ExecuteGRPCRequest(ctx context.Context, serviceName string, request string) (string, error) {
 	// In a real implementation, you'd use a gRPC client stub.
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return "", err
 	}
@@ -280,7 +289,7 @@ func (is *Manager) ExecuteGRPCRequest(ctx context.Context, serviceName string, r
 
 // ExecuteKafkaMessage simulates sending a message to Kafka.
 func (is *Manager) ExecuteKafkaMessage(ctx context.Context, serviceName string, message string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -300,7 +309,7 @@ func (is *Manager) ExecuteKafkaMessage(ctx context.Context, serviceName string, 
 
 // ExecuteMQTTMessage simulates sending an MQTT message.
 func (is *Manager) ExecuteMQTTMessage(ctx context.Context, serviceName string, message string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -319,7 +328,7 @@ func (is *Manager) ExecuteMQTTMessage(ctx context.Context, serviceName string, m
 
 // ExecuteFTPTransfer performs a simple FTP NOOP command.
 func (is *Manager) ExecuteFTPTransfer(ctx context.Context, serviceName string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -351,7 +360,7 @@ func (is *Manager) ExecuteFTPTransfer(ctx context.Context, serviceName string) e
 // ExecuteSFTPTransfer simulates an SFTP transfer.
 func (is *Manager) ExecuteSFTPTransfer(ctx context.Context, serviceName string) error {
 	// In a real system use an SFTP client (e.g., golang.org/x/crypto/ssh + SFTP library).
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -371,7 +380,7 @@ func (is *Manager) ExecuteSFTPTransfer(ctx context.Context, serviceName string) 
 
 // ExecutePushNotification simulates sending a push notification.
 func (is *Manager) ExecutePushNotification(ctx context.Context, serviceName string, message string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -390,7 +399,7 @@ func (is *Manager) ExecutePushNotification(ctx context.Context, serviceName stri
 
 // ExecuteSlackMessage sends a message via a Slack webhook.
 func (is *Manager) ExecuteSlackMessage(ctx context.Context, serviceName string, message string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -419,7 +428,7 @@ func (is *Manager) ExecuteSlackMessage(ctx context.Context, serviceName string, 
 
 // ExecuteCustomTCPMessage sends a message over raw TCP.
 func (is *Manager) ExecuteCustomTCPMessage(ctx context.Context, serviceName string, message string) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -442,7 +451,7 @@ func (is *Manager) ExecuteCustomTCPMessage(ctx context.Context, serviceName stri
 
 // ExecuteVoIPCall simulates a VoIP (SIP) call.
 func (is *Manager) ExecuteVoIPCall(ctx context.Context, serviceName string, target string) (string, error) {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return "", err
 	}
@@ -457,6 +466,58 @@ func (is *Manager) ExecuteVoIPCall(ctx context.Context, serviceName string, targ
 	}
 	is.logger.Info().Msgf("Simulated VoIP call to %s via SIP server %s", target, cfg.SIPServer)
 	return "voip call connected", nil
+}
+
+// New function to execute a WebCrawler request.
+func (is *Manager) ExecuteWebCrawlerRequest(ctx context.Context, serviceName string) ([]map[string]any, error) {
+	service, err := is.GetService(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	cfg, ok := service.Config.(WebCrawlerConfig)
+	if !ok {
+		return nil, errors.New("invalid WebCrawler configuration")
+	}
+	// Create custom client with timeout and proxy if provided.
+	client := &http.Client{Timeout: parseDuration(cfg.Timeout)}
+	if cfg.ProxyURL != "" {
+		if parsed, err := url.Parse(cfg.ProxyURL); err == nil {
+			client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", cfg.Endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.UserAgent != "" {
+		req.Header.Set("User-Agent", cfg.UserAgent)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var records []map[string]any
+	doc.Find(cfg.Rules).Each(func(i int, row *goquery.Selection) {
+		record := make(map[string]any)
+		for _, mapping := range cfg.FieldMappings {
+			elem := row.Find(mapping.Selector)
+			var value string
+			switch {
+			case mapping.Target == "html":
+				value, _ = elem.Html()
+			default:
+				value = elem.Text()
+			}
+			record[mapping.Field] = value
+		}
+		records = append(records, record)
+	})
+	return records, nil
 }
 
 func parseDuration(d string) time.Duration {
@@ -489,7 +550,7 @@ type HTTPResponse struct {
 
 // Execute dispatches an operation based on service type.
 func (is *Manager) Execute(ctx context.Context, serviceName string, payload any) (any, error) {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}
@@ -623,6 +684,11 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		var voipResp string
 		voipResp, execErr = is.ExecuteVoIPCall(ctx, serviceName, target)
 		res = voipResp
+	// New case for WebCrawler integration.
+	case ServiceTypeWebCrawler:
+		var crawlerResult []map[string]any
+		crawlerResult, execErr = is.ExecuteWebCrawlerRequest(ctx, serviceName)
+		res = crawlerResult
 	default:
 		execErr = fmt.Errorf("unsupported service type: %s", service.Type)
 	}
@@ -635,7 +701,7 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 }
 
 func (is *Manager) SendEmail(ctx context.Context, serviceName string, to []string, message []byte) error {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -693,7 +759,7 @@ func (is *Manager) SendEmail(ctx context.Context, serviceName string, to []strin
 
 func (is *Manager) SendSMS(ctx context.Context, serviceName string, message string) error {
 	// For SMPP, we simulate the SMS sending.
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return err
 	}
@@ -727,7 +793,7 @@ func (is *Manager) SendSMS(ctx context.Context, serviceName string, message stri
 }
 
 func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string) (any, error) {
-	service, err := is.services.GetService(serviceName)
+	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
 	}

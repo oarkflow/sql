@@ -1,0 +1,25 @@
+{
+    "config": {
+        "driver": "postgres",
+        "host": "localhost",
+        "port": 5432,
+        "database": "oark_manager",
+        "ssl_mode": "require",
+        "max_open_conns": 50,
+        "max_idle_conns": 10,
+        "conn_max_lifetime": "30m",
+        "connect_timeout": "10s",
+        "read_timeout": "5s",
+        "write_timeout": "5s",
+        "pool_size": 50
+    },
+    "credentials": {
+        "key": "db-credential",
+        "type": "database",
+        "data": {
+            "username": "postgres",
+            "password": "postgres"
+        },
+        "description": "Database credentials for production"
+    }
+}

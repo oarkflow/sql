@@ -20,7 +20,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	service := "some-api-service"
+	service := "webcrawler-service"
+	svc, err := manager.GetService(service)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(integrations.RequiredConfigFormat(svc.Type))
 	resp, err := manager.Execute(ctx, service, nil)
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
@@ -35,7 +40,7 @@ func main() {
 		}
 		fmt.Println(resp.StatusCode)
 	default:
-		fmt.Println(resp)
+		// fmt.Println(resp)
 	}
 	// testServices(ctx, manager)
 }

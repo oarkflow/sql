@@ -1,0 +1,8 @@
+{
+    "config": {
+        "webhook_url": "https://hooks.slack.com/services/your/webhook/url",
+        "channel": "#general",
+        "timeout": "6s"
+    },
+    "credentials": { }
+}

@@ -1,0 +1,29 @@
+{
+    "config": {
+        "url": "https://api.example.com/data",
+        "method": "POST",
+        "data_key": "",
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "timeout": "10s",
+        "tls_insecure_skip_verify": false,
+        "retry_count": 3,
+        "circuit_breaker_threshold": 5,
+        "auth_headers": {
+            "basic": {
+                "header": "Authorization",
+                "prefix": "Basic "
+            }
+        }
+    },
+    "credentials": {
+        "key": "api-service-basic-key",
+        "type": "basic",
+        "data": {
+            "username": "basic_user",
+            "password": "basic_password"
+        },
+        "description": "Basic authentication credential for REST API service"
+    }
+}

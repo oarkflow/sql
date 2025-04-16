@@ -1,0 +1,8 @@
+{
+    "config": {
+        "url": "https://soap.example.com/service",
+        "soap_action": "http://example.com/soap/action",
+        "timeout": "12s"
+    },
+    "credentials": { }
+}

@@ -1,0 +1,9 @@
+{
+    "config": {
+        "sip_server": "sip.example.com",
+        "username": "voip_user",
+        "password": "voip_password",
+        "timeout": "10s"
+    },
+    "credentials": { }
+}

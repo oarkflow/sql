@@ -1,0 +1,7 @@
+{
+    "config": {
+        "address": "customtcp.example.com:8080",
+        "timeout": "5s"
+    },
+    "credentials": { }
+}

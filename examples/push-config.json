@@ -1,0 +1,9 @@
+{
+    "config": {
+        "provider": "firebase",
+        "api_key": "your-firebase-api-key",
+        "endpoint": "https://fcm.googleapis.com/fcm/send",
+        "timeout": "8s"
+    },
+    "credentials": { }
+}

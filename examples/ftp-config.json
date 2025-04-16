@@ -1,0 +1,10 @@
+{
+    "config": {
+        "server": "ftp.example.com",
+        "port": 21,
+        "username": "ftp_user",
+        "password": "ftp_password",
+        "timeout": "10s"
+    },
+    "credentials": { }
+}

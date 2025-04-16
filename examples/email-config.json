@@ -1,0 +1,20 @@
+{
+    "config": {
+        "server": "smtp.example.com",
+        "port": 465,
+        "from": "no-reply@example.com",
+        "use_tls": true,
+        "use_starttls": false,
+        "connection_timeout": "10s",
+        "max_connections": 10
+    },
+    "credentials": {
+        "key": "smtp-service-key",
+        "type": "smtp",
+        "data": {
+            "username": "smtp_user",
+            "password": "smtp_password"
+        },
+        "description": "SMTP credential for email service"
+    }
+}

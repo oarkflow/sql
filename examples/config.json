@@ -6,37 +6,39 @@
             "data": {
                 "username": "postgres",
                 "password": "postgres"
-            }
+            },
+            "description": "Database credentials for production",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
         },
         {
-            "key": "api-service-key",
+            "key": "api-service-apikey-key",
             "type": "api_key",
             "data": {
                 "key": "your-api-key-here"
             },
-            "description": "API key credential for the API service",
+            "description": "API key credential for REST API service",
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
         },
         {
-            "key": "smtp-service-key",
-            "type": "smtp",
+            "key": "api-service-bearer-key",
+            "type": "bearer",
             "data": {
-                "username": "smtp_user",
-                "password": "smtp_password"
+                "token": "your-bearer-token-here"
             },
-            "description": "SMTP credential for the email service",
+            "description": "Bearer token credential for REST API service",
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
         },
         {
-            "key": "smpp-service-key",
-            "type": "smpp",
+            "key": "api-service-basic-key",
+            "type": "basic",
             "data": {
-                "username": "smpp_user",
-                "password": "smpp_password"
+                "username": "basic_user",
+                "password": "basic_password"
             },
-            "description": "SMPP credential for the SMS service",
+            "description": "Basic authentication credential for REST API service",
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
         },
@@ -49,26 +51,47 @@
                 "auth_url": "https://auth.example.com/authorize",
                 "token_url": "https://auth.example.com/token",
                 "scope": "read write",
-                "access_token": "",
+                "access_token": "initial-access-token",
                 "refresh_token": "your-refresh-token",
                 "expires_at": "2025-04-16T00:00:00Z"
             },
-            "description": "OAuth2 credential for an API service (example alternative)",
+            "description": "OAuth2 credential for REST API service",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "key": "smtp-service-key",
+            "type": "smtp",
+            "data": {
+                "username": "smtp_user",
+                "password": "smtp_password"
+            },
+            "description": "SMTP credential for email service",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "key": "smpp-service-key",
+            "type": "smpp",
+            "data": {
+                "username": "smpp_user",
+                "password": "smpp_password"
+            },
+            "description": "SMPP credential for SMS service",
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
         }
     ],
     "services": [
         {
-            "name": "some-api-service",
+            "name": "api-service-apikey",
             "type": "rest",
             "config": {
-                "url": "https://dummyjson.com/users",
+                "url": "https://api.example.com/data",
                 "method": "GET",
-                "data_key": "users",
+                "data_key": "results",
                 "headers": {
-                    "Content-Type": "application/json",
-                    "X-Request-ID": "unique-request-id"
+                    "Content-Type": "application/json"
                 },
                 "timeout": "10s",
                 "tls_insecure_skip_verify": false,
@@ -78,17 +101,88 @@
                     "api_key": {
                         "header": "X-API-Key",
                         "prefix": ""
-                    },
+                    }
+                }
+            },
+            "credential_key": "api-service-apikey-key",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "api-service-bearer",
+            "type": "rest",
+            "config": {
+                "url": "https://api.example.com/data",
+                "method": "GET",
+                "data_key": "results",
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "timeout": "10s",
+                "tls_insecure_skip_verify": false,
+                "retry_count": 3,
+                "circuit_breaker_threshold": 5,
+                "auth_headers": {
                     "bearer": {
                         "header": "Authorization",
                         "prefix": "Bearer "
-                    },
+                    }
+                }
+            },
+            "credential_key": "api-service-bearer-key",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "api-service-basic",
+            "type": "rest",
+            "config": {
+                "url": "https://api.example.com/data",
+                "method": "POST",
+                "data_key": "",
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "timeout": "10s",
+                "tls_insecure_skip_verify": false,
+                "retry_count": 3,
+                "circuit_breaker_threshold": 5,
+                "auth_headers": {
+                    "basic": {
+                        "header": "Authorization",
+                        "prefix": "Basic "
+                    }
+                }
+            },
+            "credential_key": "api-service-basic-key",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "api-service-oauth2",
+            "type": "rest",
+            "config": {
+                "url": "https://api.example.com/data",
+                "method": "GET",
+                "data_key": "results",
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "timeout": "10s",
+                "tls_insecure_skip_verify": false,
+                "retry_count": 3,
+                "circuit_breaker_threshold": 5,
+                "auth_headers": {
                     "oauth2": {
                         "header": "Authorization",
                         "prefix": "Bearer "
                     }
                 }
             },
+            "credential_key": "oauth2-api-service-key",
             "enabled": true,
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
@@ -293,6 +387,34 @@
                 "username": "voip_user",
                 "password": "voip_password",
                 "timeout": "10s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "webcrawler-service",
+            "type": "webcrawler",
+            "config": {
+                "endpoint": "http://metalsucks.net",
+                "rules": "article",
+                "target": "text",
+                "output_format": "string",
+                "field_mappings": [
+                    {
+                        "field": "title",
+                        "selector": ".post-title a",
+                        "target": "text"
+                    },
+                    {
+                        "field": "author",
+                        "selector": ".author a",
+                        "target": "text"
+                    }
+                ],
+                "timeout": "10s",
+                "user_agent": "MyWebCrawler/1.0"
             },
             "credential_key": "",
             "enabled": true,

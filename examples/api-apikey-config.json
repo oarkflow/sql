@@ -1,0 +1,28 @@
+{
+    "config": {
+        "url": "https://api.example.com/data",
+        "method": "GET",
+        "data_key": "results",
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "timeout": "10s",
+        "tls_insecure_skip_verify": false,
+        "retry_count": 3,
+        "circuit_breaker_threshold": 5,
+        "auth_headers": {
+            "api_key": {
+                "header": "X-API-Key",
+                "prefix": ""
+            }
+        }
+    },
+    "credentials": {
+        "key": "api-service-apikey-key",
+        "type": "api_key",
+        "data": {
+            "key": "your-api-key-here"
+        },
+        "description": "API key credential for REST API service"
+    }
+}

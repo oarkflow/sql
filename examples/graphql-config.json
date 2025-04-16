@@ -1,0 +1,10 @@
+{
+    "config": {
+        "url": "https://graphql.example.com/graphql",
+        "headers": {
+            "Authorization": "Bearer your-graphql-token"
+        },
+        "timeout": "8s"
+    },
+    "credentials": { }
+}

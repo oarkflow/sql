@@ -1,0 +1,9 @@
+{
+    "config": {
+        "server": "mqtt.example.com:1883",
+        "client_id": "mqtt_client_123",
+        "topic": "example/mqtt/topic",
+        "timeout": "7s"
+    },
+    "credentials": { }
+}
