@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 
+	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
 
 	"github.com/oarkflow/etl/integrations"
@@ -19,12 +21,29 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := manager.HealthCheck(ctx); err != nil {
-		logger.Error().Err(err).Msg("Health check failed")
-	} else {
-		logger.Info().Msg("All services are healthy")
+	service := "some-api-service"
+	payload := map[string]any{
+		"userId": 1,
+		"id":     1000,
+		"title":  "sunt aut facere repellat provident occaecati excepturi optio reprehenderit",
+		"body":   "quia et suscipit\nsuscipit recusandae consequuntur expedita et cum\nreprehenderit molestiae ut ut quas totam\nnostrum rerum est autem sunt rem eveniet architecto",
 	}
-	testServices(ctx, manager)
+	bt, err := json.Marshal(payload)
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to marshal payload")
+		return
+	}
+	resp, err := manager.Execute(ctx, service, bt)
+	if err != nil {
+		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
+	} else {
+		logger.Info().Str("service", service).Msg("Service executed successfully")
+	}
+	switch resp := resp.(type) {
+	case *integrations.HTTPResponse:
+		fmt.Println(string(resp.Body))
+	}
+	// testServices(ctx, manager)
 }
 
 func testServices(ctx context.Context, manager *integrations.Manager) {

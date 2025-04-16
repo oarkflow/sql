@@ -12,6 +12,7 @@ type Service struct {
 	Name          string      `json:"name"`
 	Type          ServiceType `json:"type"`
 	Config        any         `json:"config"`
+	RequireAuth   bool        `json:"require_auth"`
 	CredentialKey string      `json:"credential_key"`
 	Enabled       bool        `json:"enabled"`
 	CreatedAt     time.Time   `json:"created_at"`

@@ -111,9 +111,13 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 	if !ok {
 		return nil, errors.New("invalid API configuration")
 	}
-	cred, err := is.GetCredential(service.CredentialKey)
+	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 	if err != nil {
-		return nil, err
+		if err.Error() == "credential not found" {
+			if service.RequireAuth {
+				return nil, err
+			}
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, bytes.NewReader(body))
 	if err != nil {
@@ -122,7 +126,6 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 	for k, v := range cfg.Headers {
 		req.Header.Add(k, v)
 	}
-	// Handle credentials for API
 	switch cred.Type {
 	case CredentialTypeAPIKey:
 		data, ok := cred.Data.(map[string]interface{})
@@ -156,7 +159,9 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 		}
 		req.Header.Add("Authorization", "Bearer "+auth.AccessToken)
 	default:
-		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
+		if service.RequireAuth {
+			return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
+		}
 	}
 	client := getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
 	return client.Do(req)
@@ -457,6 +462,12 @@ type EmailPayload struct {
 	Message []byte
 }
 
+type HTTPResponse struct {
+	StatusCode int
+	Body       []byte
+	Headers    map[string][]string
+}
+
 // Execute dispatches an operation based on service type.
 func (is *Manager) Execute(ctx context.Context, serviceName string, payload any) (any, error) {
 	service, err := is.services.GetService(serviceName)
@@ -486,7 +497,22 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.RetryCount > 0 {
 			maxRetries = apiCfg.RetryCount
 		}
-		res, execErr = is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, maxRetries)
+		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, maxRetries)
+		if err != nil {
+			execErr = err
+		} else {
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				execErr = err
+			} else {
+				res = &HTTPResponse{
+					StatusCode: resp.StatusCode,
+					Body:       body,
+					Headers:    resp.Header,
+				}
+			}
+		}
 	case ServiceTypeGraphQL:
 		query, ok := payload.(string)
 		if !ok {
@@ -599,7 +625,7 @@ func (is *Manager) SendEmail(ctx context.Context, serviceName string, to []strin
 	if !ok {
 		return fmt.Errorf("not a valid SMTP configuration for service: %s", serviceName)
 	}
-	cred, err := is.GetCredential(service.CredentialKey)
+	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 	if err != nil {
 		return err
 	}
@@ -659,7 +685,7 @@ func (is *Manager) SendSMS(ctx context.Context, serviceName string, message stri
 	}
 	var smppUser, smppPass string
 	if service.CredentialKey != "" {
-		cred, err := is.GetCredential(service.CredentialKey)
+		cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 		if err != nil {
 			return err
 		}
@@ -694,7 +720,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	}
 	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
 	if service.CredentialKey != "" {
-		cred, err := is.GetCredential(service.CredentialKey)
+		cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 		if err == nil && cred.Type == CredentialTypeDatabase {
 			data, ok := cred.Data.(map[string]interface{})
 			if ok {
@@ -744,8 +770,8 @@ func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
 	return nil
 }
 
-func (is *Manager) GetCredential(key string) (Credential, error) {
-	cred, err := is.credentials.GetCredential(key)
+func (is *Manager) GetCredential(key string, requireAuth ...bool) (Credential, error) {
+	cred, err := is.credentials.GetCredential(key, requireAuth...)
 	if err != nil {
 		is.logger.Error().Str("key", key).Err(err).Msg("failed to get credential")
 	}

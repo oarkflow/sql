@@ -84,6 +84,7 @@ type APIConfig struct {
 	URL                     string            `json:"url"`
 	Method                  string            `json:"method"`
 	Headers                 map[string]string `json:"headers"`
+	DataKey                 string            `json:"data_key"`
 	RequestBody             string            `json:"request_body"`
 	ContentType             string            `json:"content_type"`
 	Timeout                 string            `json:"timeout"` // e.g., "10s"

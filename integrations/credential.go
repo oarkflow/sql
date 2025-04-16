@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,7 +75,7 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 
 type CredentialStore interface {
 	AddCredential(Credential) error
-	GetCredential(string) (Credential, error)
+	GetCredential(key string, requireAuth ...bool) (Credential, error)
 	UpdateCredential(Credential) error
 	DeleteCredential(string) error
 	ListCredentials() ([]Credential, error)
@@ -101,7 +102,14 @@ func (c *InMemoryCredentialStore) AddCredential(cred Credential) error {
 	return nil
 }
 
-func (c *InMemoryCredentialStore) GetCredential(key string) (Credential, error) {
+func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool) (Credential, error) {
+	if len(requireAuth) > 0 && !requireAuth[0] {
+		return Credential{}, nil
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return Credential{}, fmt.Errorf("credential key cannot be empty")
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	cred, exists := c.credentials[key]
