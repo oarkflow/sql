@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	stdJs
+	stdJson "encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
