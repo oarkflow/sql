@@ -6,11 +6,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
-	"math"
+	"math/rand"
 	"net/http"
 	"net/smtp"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 )
@@ -408,24 +411,24 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	return client.Do(req)
 }
 
+// Modified ExecuteAPIRequestWithRetry to add exponential backoff with jitter.
 func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
 	var resp *http.Response
 	var err error
-
+	baseDelay := time.Second
 	for i := 0; i < maxRetries; i++ {
 		resp, err = is.ExecuteAPIRequest(ctx, serviceName, body)
 		if err == nil {
 			return resp, nil
 		}
 		log.Printf("API request attempt %d/%d failed: %v", i+1, maxRetries, err)
-
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-
-		backoff := time.Duration(math.Pow(2, float64(i))) * time.Second
+		jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+		backoff := baseDelay*time.Duration(1<<i) + jitter
 		time.Sleep(backoff)
 	}
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
@@ -583,46 +586,66 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	}
 }
 
+// Modified HealthCheck to run checks concurrently for better performance and fault tolerance.
 func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 	services, err := is.services.ListServices()
 	if err != nil {
 		return err
 	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(services))
 	for _, service := range services {
-		switch service.Type {
-		case ServiceTypeAPI:
-			cfg, ok := service.Config.(APIConfig)
-			if !ok {
-				return fmt.Errorf("invalid API configuration for service %s", service.Name)
-			}
-			req, err := http.NewRequestWithContext(ctx, "HEAD", cfg.URL, nil)
-			if err != nil {
-				return err
-			}
-			client := getHTTPClient(cfg)
-			resp, err := client.Do(req)
-			if err != nil || resp.StatusCode >= 400 {
-				return fmt.Errorf("health check failed for API service %s", service.Name)
-			}
-		case ServiceTypeSMTP:
-			cfg, ok := service.Config.(SMTPConfig)
-			if !ok {
-				return fmt.Errorf("invalid SMTP configuration for service %s", service.Name)
-			}
-			if cfg.UseTLS {
-				tlsConfig := &tls.Config{
-					InsecureSkipVerify: false,
-					ServerName:         cfg.Server,
+		wg.Add(1)
+		go func(s Service) {
+			defer wg.Done()
+			switch s.Type {
+			case ServiceTypeAPI:
+				cfg, ok := s.Config.(APIConfig)
+				if !ok {
+					errCh <- fmt.Errorf("invalid API configuration for service %s", s.Name)
+					return
 				}
-				conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
+				req, err := http.NewRequestWithContext(ctx, "HEAD", cfg.URL, nil)
 				if err != nil {
-					return fmt.Errorf("health check failed for SMTP service %s: %v", service.Name, err)
+					errCh <- err
+					return
 				}
-				conn.Close()
+				client := getHTTPClient(cfg)
+				resp, err := client.Do(req)
+				if err != nil || resp.StatusCode >= 400 {
+					errCh <- fmt.Errorf("health check failed for API service %s", s.Name)
+				}
+			case ServiceTypeSMTP:
+				cfg, ok := s.Config.(SMTPConfig)
+				if !ok {
+					errCh <- fmt.Errorf("invalid SMTP configuration for service %s", s.Name)
+					return
+				}
+				if cfg.UseTLS {
+					tlsConfig := &tls.Config{
+						InsecureSkipVerify: false,
+						ServerName:         cfg.Server,
+					}
+					conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
+					if err != nil {
+						errCh <- fmt.Errorf("health check failed for SMTP service %s: %v", s.Name, err)
+						return
+					}
+					conn.Close()
+				}
+			default:
+				// No specific health check needed.
 			}
-		default:
-			log.Printf("No health check implemented for service type: %s", service.Type)
+		}(service)
+	}
+	wg.Wait()
+	close(errCh)
+	if len(errCh) > 0 {
+		errMsg := "health check errors: "
+		for e := range errCh {
+			errMsg += e.Error() + "; "
 		}
+		return fmt.Errorf(errMsg)
 	}
 	return nil
 }
@@ -640,143 +663,65 @@ func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// Add production-ready configuration structure.
+type Config struct {
+	Credentials []Credential `json:"credentials"`
+	Services    []Service    `json:"services"`
+}
+
+func loadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err = json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// Modified main to support graceful shutdown via OS signals.
 func main() {
+	configPath := flag.String("config", "config.json", "Path to configuration file")
+	flag.Parse()
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Initialize stores from configuration.
 	serviceStore := NewInMemoryServiceStore()
 	credentialStore := NewInMemoryCredentialStore()
 	integration := NewIntegrationSystem(serviceStore, credentialStore)
 
-	if err := credentialStore.AddCredential(Credential{
-		Key:  "smtp-prod",
-		Type: CredentialTypeSMTP,
-		Data: SMTPAuthCredential{
-			Username: "user@example.com",
-			Password: "securepassword",
-		},
-		Description: "SMTP production credentials",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add SMTP credential: %v", err)
+	for _, cred := range cfg.Credentials {
+		if err := credentialStore.AddCredential(cred); err != nil {
+			log.Fatalf("Failed to add credential %s: %v", cred.Key, err)
+		}
 	}
 
-	if err := serviceStore.AddService(Service{
-		Name: "production-email",
-		Type: ServiceTypeSMTP,
-		Config: SMTPConfig{
-			Server: "smtp.example.com",
-			Port:   587,
-			From:   "noreply@example.com",
-			UseTLS: true,
-		},
-		CredentialKey: "smtp-prod",
-		Enabled:       true,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add SMTP service: %v", err)
-	}
-
-	if err := credentialStore.AddCredential(Credential{
-		Key:  "api-key-1",
-		Type: CredentialTypeAPIKey,
-		Data: APIKeyCredential{
-			Key: "my-secure-api-key",
-		},
-		Description: "API key for service 1",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add API credential: %v", err)
-	}
-
-	if err := serviceStore.AddService(Service{
-		Name: "some-api-service",
-		Type: ServiceTypeAPI,
-		Config: APIConfig{
-			URL:                   "https://api.example.com/endpoint",
-			Method:                "POST",
-			Headers:               map[string]string{"Content-Type": "application/json"},
-			Timeout:               5 * time.Second,
-			TLSInsecureSkipVerify: false,
-		},
-		CredentialKey: "api-key-1",
-		Enabled:       true,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add API service: %v", err)
-	}
-
-	if err := serviceStore.AddService(Service{
-		Name: "sms-service",
-		Type: ServiceTypeSMPP,
-		Config: SMPPConfig{
-			SystemType: "default",
-			Host:       "smpp.example.com",
-			Port:       2775,
-			SourceAddr: "SENDER",
-			DestAddr:   "RECIPIENT",
-		},
-		CredentialKey: "",
-		Enabled:       true,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add SMPP service: %v", err)
-	}
-
-	if err := serviceStore.AddService(Service{
-		Name: "prod-database",
-		Type: ServiceTypeDB,
-		Config: DatabaseConfig{
-			Driver:   "sqlite3",
-			Host:     "localhost",
-			Port:     0,
-			Database: "prod.db",
-			SSLMode:  "disable",
-		},
-		CredentialKey: "",
-		Enabled:       true,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-	}); err != nil {
-		log.Fatalf("Failed to add Database service: %v", err)
+	for _, svc := range cfg.Services {
+		if err := serviceStore.AddService(svc); err != nil {
+			log.Fatalf("Failed to add service %s: %v", svc.Name, err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	emailPayload := EmailPayload{
-		To:      []string{"recipient@example.com"},
-		Message: []byte("Test email message"),
-	}
-	if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
-		log.Fatalf("Failed to execute email operation: %v", err)
-	}
-	log.Println("Email sent successfully.")
-
-	apiPayload := []byte(`{"example": "data"}`)
-	apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
-	if err != nil {
-		log.Printf("API request failed: %v", err)
-	} else {
-		if resp, ok := apiResult.(*http.Response); ok {
-			log.Printf("API request succeeded with status: %s", resp.Status)
+	// Setup signal handling for graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, os.Kill)
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received signal: %v, initiating shutdown", sig)
+		cancel()
+		if err := integration.Shutdown(context.Background()); err != nil {
+			log.Printf("Error during shutdown: %v", err)
 		}
-	}
-
-	if _, err := integration.Execute(ctx, "sms-service", "Test SMS message"); err != nil {
-		log.Printf("SMS sending failed: %v", err)
-	} else {
-		log.Println("SMS sent successfully.")
-	}
-
-	dbResult, err := integration.Execute(ctx, "prod-database", "SELECT * FROM users;")
-	if err != nil {
-		log.Printf("Database query failed: %v", err)
-	} else {
-		log.Printf("Database query result: %v", dbResult)
-	}
+	}()
 
 	if err := integration.HealthCheck(ctx); err != nil {
 		log.Printf("Health check failed: %v", err)
@@ -784,7 +729,7 @@ func main() {
 		log.Println("All services are healthy.")
 	}
 
-	if err := integration.Shutdown(ctx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
-	}
+	// Production usage logic goes here.
+	<-ctx.Done()
+	log.Println("Exiting integration system.")
 }
