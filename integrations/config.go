@@ -11,7 +11,7 @@ import (
 	"github.com/oarkflow/log"
 )
 
-func (is *Manager) LoadConfig(ctx context.Context, path string) (*Config, error) {
+func (is *Manager) LoadIntegrationsFromFile(ctx context.Context, path string) (*Config, error) {
 	cfg, err := is.Init(path)
 	reloadCh := make(chan os.Signal, 1)
 	signal.Notify(reloadCh, syscall.SIGHUP)
@@ -31,22 +31,36 @@ func (is *Manager) LoadConfig(ctx context.Context, path string) (*Config, error)
 	return cfg, err
 }
 
+func (is *Manager) UpdateCredential(c Credential) error {
+	return is.credentials.UpdateCredential(c)
+}
+
+func (is *Manager) AddCredential(c Credential) error {
+	return is.credentials.AddCredential(c)
+}
+
+func (is *Manager) UpdateService(c Service) error {
+	return is.services.UpdateService(c)
+}
+
+func (is *Manager) AddService(c Service) error {
+	return is.services.AddService(c)
+}
+
 func (is *Manager) Init(path string) (*Config, error) {
 	cfg, err := loadConfig(path, is.logger)
 	if err != nil {
 		return nil, err
 	}
 	for _, cred := range cfg.Credentials {
-		if err := is.credentials.UpdateCredential(cred); err != nil {
-			_ = is.credentials.AddCredential(cred)
+		if err := is.UpdateCredential(cred); err != nil {
+			_ = is.AddCredential(cred)
 		}
 	}
 	for _, svc := range cfg.Services {
-		if err := is.services.UpdateService(svc); err != nil {
-			_ = is.services.AddService(svc)
+		if err := is.UpdateService(svc); err != nil {
+			_ = is.AddService(svc)
 		}
-	}
-	for _, svc := range cfg.Services {
 		if svc.Type == ServiceTypeAPI {
 			if apiCfg, ok := svc.Config.(APIConfig); ok {
 				is.AddCB(svc.Name, NewCircuitBreaker(apiCfg.CircuitBreakerThreshold))

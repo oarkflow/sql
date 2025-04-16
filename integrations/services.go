@@ -12,7 +12,7 @@ type ServiceType string
 type CredentialType string
 
 const (
-	ServiceTypeAPI  ServiceType = "api"
+	ServiceTypeAPI  ServiceType = "rest"
 	ServiceTypeSMTP ServiceType = "smtp"
 	ServiceTypeSMPP ServiceType = "smpp"
 	ServiceTypeDB   ServiceType = "database"

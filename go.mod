@@ -15,6 +15,7 @@ require (
 	github.com/oarkflow/json v0.0.24
 	github.com/oarkflow/log v1.0.83
 	github.com/oarkflow/mq v0.0.15
+	github.com/oarkflow/squealx v0.0.46
 	github.com/oarkflow/xid v1.2.5
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -33,7 +34,6 @@ require (
 	github.com/microsoft/go-mssqldb v1.8.0 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
-	github.com/oarkflow/squealx v0.0.46 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect

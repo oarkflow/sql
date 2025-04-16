@@ -730,17 +730,21 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if err != nil {
 		return nil, err
 	}
-	if cred.Type == CredentialTypeDatabase {
+	if cred.Type != CredentialTypeDatabase {
 		return nil, errors.New("credential is not for database")
 	}
-	credentials, ok := cred.Data.(map[string]any)
-	if !ok {
-		return nil, errors.New("credentials expected as map")
-	}
-	username, uok := credentials["username"].(string)
-	password, pok := credentials["password"].(string)
-	if !(uok && pok) {
-		return nil, errors.New("credentials missing")
+	var username, password string
+	var uok, pok bool
+	switch credentials := cred.Data.(type) {
+	case map[string]any:
+		username, uok = credentials["username"].(string)
+		password, pok = credentials["password"].(string)
+		if !(uok && pok) {
+			return nil, errors.New("credentials missing")
+		}
+	case DatabaseCredential:
+		username = credentials.Username
+		password = credentials.Password
 	}
 	db, _, err := connection.FromConfig(squealx.Config{
 		Driver:      cfg.Driver,
@@ -748,6 +752,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 		Port:        cfg.Port,
 		Username:    username,
 		Password:    password,
+		Database:    cfg.Database,
 		MaxIdleCons: cfg.MaxIdleConns,
 		MaxOpenCons: cfg.MaxOpenConns,
 	})

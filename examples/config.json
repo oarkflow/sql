@@ -1,6 +1,14 @@
 {
     "credentials": [
         {
+            "key": "db-credential",
+            "type": "database",
+            "data": {
+                "username": "postgres",
+                "password": "postgres"
+            }
+        },
+        {
             "key": "api-service-key",
             "type": "api_key",
             "data": {
@@ -53,7 +61,7 @@
     "services": [
         {
             "name": "some-api-service",
-            "type": "api",
+            "type": "rest",
             "config": {
                 "url": "https://jsonplaceholder.typicode.com/posts/100",
                 "method": "GET",
@@ -123,9 +131,9 @@
             "type": "database",
             "config": {
                 "driver": "postgres",
-                "host": "db.example.com",
+                "host": "localhost",
                 "port": 5432,
-                "database": "production_db",
+                "database": "oark_manager",
                 "ssl_mode": "require",
                 "max_open_conns": 50,
                 "max_idle_conns": 10,
@@ -135,8 +143,9 @@
                 "write_timeout": "5s",
                 "pool_size": 50
             },
-            "credential_key": "",
+            "credential_key": "db-credential",
             "enabled": true,
+            "require_auth": true,
             "created_at": "2025-04-16T00:00:00Z",
             "updated_at": "2025-04-16T00:00:00Z"
         },

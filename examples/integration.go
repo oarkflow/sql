@@ -13,11 +13,11 @@ import (
 
 func main() {
 	logger := &log.DefaultLogger
-	configPath := flag.String("config", "config.json", "Path to configuration file")
-	flag.Parse()
 	ctx := context.Background()
 	manager := integrations.New(integrations.WithLogger(logger))
-	_, err := manager.LoadConfig(ctx, *configPath)
+	configPath := flag.String("config", "config.json", "Path to configuration file")
+	flag.Parse()
+	_, err := manager.LoadIntegrationsFromFile(ctx, *configPath)
 	if err != nil {
 		panic(err)
 	}
@@ -46,6 +46,8 @@ func main() {
 			fmt.Println(fmt.Sprintf("%s: %v", header, content))
 		}
 		fmt.Println(resp.StatusCode)
+	default:
+		fmt.Println(resp)
 	}
 	// testServices(ctx, manager)
 }
