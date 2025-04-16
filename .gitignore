@@ -29,7 +29,6 @@ bin
 dist
 *.db
 *.jsonl
-*.json
 *.csv
 **.DS_Store**
 /examples/*.txt
