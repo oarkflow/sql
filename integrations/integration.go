@@ -1,4 +1,4 @@
-package main
+package integrations
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,14 +14,11 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/oarkflow/log"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //
@@ -704,7 +700,7 @@ var (
 	}, []string{"service"})
 )
 
-func initMetrics() {
+func InitMetrics() {
 	prometheus.MustRegister(apiRequestDuration)
 	prometheus.MustRegister(apiRequestFailures)
 }
@@ -857,28 +853,28 @@ type EmailPayload struct {
 type IntegrationSystem struct {
 	services        ServiceStore
 	credentials     CredentialStore
-	circuitBreakers map[string]*CircuitBreaker
-	cbLock          sync.Mutex
+	CircuitBreakers map[string]*CircuitBreaker
+	CbLock          sync.Mutex
 	logger          *log.Logger
-	wg              sync.WaitGroup
+	Wg              sync.WaitGroup
 }
 
 func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore, logger *log.Logger) *IntegrationSystem {
 	return &IntegrationSystem{
 		services:        serviceStore,
 		credentials:     credentialStore,
-		circuitBreakers: make(map[string]*CircuitBreaker),
+		CircuitBreakers: make(map[string]*CircuitBreaker),
 		logger:          logger,
 	}
 }
 
 func (is *IntegrationSystem) getCircuitBreaker(serviceName string, threshold int) *CircuitBreaker {
-	is.cbLock.Lock()
-	defer is.cbLock.Unlock()
-	cb, exists := is.circuitBreakers[serviceName]
+	is.CbLock.Lock()
+	defer is.CbLock.Unlock()
+	cb, exists := is.CircuitBreakers[serviceName]
 	if !exists {
 		cb = NewCircuitBreaker(threshold)
-		is.circuitBreakers[serviceName] = cb
+		is.CircuitBreakers[serviceName] = cb
 	}
 	return cb
 }
@@ -1614,7 +1610,7 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
 	is.logger.Info().Msg("Shutting down integration system...")
 	// Wait for all background goroutines to finish.
-	is.wg.Wait()
+	is.Wg.Wait()
 	return nil
 }
 
@@ -1627,7 +1623,7 @@ type Config struct {
 	Services    []Service    `json:"services"`
 }
 
-func loadConfig(path string, logger *log.Logger) (*Config, error) {
+func LoadConfig(path string, logger *log.Logger) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to read config file")
@@ -1794,190 +1790,4 @@ func loadConfig(path string, logger *log.Logger) (*Config, error) {
 		}
 	}
 	return &cfg, nil
-}
-
-//
-// ==== MAIN ====
-//
-
-func main() {
-	logger := &log.DefaultLogger
-	initMetrics()
-
-	metricsSrv := &http.Server{Addr: ":9090", Handler: promhttp.Handler()}
-	go func() {
-		logger.Info().Msg("Starting metrics server on :9090")
-		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal().Err(err).Msg("Metrics server error")
-		}
-	}()
-
-	configPath := flag.String("config", "config.json", "Path to configuration file")
-	flag.Parse()
-	cfg, err := loadConfig(*configPath, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to load config")
-	}
-
-	serviceStore := NewInMemoryServiceStore()
-	credentialStore := NewInMemoryCredentialStore()
-	integration := NewIntegrationSystem(serviceStore, credentialStore, logger)
-
-	for _, cred := range cfg.Credentials {
-		if err := credentialStore.AddCredential(cred); err != nil {
-			logger.Fatal().Err(err).Str("key", cred.Key).Msg("Failed to add credential")
-		}
-	}
-	for _, svc := range cfg.Services {
-		if err := serviceStore.AddService(svc); err != nil {
-			logger.Fatal().Err(err).Str("name", svc.Name).Msg("Failed to add service")
-		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	sigCh := make(chan os.Signal, 1)
-	reloadCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	signal.Notify(reloadCh, syscall.SIGHUP)
-
-	// Configuration reload loop.
-	integration.wg.Add(1)
-	go func() {
-		defer integration.wg.Done()
-		for {
-			select {
-			case <-reloadCh:
-				logger.Info().Msg("Received SIGHUP: reloading configuration")
-				newCfg, err := loadConfig(*configPath, logger)
-				if err != nil {
-					logger.Error().Err(err).Msg("Config reload failed")
-					continue
-				}
-				for _, svc := range newCfg.Services {
-					if err := serviceStore.UpdateService(svc); err != nil {
-						_ = serviceStore.AddService(svc)
-					}
-				}
-				for _, cred := range newCfg.Credentials {
-					if err := credentialStore.UpdateCredential(cred); err != nil {
-						_ = credentialStore.AddCredential(cred)
-					}
-				}
-				integration.cbLock.Lock()
-				for _, svc := range newCfg.Services {
-					if svc.Type == ServiceTypeAPI {
-						if apiCfg, ok := svc.Config.(APIConfig); ok {
-							integration.circuitBreakers[svc.Name] = NewCircuitBreaker(apiCfg.CircuitBreakerThreshold)
-						}
-					}
-				}
-				integration.cbLock.Unlock()
-				logger.Info().Msg("Configuration reloaded successfully")
-			case <-ctx.Done():
-				logger.Info().Msg("Configuration reload goroutine exiting due to shutdown")
-				return
-			}
-		}
-	}()
-
-	// Health check at startup.
-	if err := integration.HealthCheck(ctx); err != nil {
-		logger.Error().Err(err).Msg("Health check failed")
-	} else {
-		logger.Info().Msg("All services are healthy")
-	}
-
-	// Example operations running concurrently.
-	integration.wg.Add(8)
-	go func() {
-		defer integration.wg.Done()
-		emailPayload := EmailPayload{
-			To:      []string{"recipient@example.com"},
-			Message: []byte("Test email message"),
-		}
-		if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
-			logger.Error().Err(err).Msg("Email operation failed")
-		} else {
-			logger.Info().Msg("Email sent successfully")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		apiPayload := []byte(`{"example": "data"}`)
-		apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
-		if err != nil {
-			logger.Error().Err(err).Msg("API request failed")
-		} else if resp, ok := apiResult.(*http.Response); ok {
-			logger.Info().Str("status", resp.Status).Msg("API request succeeded")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		// GraphQL call
-		query := "{ user { id name } }"
-		resp, err := integration.Execute(ctx, "graphql-service", query)
-		if err != nil {
-			logger.Error().Err(err).Msg("GraphQL request failed")
-		} else if r, ok := resp.(*http.Response); ok {
-			logger.Info().Str("status", r.Status).Msg("GraphQL request succeeded")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		// SOAP call with an XML payload.
-		soapReq := `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
-						<soapenv:Body>
-							<ExampleRequest>
-								<param>value</param>
-							</ExampleRequest>
-						</soapenv:Body>
-					</soapenv:Envelope>`
-		resp, err := integration.Execute(ctx, "soap-service", []byte(soapReq))
-		if err != nil {
-			logger.Error().Err(err).Msg("SOAP request failed")
-		} else if r, ok := resp.(*http.Response); ok {
-			logger.Info().Str("status", r.Status).Msg("SOAP request succeeded")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		// Simulated gRPC call
-		resp, err := integration.Execute(ctx, "grpc-service", "gRPC request data")
-		if err != nil {
-			logger.Error().Err(err).Msg("gRPC request failed")
-		} else {
-			logger.Info().Msgf("gRPC response: %v", resp)
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		if err := integration.ExecuteKafkaMessage(ctx, "kafka-service", "Test Kafka message"); err != nil {
-			logger.Error().Err(err).Msg("Kafka message failed")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		if err := integration.ExecuteMQTTMessage(ctx, "mqtt-service", "Test MQTT message"); err != nil {
-			logger.Error().Err(err).Msg("MQTT message failed")
-		}
-	}()
-	go func() {
-		defer integration.wg.Done()
-		// Custom TCP message
-		if err := integration.ExecuteCustomTCPMessage(ctx, "customtcp-service", "Test TCP message"); err != nil {
-			logger.Error().Err(err).Msg("Custom TCP message failed")
-		}
-	}()
-
-	<-sigCh
-	logger.Info().Msg("Received termination signal, shutting down...")
-	cancel()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
-		logger.Error().Err(err).Msg("Metrics server shutdown failed")
-	}
-	integration.wg.Wait()
-	logger.Info().Msg("Exiting integration system.")
 }
