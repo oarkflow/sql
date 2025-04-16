@@ -52,12 +52,13 @@ type SMTPAuthCredential struct {
 }
 
 type APIConfig struct {
-	URL         string            `json:"url"`
-	Method      string            `json:"method"`
-	Headers     map[string]string `json:"headers"`
-	RequestBody string            `json:"request_body"`
-	ContentType string            `json:"content_type"`
-	Timeout     time.Duration     `json:"timeout"`
+	URL                   string            `json:"url"`
+	Method                string            `json:"method"`
+	Headers               map[string]string `json:"headers"`
+	RequestBody           string            `json:"request_body"`
+	ContentType           string            `json:"content_type"`
+	Timeout               time.Duration     `json:"timeout"`
+	TLSInsecureSkipVerify bool              `json:"tls_insecure_skip_verify"`
 }
 
 type SMTPConfig struct {
@@ -340,17 +341,21 @@ type EmailPayload struct {
 type IntegrationSystem struct {
 	services    ServiceStore
 	credentials CredentialStore
-	httpClient  *http.Client
 }
 
 func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore) *IntegrationSystem {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
 	return &IntegrationSystem{
 		services:    serviceStore,
 		credentials: credentialStore,
-		httpClient:  client,
+	}
+}
+
+func getHTTPClient(apiCfg APIConfig) *http.Client {
+	return &http.Client{
+		Timeout: apiCfg.Timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: apiCfg.TLSInsecureSkipVerify},
+		},
 	}
 }
 
@@ -399,7 +404,8 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 	}
 
-	return is.httpClient.Do(req)
+	client := getHTTPClient(cfg)
+	return client.Do(req)
 }
 
 func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
@@ -593,7 +599,8 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			resp, err := is.httpClient.Do(req)
+			client := getHTTPClient(cfg)
+			resp, err := client.Do(req)
 			if err != nil || resp.StatusCode >= 400 {
 				return fmt.Errorf("health check failed for API service %s", service.Name)
 			}
@@ -628,16 +635,12 @@ func (is *IntegrationSystem) GetCredential(key string, serviceType ServiceType) 
 	return cred, err
 }
 
-// Extend IntegrationSystem to implement the Integrator interface
 func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
-	// Production ready: add graceful shutdown for persistent connections, pooling, etc.
 	log.Println("Shutting down integration system...")
-	// e.g., close any open connections, flush logs, release resources.
 	return nil
 }
 
 func main() {
-
 	serviceStore := NewInMemoryServiceStore()
 	credentialStore := NewInMemoryCredentialStore()
 	integration := NewIntegrationSystem(serviceStore, credentialStore)
@@ -690,10 +693,11 @@ func main() {
 		Name: "some-api-service",
 		Type: ServiceTypeAPI,
 		Config: APIConfig{
-			URL:     "https://api.example.com/endpoint",
-			Method:  "POST",
-			Headers: map[string]string{"Content-Type": "application/json"},
-			Timeout: 5 * time.Second,
+			URL:                   "https://api.example.com/endpoint",
+			Method:                "POST",
+			Headers:               map[string]string{"Content-Type": "application/json"},
+			Timeout:               5 * time.Second,
+			TLSInsecureSkipVerify: false,
 		},
 		CredentialKey: "api-key-1",
 		Enabled:       true,
@@ -739,7 +743,6 @@ func main() {
 		log.Fatalf("Failed to add Database service: %v", err)
 	}
 
-	// Use a cancellable context to enable graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -781,7 +784,6 @@ func main() {
 		log.Println("All services are healthy.")
 	}
 
-	// Production ready: call Shutdown to release resources before exit
 	if err := integration.Shutdown(ctx); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
