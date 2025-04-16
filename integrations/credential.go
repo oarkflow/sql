@@ -68,7 +68,11 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		}
 		c.Data = d
 	default:
-		return fmt.Errorf("unsupported credential type: %s", c.Type)
+		var d map[string]any
+		if err := json.Unmarshal(aux.Data, &d); err != nil {
+			return err
+		}
+		c.Data = d
 	}
 	return nil
 }
