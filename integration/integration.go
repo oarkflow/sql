@@ -137,6 +137,10 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
+	ConnectTimeout  time.Duration `json:"connect_timeout"`
+	ReadTimeout     time.Duration `json:"read_timeout"`
+	WriteTimeout    time.Duration `json:"write_timeout"`
+	PoolSize        int           `json:"pool_size"`
 }
 
 func (cfg DatabaseConfig) Validate() error {
@@ -936,6 +940,16 @@ func main() {
 					_ = credentialStore.AddCredential(cred)
 				}
 			}
+			// Update circuit breakers for API services with new thresholds.
+			integration.cbLock.Lock()
+			for _, svc := range newCfg.Services {
+				if svc.Type == ServiceTypeAPI {
+					if apiCfg, ok := svc.Config.(APIConfig); ok {
+						integration.circuitBreakers[svc.Name] = NewCircuitBreaker(apiCfg.CircuitBreakerThreshold)
+					}
+				}
+			}
+			integration.cbLock.Unlock()
 			log.Println("Configuration reloaded successfully.")
 		}
 	}()
