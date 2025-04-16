@@ -75,6 +75,162 @@ type Config struct {
 	Services    []Service    `json:"services"`
 }
 
+func UnmarshalService(svc *Service) error {
+	switch svc.Type {
+	case ServiceTypeAPI:
+		b, _ := json.Marshal(svc.Config)
+		var apiCfg APIConfig
+		if err := json.Unmarshal(b, &apiCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := apiCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = apiCfg
+	case ServiceTypeSMTP:
+		b, _ := json.Marshal(svc.Config)
+		var smtpCfg SMTPConfig
+		if err := json.Unmarshal(b, &smtpCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := smtpCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = smtpCfg
+	case ServiceTypeSMPP:
+		b, _ := json.Marshal(svc.Config)
+		var smppCfg SMPPConfig
+		if err := json.Unmarshal(b, &smppCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := smppCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = smppCfg
+	case ServiceTypeDB:
+		b, _ := json.Marshal(svc.Config)
+		var dbCfg DatabaseConfig
+		if err := json.Unmarshal(b, &dbCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := dbCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = dbCfg
+	case ServiceTypeGraphQL:
+		b, _ := json.Marshal(svc.Config)
+		var gqlCfg GraphQLConfig
+		if err := json.Unmarshal(b, &gqlCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := gqlCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = gqlCfg
+	case ServiceTypeSOAP:
+		b, _ := json.Marshal(svc.Config)
+		var soapCfg SOAPConfig
+		if err := json.Unmarshal(b, &soapCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := soapCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = soapCfg
+	case ServiceTypeGRPC:
+		b, _ := json.Marshal(svc.Config)
+		var grpcCfg GRPCConfig
+		if err := json.Unmarshal(b, &grpcCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := grpcCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = grpcCfg
+	case ServiceTypeKafka:
+		b, _ := json.Marshal(svc.Config)
+		var kafkaCfg KafkaConfig
+		if err := json.Unmarshal(b, &kafkaCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := kafkaCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = kafkaCfg
+	case ServiceTypeMQTT:
+		b, _ := json.Marshal(svc.Config)
+		var mqttCfg MQTTConfig
+		if err := json.Unmarshal(b, &mqttCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := mqttCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = mqttCfg
+	case ServiceTypeFTP:
+		b, _ := json.Marshal(svc.Config)
+		var ftpCfg FTPConfig
+		if err := json.Unmarshal(b, &ftpCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := ftpCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = ftpCfg
+	case ServiceTypeSFTP:
+		b, _ := json.Marshal(svc.Config)
+		var sftpCfg SFTPConfig
+		if err := json.Unmarshal(b, &sftpCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := sftpCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = sftpCfg
+	case ServiceTypePush:
+		b, _ := json.Marshal(svc.Config)
+		var pushCfg PushConfig
+		if err := json.Unmarshal(b, &pushCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := pushCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = pushCfg
+	case ServiceTypeSlack:
+		b, _ := json.Marshal(svc.Config)
+		var slackCfg SlackConfig
+		if err := json.Unmarshal(b, &slackCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := slackCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = slackCfg
+	case ServiceTypeCustomTCP:
+		b, _ := json.Marshal(svc.Config)
+		var tcpCfg CustomTCPConfig
+		if err := json.Unmarshal(b, &tcpCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := tcpCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = tcpCfg
+	case ServiceTypeVoIP:
+		b, _ := json.Marshal(svc.Config)
+		var voipCfg VoIPConfig
+		if err := json.Unmarshal(b, &voipCfg); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		if err := voipCfg.Validate(); err != nil {
+			return fmt.Errorf("service %s: %v", svc.Name, err)
+		}
+		svc.Config = voipCfg
+	}
+	return nil
+}
+
 func loadConfig(path string, logger *log.Logger) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -87,158 +243,11 @@ func loadConfig(path string, logger *log.Logger) (*Config, error) {
 		return nil, err
 	}
 	// Validate and convert service configurations.
-	for i, svc := range cfg.Services {
-		switch svc.Type {
-		case ServiceTypeAPI:
-			b, _ := json.Marshal(svc.Config)
-			var apiCfg APIConfig
-			if err := json.Unmarshal(b, &apiCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := apiCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = apiCfg
-		case ServiceTypeSMTP:
-			b, _ := json.Marshal(svc.Config)
-			var smtpCfg SMTPConfig
-			if err := json.Unmarshal(b, &smtpCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := smtpCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = smtpCfg
-		case ServiceTypeSMPP:
-			b, _ := json.Marshal(svc.Config)
-			var smppCfg SMPPConfig
-			if err := json.Unmarshal(b, &smppCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := smppCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = smppCfg
-		case ServiceTypeDB:
-			b, _ := json.Marshal(svc.Config)
-			var dbCfg DatabaseConfig
-			if err := json.Unmarshal(b, &dbCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := dbCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = dbCfg
-		case ServiceTypeGraphQL:
-			b, _ := json.Marshal(svc.Config)
-			var gqlCfg GraphQLConfig
-			if err := json.Unmarshal(b, &gqlCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := gqlCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = gqlCfg
-		case ServiceTypeSOAP:
-			b, _ := json.Marshal(svc.Config)
-			var soapCfg SOAPConfig
-			if err := json.Unmarshal(b, &soapCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := soapCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = soapCfg
-		case ServiceTypeGRPC:
-			b, _ := json.Marshal(svc.Config)
-			var grpcCfg GRPCConfig
-			if err := json.Unmarshal(b, &grpcCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := grpcCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = grpcCfg
-		case ServiceTypeKafka:
-			b, _ := json.Marshal(svc.Config)
-			var kafkaCfg KafkaConfig
-			if err := json.Unmarshal(b, &kafkaCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := kafkaCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = kafkaCfg
-		case ServiceTypeMQTT:
-			b, _ := json.Marshal(svc.Config)
-			var mqttCfg MQTTConfig
-			if err := json.Unmarshal(b, &mqttCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := mqttCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = mqttCfg
-		case ServiceTypeFTP:
-			b, _ := json.Marshal(svc.Config)
-			var ftpCfg FTPConfig
-			if err := json.Unmarshal(b, &ftpCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := ftpCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = ftpCfg
-		case ServiceTypeSFTP:
-			b, _ := json.Marshal(svc.Config)
-			var sftpCfg SFTPConfig
-			if err := json.Unmarshal(b, &sftpCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := sftpCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = sftpCfg
-		case ServiceTypePush:
-			b, _ := json.Marshal(svc.Config)
-			var pushCfg PushConfig
-			if err := json.Unmarshal(b, &pushCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := pushCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = pushCfg
-		case ServiceTypeSlack:
-			b, _ := json.Marshal(svc.Config)
-			var slackCfg SlackConfig
-			if err := json.Unmarshal(b, &slackCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := slackCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = slackCfg
-		case ServiceTypeCustomTCP:
-			b, _ := json.Marshal(svc.Config)
-			var tcpCfg CustomTCPConfig
-			if err := json.Unmarshal(b, &tcpCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := tcpCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = tcpCfg
-		case ServiceTypeVoIP:
-			b, _ := json.Marshal(svc.Config)
-			var voipCfg VoIPConfig
-			if err := json.Unmarshal(b, &voipCfg); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			if err := voipCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-			}
-			cfg.Services[i].Config = voipCfg
+	for _, svc := range cfg.Services {
+		err := UnmarshalService(&svc)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to unmarshal service config")
+			return nil, err
 		}
 	}
 	return &cfg, nil
