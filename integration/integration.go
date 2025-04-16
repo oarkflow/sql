@@ -60,6 +60,16 @@ type SMTPAuthCredential struct {
 	Password string `json:"password"`
 }
 
+type SMPPCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type DatabaseCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type OAuth2Credential struct {
 	ClientID     string    `json:"client_id"`
 	ClientSecret string    `json:"client_secret"`
@@ -77,7 +87,7 @@ type APIConfig struct {
 	Headers                 map[string]string `json:"headers"`
 	RequestBody             string            `json:"request_body"`
 	ContentType             string            `json:"content_type"`
-	Timeout                 string            `json:"timeout"` // Use string so we can parse duration
+	Timeout                 string            `json:"timeout"` // as string (e.g. "10s")
 	TLSInsecureSkipVerify   bool              `json:"tls_insecure_skip_verify"`
 	RetryCount              int               `json:"retry_count"`
 	CircuitBreakerThreshold int               `json:"circuit_breaker_threshold"`
@@ -102,7 +112,7 @@ type SMTPConfig struct {
 	From              string `json:"from"`
 	UseTLS            bool   `json:"use_tls"`
 	UseSTARTTLS       bool   `json:"use_starttls"`
-	ConnectionTimeout string `json:"connection_timeout"` // as string duration
+	ConnectionTimeout string `json:"connection_timeout"` // as string
 	MaxConnections    int    `json:"max_connections"`
 }
 
@@ -146,10 +156,10 @@ type DatabaseConfig struct {
 	SSLMode         string `json:"ssl_mode"`
 	MaxOpenConns    int    `json:"max_open_conns"`
 	MaxIdleConns    int    `json:"max_idle_conns"`
-	ConnMaxLifetime string `json:"conn_max_lifetime"` // as string duration
-	ConnectTimeout  string `json:"connect_timeout"`   // as string duration
-	ReadTimeout     string `json:"read_timeout"`      // as string duration
-	WriteTimeout    string `json:"write_timeout"`     // as string duration
+	ConnMaxLifetime string `json:"conn_max_lifetime"` // as string
+	ConnectTimeout  string `json:"connect_timeout"`   // as string
+	ReadTimeout     string `json:"read_timeout"`      // as string
+	WriteTimeout    string `json:"write_timeout"`     // as string
 	PoolSize        int    `json:"pool_size"`
 }
 
@@ -266,6 +276,18 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		c.Data = &d
+	case CredentialTypeSMPP:
+		var d SMPPCredential
+		if err := json.Unmarshal(aux.Data, &d); err != nil {
+			return err
+		}
+		c.Data = d
+	case CredentialTypeDatabase:
+		var d DatabaseCredential
+		if err := json.Unmarshal(aux.Data, &d); err != nil {
+			return err
+		}
+		c.Data = d
 	default:
 		return fmt.Errorf("unsupported credential type: %s", c.Type)
 	}
@@ -305,7 +327,6 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 	case Closed:
 		return true
 	case Open:
-		// If open, check if the cooldown has passed, then try half-open
 		if now.Sub(cb.lastFailure) > cb.openDuration {
 			cb.state = HalfOpen
 			return true
@@ -541,7 +562,6 @@ func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
 	values.Set("refresh_token", auth.RefreshToken)
 	values.Set("client_id", auth.ClientID)
 	values.Set("client_secret", auth.ClientSecret)
-
 	resp, err := http.PostForm(auth.TokenURL, values)
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to refresh OAuth2 token")
@@ -655,14 +675,13 @@ func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, ser
 			return resp, nil
 		}
 		is.logger.Warn().Err(err).Int("attempt", i+1).Msg("API request failed, will retry")
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
 		jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
 		backoff := baseDelay*time.Duration(1<<i) + jitter
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
 }
@@ -739,8 +758,27 @@ func (is *IntegrationSystem) SendSMS(ctx context.Context, serviceName string, me
 	if !ok {
 		return errors.New("invalid SMPP configuration")
 	}
-	fmt.Println(cfg)
-	is.logger.Info().Str("service", serviceName).Str("message", message).Msg("Sending SMS")
+	var smppUser, smppPass string
+	if service.CredentialKey != "" {
+		cred, err := is.GetCredential(service.CredentialKey)
+		if err != nil {
+			return err
+		}
+		if cred.Type != CredentialTypeSMPP {
+			return fmt.Errorf("expected SMPP credential for service %s", serviceName)
+		}
+		data, ok := cred.Data.(map[string]interface{})
+		if ok {
+			if u, ok := data["username"].(string); ok {
+				smppUser = u
+			}
+			if p, ok := data["password"].(string); ok {
+				smppPass = p
+			}
+		}
+	}
+	is.logger.Info().Any("config", cfg).Str("service", serviceName).Str("message", message).Str("username", smppUser).Str("pass", smppPass).Msg("Sending SMS with SMPP credentials")
+	// Implement SMS sending logic here
 	return nil
 }
 
@@ -757,7 +795,21 @@ func (is *IntegrationSystem) ExecuteDatabaseQuery(ctx context.Context, serviceNa
 		return nil, errors.New("invalid Database configuration")
 	}
 	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
+	if service.CredentialKey != "" {
+		cred, err := is.GetCredential(service.CredentialKey)
+		if err == nil && cred.Type == CredentialTypeDatabase {
+			data, ok := cred.Data.(map[string]interface{})
+			if ok {
+				username, uok := data["username"].(string)
+				password, pok := data["password"].(string)
+				if uok && pok {
+					connStr = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s", username, password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
+				}
+			}
+		}
+	}
 	is.logger.Info().Str("driver", cfg.Driver).Str("connStr", connStr).Str("query", query).Msg("Executing database query")
+	// Implement actual database query execution here.
 	return "dummy result", nil
 }
 
@@ -882,6 +934,7 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 
 func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
 	is.logger.Info().Msg("Shutting down integration system...")
+	// Wait for all goroutines to finish
 	is.wg.Wait()
 	return nil
 }
@@ -984,38 +1037,42 @@ func main() {
 	reloadCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	signal.Notify(reloadCh, syscall.SIGHUP)
-	var bgWG sync.WaitGroup
-	bgWG.Add(1)
+	integration.wg.Add(1)
 	go func() {
-		defer bgWG.Done()
+		defer integration.wg.Done()
 		for {
-			<-reloadCh
-			logger.Info().Msg("Received SIGHUP: reloading configuration")
-			newCfg, err := loadConfig(*configPath, logger)
-			if err != nil {
-				logger.Error().Err(err).Msg("Config reload failed")
-				continue
-			}
-			for _, svc := range newCfg.Services {
-				if err := serviceStore.UpdateService(svc); err != nil {
-					_ = serviceStore.AddService(svc)
+			select {
+			case <-reloadCh:
+				logger.Info().Msg("Received SIGHUP: reloading configuration")
+				newCfg, err := loadConfig(*configPath, logger)
+				if err != nil {
+					logger.Error().Err(err).Msg("Config reload failed")
+					continue
 				}
-			}
-			for _, cred := range newCfg.Credentials {
-				if err := credentialStore.UpdateCredential(cred); err != nil {
-					_ = credentialStore.AddCredential(cred)
-				}
-			}
-			integration.cbLock.Lock()
-			for _, svc := range newCfg.Services {
-				if svc.Type == ServiceTypeAPI {
-					if apiCfg, ok := svc.Config.(APIConfig); ok {
-						integration.circuitBreakers[svc.Name] = NewCircuitBreaker(apiCfg.CircuitBreakerThreshold)
+				for _, svc := range newCfg.Services {
+					if err := serviceStore.UpdateService(svc); err != nil {
+						_ = serviceStore.AddService(svc)
 					}
 				}
+				for _, cred := range newCfg.Credentials {
+					if err := credentialStore.UpdateCredential(cred); err != nil {
+						_ = credentialStore.AddCredential(cred)
+					}
+				}
+				integration.cbLock.Lock()
+				for _, svc := range newCfg.Services {
+					if svc.Type == ServiceTypeAPI {
+						if apiCfg, ok := svc.Config.(APIConfig); ok {
+							integration.circuitBreakers[svc.Name] = NewCircuitBreaker(apiCfg.CircuitBreakerThreshold)
+						}
+					}
+				}
+				integration.cbLock.Unlock()
+				logger.Info().Msg("Configuration reloaded successfully")
+			case <-ctx.Done():
+				logger.Info().Msg("Configuration reload goroutine exiting due to shutdown")
+				return
 			}
-			integration.cbLock.Unlock()
-			logger.Info().Msg("Configuration reloaded successfully")
 		}
 	}()
 	if err := integration.HealthCheck(ctx); err != nil {
@@ -1071,7 +1128,6 @@ func main() {
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Error().Err(err).Msg("Metrics server shutdown failed")
 	}
-	bgWG.Wait()
-	_ = integration.Shutdown(context.Background())
+	integration.wg.Wait()
 	logger.Info().Msg("Exiting integration system.")
 }
