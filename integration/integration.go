@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -53,6 +54,17 @@ type BasicAuthCredential struct {
 type SMTPAuthCredential struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type OAuth2Credential struct {
+	ClientID     string    `json:"client_id"`
+	ClientSecret string    `json:"client_secret"`
+	AuthURL      string    `json:"auth_url"`
+	TokenURL     string    `json:"token_url"`
+	Scope        string    `json:"scope"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 type APIConfig struct {
@@ -229,9 +241,46 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		c.Data = d
+	case CredentialTypeOAuth2:
+		var d OAuth2Credential
+		if err := json.Unmarshal(aux.Data, &d); err != nil {
+			return err
+		}
+		c.Data = &d
 	default:
 		return fmt.Errorf("unsupported credential type: %s", c.Type)
 	}
+	return nil
+}
+
+func refreshOAuth2Token(auth *OAuth2Credential) error {
+	values := url.Values{}
+	values.Set("grant_type", "refresh_token")
+	values.Set("refresh_token", auth.RefreshToken)
+	values.Set("client_id", auth.ClientID)
+	values.Set("client_secret", auth.ClientSecret)
+
+	resp, err := http.PostForm(auth.TokenURL, values)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OAuth2 token refresh failed: %s", resp.Status)
+	}
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return err
+	}
+	auth.AccessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		auth.RefreshToken = tokenResp.RefreshToken
+	}
+	auth.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	return nil
 }
 
@@ -495,6 +544,18 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 			return nil, errors.New("invalid bearer token credential")
 		}
 		req.Header.Add("Authorization", "Bearer "+data.Token)
+	case CredentialTypeOAuth2:
+		auth, ok := cred.Data.(*OAuth2Credential)
+		if !ok {
+			return nil, errors.New("invalid OAuth2 credential")
+		}
+		// Refresh if token is missing or about to expire within 1 minute.
+		if auth.AccessToken == "" || time.Until(auth.ExpiresAt) < time.Minute {
+			if err := refreshOAuth2Token(auth); err != nil {
+				return nil, fmt.Errorf("failed to refresh OAuth2 token: %w", err)
+			}
+		}
+		req.Header.Add("Authorization", "Bearer "+auth.AccessToken)
 	default:
 		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 	}
