@@ -1,280 +1,294 @@
 {
-	"credentials": [
-		{
-			"key": "api-service-key",
-			"type": "api_key",
-			"data": {
-				"key": "your-api-key-here"
-			},
-			"description": "API key credential for the API service",
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"key": "smtp-service-key",
-			"type": "smtp",
-			"data": {
-				"username": "smtp_user",
-				"password": "smtp_password"
-			},
-			"description": "SMTP credential for the email service",
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"key": "smpp-service-key",
-			"type": "smpp",
-			"data": {
-				"username": "smpp_user",
-				"password": "smpp_password"
-			},
-			"description": "SMPP credential for the SMS service",
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"key": "oauth2-api-service-key",
-			"type": "oauth2",
-			"data": {
-				"client_id": "your-client-id",
-				"client_secret": "your-client-secret",
-				"auth_url": "https://auth.example.com/authorize",
-				"token_url": "https://auth.example.com/token",
-				"scope": "read write",
-				"access_token": "",
-				"refresh_token": "your-refresh-token",
-				"expires_at": "2025-04-16T00:00:00Z"
-			},
-			"description": "OAuth2 credential for an API service (example alternative)",
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		}
-	],
-	"services": [
-		{
-			"name": "some-api-service",
-			"type": "api",
-			"config": {
-				"url": "https://jsonplaceholder.typicode.com/posts/100",
-				"method": "GET",
-				"headers": {
-					"Content-Type": "application/json",
-					"X-Request-ID": "unique-request-id"
-				},
-				"content_type": "application/json",
-				"timeout": "10s",
-				"tls_insecure_skip_verify": false,
-				"retry_count": 3,
-				"circuit_breaker_threshold": 5
-			},
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "production-email",
-			"type": "smtp",
-			"config": {
-				"server": "smtp.example.com",
-				"port": 465,
-				"from": "no-reply@example.com",
-				"use_tls": true,
-				"use_starttls": false,
-				"connection_timeout": "10s",
-				"max_connections": 10
-			},
-			"credential_key": "smtp-service-key",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "sms-service",
-			"type": "smpp",
-			"config": {
-				"system_type": "production",
-				"host": "smpp.example.com",
-				"port": 2775,
-				"source_addr": "SENDER",
-				"dest_addr": "RECIPIENT",
-				"retry_count": 3
-			},
-			"credential_key": "smpp-service-key",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "prod-database",
-			"type": "database",
-			"config": {
-				"driver": "postgres",
-				"host": "db.example.com",
-				"port": 5432,
-				"database": "production_db",
-				"ssl_mode": "require",
-				"max_open_conns": 50,
-				"max_idle_conns": 10,
-				"conn_max_lifetime": "30m",
-				"connect_timeout": "10s",
-				"read_timeout": "5s",
-				"write_timeout": "5s",
-				"pool_size": 50
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "graphql-service",
-			"type": "graphql",
-			"config": {
-				"url": "https://graphql.example.com/graphql",
-				"headers": {
-					"Authorization": "Bearer your-graphql-token"
-				},
-				"timeout": "8s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "soap-service",
-			"type": "soap",
-			"config": {
-				"url": "https://soap.example.com/service",
-				"soap_action": "http://example.com/soap/action",
-				"timeout": "12s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "grpc-service",
-			"type": "grpc",
-			"config": {
-				"address": "grpc.example.com:50051",
-				"timeout": "5s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "kafka-service",
-			"type": "kafka",
-			"config": {
-				"brokers": ["kafka1.example.com:9092", "kafka2.example.com:9092"],
-				"topic": "example_topic",
-				"timeout": "6s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "mqtt-service",
-			"type": "mqtt",
-			"config": {
-				"server": "mqtt.example.com:1883",
-				"client_id": "mqtt_client_123",
-				"topic": "example/mqtt/topic",
-				"timeout": "7s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "ftp-service",
-			"type": "ftp",
-			"config": {
-				"server": "ftp.example.com",
-				"port": 21,
-				"username": "ftp_user",
-				"password": "ftp_password",
-				"timeout": "10s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "sftp-service",
-			"type": "sftp",
-			"config": {
-				"server": "sftp.example.com",
-				"port": 22,
-				"username": "sftp_user",
-				"password": "sftp_password",
-				"timeout": "10s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "push-service",
-			"type": "push",
-			"config": {
-				"provider": "firebase",
-				"api_key": "your-firebase-api-key",
-				"endpoint": "https://fcm.googleapis.com/fcm/send",
-				"timeout": "8s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "slack-service",
-			"type": "slack",
-			"config": {
-				"webhook_url": "https://hooks.slack.com/services/your/webhook/url",
-				"channel": "#general",
-				"timeout": "6s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "customtcp-service",
-			"type": "custom_tcp",
-			"config": {
-				"address": "customtcp.example.com:8080",
-				"timeout": "5s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		},
-		{
-			"name": "voip-service",
-			"type": "voip",
-			"config": {
-				"sip_server": "sip.example.com",
-				"username": "voip_user",
-				"password": "voip_password",
-				"timeout": "10s"
-			},
-			"credential_key": "",
-			"enabled": true,
-			"created_at": "2025-04-16T00:00:00Z",
-			"updated_at": "2025-04-16T00:00:00Z"
-		}
-	]
+    "credentials": [
+        {
+            "key": "api-service-key",
+            "type": "api_key",
+            "data": {
+                "key": "your-api-key-here"
+            },
+            "description": "API key credential for the API service",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "key": "smtp-service-key",
+            "type": "smtp",
+            "data": {
+                "username": "smtp_user",
+                "password": "smtp_password"
+            },
+            "description": "SMTP credential for the email service",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "key": "smpp-service-key",
+            "type": "smpp",
+            "data": {
+                "username": "smpp_user",
+                "password": "smpp_password"
+            },
+            "description": "SMPP credential for the SMS service",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "key": "oauth2-api-service-key",
+            "type": "oauth2",
+            "data": {
+                "client_id": "your-client-id",
+                "client_secret": "your-client-secret",
+                "auth_url": "https://auth.example.com/authorize",
+                "token_url": "https://auth.example.com/token",
+                "scope": "read write",
+                "access_token": "",
+                "refresh_token": "your-refresh-token",
+                "expires_at": "2025-04-16T00:00:00Z"
+            },
+            "description": "OAuth2 credential for an API service (example alternative)",
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        }
+    ],
+    "services": [
+        {
+            "name": "some-api-service",
+            "type": "api",
+            "config": {
+                "url": "https://jsonplaceholder.typicode.com/posts/100",
+                "method": "GET",
+                "headers": {
+                    "Content-Type": "application/json",
+                    "X-Request-ID": "unique-request-id"
+                },
+                "content_type": "application/json",
+                "timeout": "10s",
+                "tls_insecure_skip_verify": false,
+                "retry_count": 3,
+                "circuit_breaker_threshold": 5,
+                "auth_headers": {
+                    "api_key": {
+                        "header": "X-API-Key",
+                        "prefix": ""
+                    },
+                    "bearer": {
+                        "header": "Authorization",
+                        "prefix": "Bearer "
+                    },
+                    "oauth2": {
+                        "header": "Authorization",
+                        "prefix": "Bearer "
+                    }
+                }
+            },
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "production-email",
+            "type": "smtp",
+            "config": {
+                "server": "smtp.example.com",
+                "port": 465,
+                "from": "no-reply@example.com",
+                "use_tls": true,
+                "use_starttls": false,
+                "connection_timeout": "10s",
+                "max_connections": 10
+            },
+            "credential_key": "smtp-service-key",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "sms-service",
+            "type": "smpp",
+            "config": {
+                "system_type": "production",
+                "host": "smpp.example.com",
+                "port": 2775,
+                "source_addr": "SENDER",
+                "dest_addr": "RECIPIENT",
+                "retry_count": 3
+            },
+            "credential_key": "smpp-service-key",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "prod-database",
+            "type": "database",
+            "config": {
+                "driver": "postgres",
+                "host": "db.example.com",
+                "port": 5432,
+                "database": "production_db",
+                "ssl_mode": "require",
+                "max_open_conns": 50,
+                "max_idle_conns": 10,
+                "conn_max_lifetime": "30m",
+                "connect_timeout": "10s",
+                "read_timeout": "5s",
+                "write_timeout": "5s",
+                "pool_size": 50
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "graphql-service",
+            "type": "graphql",
+            "config": {
+                "url": "https://graphql.example.com/graphql",
+                "headers": {
+                    "Authorization": "Bearer your-graphql-token"
+                },
+                "timeout": "8s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "soap-service",
+            "type": "soap",
+            "config": {
+                "url": "https://soap.example.com/service",
+                "soap_action": "http://example.com/soap/action",
+                "timeout": "12s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "grpc-service",
+            "type": "grpc",
+            "config": {
+                "address": "grpc.example.com:50051",
+                "timeout": "5s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "kafka-service",
+            "type": "kafka",
+            "config": {
+                "brokers": [ "kafka1.example.com:9092", "kafka2.example.com:9092" ],
+                "topic": "example_topic",
+                "timeout": "6s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "mqtt-service",
+            "type": "mqtt",
+            "config": {
+                "server": "mqtt.example.com:1883",
+                "client_id": "mqtt_client_123",
+                "topic": "example/mqtt/topic",
+                "timeout": "7s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "ftp-service",
+            "type": "ftp",
+            "config": {
+                "server": "ftp.example.com",
+                "port": 21,
+                "username": "ftp_user",
+                "password": "ftp_password",
+                "timeout": "10s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "sftp-service",
+            "type": "sftp",
+            "config": {
+                "server": "sftp.example.com",
+                "port": 22,
+                "username": "sftp_user",
+                "password": "sftp_password",
+                "timeout": "10s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "push-service",
+            "type": "push",
+            "config": {
+                "provider": "firebase",
+                "api_key": "your-firebase-api-key",
+                "endpoint": "https://fcm.googleapis.com/fcm/send",
+                "timeout": "8s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "slack-service",
+            "type": "slack",
+            "config": {
+                "webhook_url": "https://hooks.slack.com/services/your/webhook/url",
+                "channel": "#general",
+                "timeout": "6s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "customtcp-service",
+            "type": "custom_tcp",
+            "config": {
+                "address": "customtcp.example.com:8080",
+                "timeout": "5s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        },
+        {
+            "name": "voip-service",
+            "type": "voip",
+            "config": {
+                "sip_server": "sip.example.com",
+                "username": "voip_user",
+                "password": "voip_password",
+                "timeout": "10s"
+            },
+            "credential_key": "",
+            "enabled": true,
+            "created_at": "2025-04-16T00:00:00Z",
+            "updated_at": "2025-04-16T00:00:00Z"
+        }
+    ]
 }

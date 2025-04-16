@@ -42,6 +42,10 @@ func main() {
 	switch resp := resp.(type) {
 	case *integrations.HTTPResponse:
 		fmt.Println(string(resp.Body))
+		for header, content := range resp.Headers {
+			fmt.Println(fmt.Sprintf("%s: %v", header, content))
+		}
+		fmt.Println(resp.StatusCode)
 	}
 	// testServices(ctx, manager)
 }

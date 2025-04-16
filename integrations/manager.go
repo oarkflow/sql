@@ -17,6 +17,8 @@ import (
 	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
+	"github.com/oarkflow/squealx"
+	"github.com/oarkflow/squealx/connection"
 )
 
 type Manager struct {
@@ -132,21 +134,23 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 		if !ok {
 			return nil, errors.New("invalid API key credential format")
 		}
-		if key, ok := data["key"].(string); ok {
-			req.Header.Add("X-API-Key", key)
-		} else {
+		key, ok := data["key"].(string)
+		if !ok {
 			return nil, errors.New("missing API key value")
 		}
+		headerConf := cfg.AuthHeaders[string(CredentialTypeAPIKey)]
+		req.Header.Add(headerConf.Header, headerConf.Prefix+key)
 	case CredentialTypeBearer:
 		data, ok := cred.Data.(map[string]interface{})
 		if !ok {
 			return nil, errors.New("invalid bearer token credential format")
 		}
-		if token, ok := data["token"].(string); ok {
-			req.Header.Add("Authorization", "Bearer "+token)
-		} else {
+		token, ok := data["token"].(string)
+		if !ok {
 			return nil, errors.New("missing bearer token value")
 		}
+		headerConf := cfg.AuthHeaders[string(CredentialTypeBearer)]
+		req.Header.Add(headerConf.Header, headerConf.Prefix+token)
 	case CredentialTypeOAuth2:
 		auth, ok := cred.Data.(*OAuth2Credential)
 		if !ok {
@@ -157,7 +161,8 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 				return nil, fmt.Errorf("failed to refresh OAuth2 token: %w", err)
 			}
 		}
-		req.Header.Add("Authorization", "Bearer "+auth.AccessToken)
+		headerConf := cfg.AuthHeaders[string(CredentialTypeOAuth2)]
+		req.Header.Add(headerConf.Header, headerConf.Prefix+auth.AccessToken)
 	default:
 		if service.RequireAuth {
 			return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
@@ -709,7 +714,6 @@ func (is *Manager) SendSMS(ctx context.Context, serviceName string, message stri
 }
 
 func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string) (any, error) {
-	// For database execution, we simulate a dummy query.
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return nil, err
@@ -718,24 +722,45 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if !ok {
 		return nil, errors.New("invalid Database configuration")
 	}
-	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
-	if service.CredentialKey != "" {
-		cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
-		if err == nil && cred.Type == CredentialTypeDatabase {
-			data, ok := cred.Data.(map[string]interface{})
-			if ok {
-				username, uok := data["username"].(string)
-				password, pok := data["password"].(string)
-				if uok && pok {
-					connStr = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-						username, password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
-				}
-			}
-		}
+
+	if service.CredentialKey == "" {
+		return nil, errors.New("credentials not found")
 	}
-	is.logger.Info().Str("driver", cfg.Driver).Str("connStr", connStr).
-		Str("query", query).Msg("Simulated executing database query")
-	return "dummy database result", nil
+	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
+	if err != nil {
+		return nil, err
+	}
+	if cred.Type == CredentialTypeDatabase {
+		return nil, errors.New("credential is not for database")
+	}
+	credentials, ok := cred.Data.(map[string]any)
+	if !ok {
+		return nil, errors.New("credentials expected as map")
+	}
+	username, uok := credentials["username"].(string)
+	password, pok := credentials["password"].(string)
+	if !(uok && pok) {
+		return nil, errors.New("credentials missing")
+	}
+	db, _, err := connection.FromConfig(squealx.Config{
+		Driver:      cfg.Driver,
+		Host:        cfg.Host,
+		Port:        cfg.Port,
+		Username:    username,
+		Password:    password,
+		MaxIdleCons: cfg.MaxIdleConns,
+		MaxOpenCons: cfg.MaxOpenConns,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var dest []map[string]any
+	err = db.Select(&dest, query)
+	if err != nil {
+		return nil, err
+	}
+	is.logger.Info().Str("driver", cfg.Driver).Str("query", query).Msg("Simulated executing database query")
+	return dest, nil
 }
 
 func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
