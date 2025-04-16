@@ -322,6 +322,14 @@ func (c *InMemoryCredentialStore) ListCredentials() ([]Credential, error) {
 
 type IntegrationExecutor interface {
 	Execute(ctx context.Context, serviceName string, payload any) (any, error)
+	HealthCheck(ctx context.Context) error
+}
+
+// New interface that standardizes integration execution across services
+type Integrator interface {
+	Execute(ctx context.Context, serviceName string, payload any) (any, error)
+	HealthCheck(ctx context.Context) error
+	Shutdown(ctx context.Context) error
 }
 
 type EmailPayload struct {
@@ -332,12 +340,17 @@ type EmailPayload struct {
 type IntegrationSystem struct {
 	services    ServiceStore
 	credentials CredentialStore
+	httpClient  *http.Client
 }
 
 func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore) *IntegrationSystem {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 	return &IntegrationSystem{
 		services:    serviceStore,
 		credentials: credentialStore,
+		httpClient:  client,
 	}
 }
 
@@ -356,11 +369,10 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 		return nil, errors.New("invalid API configuration")
 	}
 
-	cred, err := is.credentials.GetCredential(service.CredentialKey)
+	cred, err := is.GetCredential(service.CredentialKey, service.Type)
 	if err != nil {
 		return nil, err
 	}
-
 	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -387,8 +399,7 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 	}
 
-	client := &http.Client{Timeout: cfg.Timeout}
-	return client.Do(req)
+	return is.httpClient.Do(req)
 }
 
 func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
@@ -429,7 +440,7 @@ func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, 
 		return errors.New("invalid SMTP configuration")
 	}
 
-	cred, err := is.credentials.GetCredential(service.CredentialKey)
+	cred, err := is.GetCredential(service.CredentialKey, service.Type)
 	if err != nil {
 		return err
 	}
@@ -566,6 +577,65 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	}
 }
 
+func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
+	services, err := is.services.ListServices()
+	if err != nil {
+		return err
+	}
+	for _, service := range services {
+		switch service.Type {
+		case ServiceTypeAPI:
+			cfg, ok := service.Config.(APIConfig)
+			if !ok {
+				return fmt.Errorf("invalid API configuration for service %s", service.Name)
+			}
+			req, err := http.NewRequestWithContext(ctx, "HEAD", cfg.URL, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := is.httpClient.Do(req)
+			if err != nil || resp.StatusCode >= 400 {
+				return fmt.Errorf("health check failed for API service %s", service.Name)
+			}
+		case ServiceTypeSMTP:
+			cfg, ok := service.Config.(SMTPConfig)
+			if !ok {
+				return fmt.Errorf("invalid SMTP configuration for service %s", service.Name)
+			}
+			if cfg.UseTLS {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: false,
+					ServerName:         cfg.Server,
+				}
+				conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
+				if err != nil {
+					return fmt.Errorf("health check failed for SMTP service %s: %v", service.Name, err)
+				}
+				conn.Close()
+			}
+		default:
+			log.Printf("No health check implemented for service type: %s", service.Type)
+		}
+	}
+	return nil
+}
+
+func (is *IntegrationSystem) GetCredential(key string, serviceType ServiceType) (Credential, error) {
+	cred, err := is.credentials.GetCredential(key)
+	if err != nil {
+		log.Printf("Failed to get credential for service type %s: %v\n", serviceType, err)
+	}
+	return cred, err
+}
+
+// Extend IntegrationSystem to implement the Integrator interface
+func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
+	// Production ready: add graceful shutdown for persistent connections, pooling, etc.
+	log.Println("Shutting down integration system...")
+	// e.g., close any open connections, flush logs, release resources.
+	return nil
+}
+
 func main() {
 
 	serviceStore := NewInMemoryServiceStore()
@@ -669,7 +739,9 @@ func main() {
 		log.Fatalf("Failed to add Database service: %v", err)
 	}
 
-	ctx := context.Background()
+	// Use a cancellable context to enable graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	emailPayload := EmailPayload{
 		To:      []string{"recipient@example.com"},
@@ -703,4 +775,14 @@ func main() {
 		log.Printf("Database query result: %v", dbResult)
 	}
 
+	if err := integration.HealthCheck(ctx); err != nil {
+		log.Printf("Health check failed: %v", err)
+	} else {
+		log.Println("All services are healthy.")
+	}
+
+	// Production ready: call Shutdown to release resources before exit
+	if err := integration.Shutdown(ctx); err != nil {
+		log.Printf("Error during shutdown: %v", err)
+	}
 }
