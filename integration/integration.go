@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"math/rand"
 	"net/http"
 	"net/smtp"
@@ -18,6 +17,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/oarkflow/log"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type ServiceType string
@@ -73,7 +77,7 @@ type APIConfig struct {
 	Headers                 map[string]string `json:"headers"`
 	RequestBody             string            `json:"request_body"`
 	ContentType             string            `json:"content_type"`
-	Timeout                 time.Duration     `json:"timeout"`
+	Timeout                 string            `json:"timeout"` // Use string so we can parse duration
 	TLSInsecureSkipVerify   bool              `json:"tls_insecure_skip_verify"`
 	RetryCount              int               `json:"retry_count"`
 	CircuitBreakerThreshold int               `json:"circuit_breaker_threshold"`
@@ -86,17 +90,20 @@ func (cfg APIConfig) Validate() error {
 	if cfg.Method == "" {
 		return errors.New("APIConfig: HTTP method must be provided")
 	}
+	if _, err := time.ParseDuration(cfg.Timeout); err != nil {
+		return fmt.Errorf("APIConfig: invalid timeout %v", err)
+	}
 	return nil
 }
 
 type SMTPConfig struct {
-	Server            string        `json:"server"`
-	Port              int           `json:"port"`
-	From              string        `json:"from"`
-	UseTLS            bool          `json:"use_tls"`
-	UseSTARTTLS       bool          `json:"use_starttls"`
-	ConnectionTimeout time.Duration `json:"connection_timeout"`
-	MaxConnections    int           `json:"max_connections"`
+	Server            string `json:"server"`
+	Port              int    `json:"port"`
+	From              string `json:"from"`
+	UseTLS            bool   `json:"use_tls"`
+	UseSTARTTLS       bool   `json:"use_starttls"`
+	ConnectionTimeout string `json:"connection_timeout"` // as string duration
+	MaxConnections    int    `json:"max_connections"`
 }
 
 func (cfg SMTPConfig) Validate() error {
@@ -105,6 +112,9 @@ func (cfg SMTPConfig) Validate() error {
 	}
 	if cfg.Port == 0 {
 		return errors.New("SMTPConfig: port must be provided")
+	}
+	if _, err := time.ParseDuration(cfg.ConnectionTimeout); err != nil {
+		return fmt.Errorf("SMTPConfig: invalid connection_timeout %v", err)
 	}
 	return nil
 }
@@ -129,18 +139,18 @@ func (cfg SMPPConfig) Validate() error {
 }
 
 type DatabaseConfig struct {
-	Driver          string        `json:"driver"`
-	Host            string        `json:"host"`
-	Port            int           `json:"port"`
-	Database        string        `json:"database"`
-	SSLMode         string        `json:"ssl_mode"`
-	MaxOpenConns    int           `json:"max_open_conns"`
-	MaxIdleConns    int           `json:"max_idle_conns"`
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
-	ConnectTimeout  time.Duration `json:"connect_timeout"`
-	ReadTimeout     time.Duration `json:"read_timeout"`
-	WriteTimeout    time.Duration `json:"write_timeout"`
-	PoolSize        int           `json:"pool_size"`
+	Driver          string `json:"driver"`
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	Database        string `json:"database"`
+	SSLMode         string `json:"ssl_mode"`
+	MaxOpenConns    int    `json:"max_open_conns"`
+	MaxIdleConns    int    `json:"max_idle_conns"`
+	ConnMaxLifetime string `json:"conn_max_lifetime"` // as string duration
+	ConnectTimeout  string `json:"connect_timeout"`   // as string duration
+	ReadTimeout     string `json:"read_timeout"`      // as string duration
+	WriteTimeout    string `json:"write_timeout"`     // as string duration
+	PoolSize        int    `json:"pool_size"`
 }
 
 func (cfg DatabaseConfig) Validate() error {
@@ -149,6 +159,12 @@ func (cfg DatabaseConfig) Validate() error {
 	}
 	if cfg.Host == "" || cfg.Database == "" {
 		return errors.New("DatabaseConfig: host and database must be provided")
+	}
+	if _, err := time.ParseDuration(cfg.ConnMaxLifetime); err != nil {
+		return fmt.Errorf("DatabaseConfig: invalid conn_max_lifetime %v", err)
+	}
+	if _, err := time.ParseDuration(cfg.ConnectTimeout); err != nil {
+		return fmt.Errorf("DatabaseConfig: invalid connect_timeout %v", err)
 	}
 	return nil
 }
@@ -174,7 +190,6 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-
 	switch s.Type {
 	case ServiceTypeAPI:
 		var cfg APIConfig
@@ -257,35 +272,84 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func refreshOAuth2Token(auth *OAuth2Credential) error {
-	values := url.Values{}
-	values.Set("grant_type", "refresh_token")
-	values.Set("refresh_token", auth.RefreshToken)
-	values.Set("client_id", auth.ClientID)
-	values.Set("client_secret", auth.ClientSecret)
+type cbState int
 
-	resp, err := http.PostForm(auth.TokenURL, values)
-	if err != nil {
-		return err
+const (
+	Closed cbState = iota
+	Open
+	HalfOpen
+)
+
+type CircuitBreaker struct {
+	failureCount int
+	threshold    int
+	state        cbState
+	lastFailure  time.Time
+	openDuration time.Duration
+	lock         sync.Mutex
+}
+
+func NewCircuitBreaker(threshold int) *CircuitBreaker {
+	return &CircuitBreaker{
+		threshold:    threshold,
+		state:        Closed,
+		openDuration: 30 * time.Second,
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("OAuth2 token refresh failed: %s", resp.Status)
+}
+
+func (cb *CircuitBreaker) AllowRequest() bool {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	now := time.Now()
+	switch cb.state {
+	case Closed:
+		return true
+	case Open:
+		// If open, check if the cooldown has passed, then try half-open
+		if now.Sub(cb.lastFailure) > cb.openDuration {
+			cb.state = HalfOpen
+			return true
+		}
+		return false
+	case HalfOpen:
+		return true
+	default:
+		return false
 	}
-	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		RefreshToken string `json:"refresh_token"`
+}
+
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	cb.failureCount = 0
+	cb.state = Closed
+}
+
+func (cb *CircuitBreaker) RecordFailure() {
+	cb.lock.Lock()
+	defer cb.lock.Unlock()
+	cb.failureCount++
+	if cb.failureCount >= cb.threshold {
+		cb.state = Open
+		cb.lastFailure = time.Now()
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return err
-	}
-	auth.AccessToken = tokenResp.AccessToken
-	if tokenResp.RefreshToken != "" {
-		auth.RefreshToken = tokenResp.RefreshToken
-	}
-	auth.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	return nil
+}
+
+var (
+	apiRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "integration_api_request_duration_seconds",
+		Help:    "API request duration in seconds",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"service"})
+	apiRequestFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "integration_api_request_failures_total",
+		Help: "Total API request failures",
+	}, []string{"service"})
+)
+
+func initMetrics() {
+	prometheus.MustRegister(apiRequestDuration)
+	prometheus.MustRegister(apiRequestFailures)
 }
 
 type ServiceStore interface {
@@ -338,9 +402,6 @@ func (s *InMemoryServiceStore) GetService(name string) (Service, error) {
 func (s *InMemoryServiceStore) UpdateService(service Service) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.services[service.Name]; !exists {
-		return fmt.Errorf("service not found: %s", service.Name)
-	}
 	s.services[service.Name] = service
 	return nil
 }
@@ -399,9 +460,6 @@ func (c *InMemoryCredentialStore) GetCredential(key string) (Credential, error) 
 func (c *InMemoryCredentialStore) UpdateCredential(cred Credential) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.credentials[cred.Key]; !exists {
-		return fmt.Errorf("credential not found: %s", cred.Key)
-	}
 	c.credentials[cred.Key] = cred
 	return nil
 }
@@ -426,44 +484,6 @@ func (c *InMemoryCredentialStore) ListCredentials() ([]Credential, error) {
 	return creds, nil
 }
 
-type CircuitBreaker struct {
-	failureCount int
-	threshold    int
-	openUntil    time.Time
-	lock         sync.Mutex
-}
-
-func NewCircuitBreaker(threshold int) *CircuitBreaker {
-	return &CircuitBreaker{threshold: threshold}
-}
-
-func (cb *CircuitBreaker) AllowRequest() bool {
-	cb.lock.Lock()
-	defer cb.lock.Unlock()
-	return time.Now().After(cb.openUntil)
-}
-
-func (cb *CircuitBreaker) RecordSuccess() {
-	cb.lock.Lock()
-	defer cb.lock.Unlock()
-	cb.failureCount = 0
-}
-
-func (cb *CircuitBreaker) RecordFailure(cooldown time.Duration) {
-	cb.lock.Lock()
-	defer cb.lock.Unlock()
-	cb.failureCount++
-	if cb.failureCount >= cb.threshold {
-		cb.openUntil = time.Now().Add(cooldown)
-	}
-}
-
-type Integrator interface {
-	Execute(ctx context.Context, serviceName string, payload any) (any, error)
-	HealthCheck(ctx context.Context) error
-	Shutdown(ctx context.Context) error
-}
-
 type EmailPayload struct {
 	To      []string
 	Message []byte
@@ -474,41 +494,86 @@ type IntegrationSystem struct {
 	credentials     CredentialStore
 	circuitBreakers map[string]*CircuitBreaker
 	cbLock          sync.Mutex
+	logger          *log.Logger
+	wg              sync.WaitGroup
 }
 
-func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore) *IntegrationSystem {
+func NewIntegrationSystem(serviceStore ServiceStore, credentialStore CredentialStore, logger *log.Logger) *IntegrationSystem {
 	return &IntegrationSystem{
 		services:        serviceStore,
 		credentials:     credentialStore,
 		circuitBreakers: make(map[string]*CircuitBreaker),
+		logger:          logger,
 	}
 }
 
-func (is *IntegrationSystem) getCircuitBreaker(serviceName string) *CircuitBreaker {
+func (is *IntegrationSystem) getCircuitBreaker(serviceName string, threshold int) *CircuitBreaker {
 	is.cbLock.Lock()
 	defer is.cbLock.Unlock()
 	cb, exists := is.circuitBreakers[serviceName]
 	if !exists {
-		threshold := 3 // default
-		service, err := is.services.GetService(serviceName)
-		if err == nil && service.Type == ServiceTypeAPI {
-			if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.CircuitBreakerThreshold > 0 {
-				threshold = apiCfg.CircuitBreakerThreshold
-			}
-		}
 		cb = NewCircuitBreaker(threshold)
 		is.circuitBreakers[serviceName] = cb
 	}
 	return cb
 }
 
+func parseDuration(d string) time.Duration {
+	dur, err := time.ParseDuration(d)
+	if err != nil {
+		return 10 * time.Second
+	}
+	return dur
+}
+
 func getHTTPClient(apiCfg APIConfig) *http.Client {
 	return &http.Client{
-		Timeout: apiCfg.Timeout,
+		Timeout: parseDuration(apiCfg.Timeout),
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: apiCfg.TLSInsecureSkipVerify},
 		},
 	}
+}
+
+func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
+	values := url.Values{}
+	values.Set("grant_type", "refresh_token")
+	values.Set("refresh_token", auth.RefreshToken)
+	values.Set("client_id", auth.ClientID)
+	values.Set("client_secret", auth.ClientSecret)
+
+	resp, err := http.PostForm(auth.TokenURL, values)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to refresh OAuth2 token")
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OAuth2 token refresh failed: %s", resp.Status)
+	}
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return err
+	}
+	auth.AccessToken = tokenResp.AccessToken
+	if tokenResp.RefreshToken != "" {
+		auth.RefreshToken = tokenResp.RefreshToken
+	}
+	auth.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	logger.Info().Msg("OAuth2 token refreshed")
+	return nil
+}
+
+func (is *IntegrationSystem) GetCredential(key string) (Credential, error) {
+	cred, err := is.credentials.GetCredential(key)
+	if err != nil {
+		is.logger.Error().Str("key", key).Err(err).Msg("failed to get credential")
+	}
+	return cred, err
 }
 
 func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName string, body []byte) (*http.Response, error) {
@@ -523,8 +588,7 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	if !ok {
 		return nil, errors.New("invalid API configuration")
 	}
-
-	cred, err := is.GetCredential(service.CredentialKey, service.Type)
+	cred, err := is.GetCredential(service.CredentialKey)
 	if err != nil {
 		return nil, err
 	}
@@ -537,25 +601,32 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	}
 	switch cred.Type {
 	case CredentialTypeAPIKey:
-		data, ok := cred.Data.(APIKeyCredential)
+		data, ok := cred.Data.(map[string]interface{})
 		if !ok {
-			return nil, errors.New("invalid API key credential")
+			return nil, errors.New("invalid API key credential format")
 		}
-		req.Header.Add("X-API-Key", data.Key)
+		if key, ok := data["key"].(string); ok {
+			req.Header.Add("X-API-Key", key)
+		} else {
+			return nil, errors.New("missing API key value")
+		}
 	case CredentialTypeBearer:
-		data, ok := cred.Data.(BearerCredential)
+		data, ok := cred.Data.(map[string]interface{})
 		if !ok {
-			return nil, errors.New("invalid bearer token credential")
+			return nil, errors.New("invalid bearer token credential format")
 		}
-		req.Header.Add("Authorization", "Bearer "+data.Token)
+		if token, ok := data["token"].(string); ok {
+			req.Header.Add("Authorization", "Bearer "+token)
+		} else {
+			return nil, errors.New("missing bearer token value")
+		}
 	case CredentialTypeOAuth2:
 		auth, ok := cred.Data.(*OAuth2Credential)
 		if !ok {
 			return nil, errors.New("invalid OAuth2 credential")
 		}
-		// Refresh if token is missing or about to expire within 1 minute.
 		if auth.AccessToken == "" || time.Until(auth.ExpiresAt) < time.Minute {
-			if err := refreshOAuth2Token(auth); err != nil {
+			if err := refreshOAuth2Token(auth, is.logger); err != nil {
 				return nil, fmt.Errorf("failed to refresh OAuth2 token: %w", err)
 			}
 		}
@@ -563,8 +634,15 @@ func (is *IntegrationSystem) ExecuteAPIRequest(ctx context.Context, serviceName 
 	default:
 		return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 	}
+	start := time.Now()
 	client := getHTTPClient(cfg)
-	return client.Do(req)
+	resp, err := client.Do(req)
+	duration := time.Since(start)
+	apiRequestDuration.WithLabelValues(serviceName).Observe(duration.Seconds())
+	if err != nil {
+		apiRequestFailures.WithLabelValues(serviceName).Inc()
+	}
+	return resp, err
 }
 
 func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
@@ -576,7 +654,7 @@ func (is *IntegrationSystem) ExecuteAPIRequestWithRetry(ctx context.Context, ser
 		if err == nil {
 			return resp, nil
 		}
-		log.Printf("API request attempt %d/%d failed: %v", i+1, maxRetries, err)
+		is.logger.Warn().Err(err).Int("attempt", i+1).Msg("API request failed, will retry")
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -601,17 +679,20 @@ func (is *IntegrationSystem) SendEmail(ctx context.Context, serviceName string, 
 	if !ok {
 		return errors.New("invalid SMTP configuration")
 	}
-
-	cred, err := is.GetCredential(service.CredentialKey, service.Type)
+	cred, err := is.GetCredential(service.CredentialKey)
 	if err != nil {
 		return err
 	}
-	authData, ok := cred.Data.(SMTPAuthCredential)
+	authData, ok := cred.Data.(map[string]interface{})
 	if !ok {
 		return errors.New("invalid SMTP credential data")
 	}
-	auth := smtp.PlainAuth("", authData.Username, authData.Password, cfg.Server)
-
+	username, uok := authData["username"].(string)
+	password, pok := authData["password"].(string)
+	if !uok || !pok {
+		return errors.New("invalid SMTP credential fields")
+	}
+	auth := smtp.PlainAuth("", username, password, cfg.Server)
 	if cfg.UseTLS {
 		tlsConfig := &tls.Config{InsecureSkipVerify: false, ServerName: cfg.Server}
 		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
@@ -658,8 +739,8 @@ func (is *IntegrationSystem) SendSMS(ctx context.Context, serviceName string, me
 	if !ok {
 		return errors.New("invalid SMPP configuration")
 	}
-	log.Printf("SMPP: Sending SMS via %s:%d using system type %s\nMessage: %s", cfg.Host, cfg.Port, cfg.SystemType, message)
-
+	fmt.Println(cfg)
+	is.logger.Info().Str("service", serviceName).Str("message", message).Msg("Sending SMS")
 	return nil
 }
 
@@ -676,8 +757,7 @@ func (is *IntegrationSystem) ExecuteDatabaseQuery(ctx context.Context, serviceNa
 		return nil, errors.New("invalid Database configuration")
 	}
 	connStr := fmt.Sprintf("%s:%d/%s?sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
-	log.Printf("DB: Connecting to %s with connection string: %s", cfg.Driver, connStr)
-	log.Printf("DB: Executing query: %s", query)
+	is.logger.Info().Str("driver", cfg.Driver).Str("connStr", connStr).Str("query", query).Msg("Executing database query")
 	return "dummy result", nil
 }
 
@@ -686,9 +766,15 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	if err != nil {
 		return nil, err
 	}
-	cb := is.getCircuitBreaker(serviceName)
+	threshold := 3
+	if service.Type == ServiceTypeAPI {
+		if apiCfg, ok := service.Config.(APIConfig); ok && apiCfg.CircuitBreakerThreshold > 0 {
+			threshold = apiCfg.CircuitBreakerThreshold
+		}
+	}
+	cb := is.getCircuitBreaker(serviceName, threshold)
 	if !cb.AllowRequest() {
-		return nil, fmt.Errorf("service %s is temporarily unavailable due to repeated failures", serviceName)
+		return nil, fmt.Errorf("service %s temporarily unavailable due to failures", serviceName)
 	}
 	var res any
 	var execErr error
@@ -721,7 +807,7 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 	case ServiceTypeDB:
 		query, ok := payload.(string)
 		if !ok {
-			execErr = fmt.Errorf("invalid payload for DB service, expected string query")
+			execErr = fmt.Errorf("invalid payload for DB service, expected query string")
 			break
 		}
 		res, execErr = is.ExecuteDatabaseQuery(ctx, serviceName, query)
@@ -729,7 +815,7 @@ func (is *IntegrationSystem) Execute(ctx context.Context, serviceName string, pa
 		execErr = fmt.Errorf("unsupported service type: %s", service.Type)
 	}
 	if execErr != nil {
-		cb.RecordFailure(30 * time.Second)
+		cb.RecordFailure()
 	} else {
 		cb.RecordSuccess()
 	}
@@ -794,16 +880,9 @@ func (is *IntegrationSystem) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-func (is *IntegrationSystem) GetCredential(key string, serviceType ServiceType) (Credential, error) {
-	cred, err := is.credentials.GetCredential(key)
-	if err != nil {
-		log.Printf("Failed to get credential for service type %s: %v\n", serviceType, err)
-	}
-	return cred, err
-}
-
 func (is *IntegrationSystem) Shutdown(ctx context.Context) error {
-	log.Println("Shutting down integration system...")
+	is.logger.Info().Msg("Shutting down integration system...")
+	is.wg.Wait()
 	return nil
 }
 
@@ -812,135 +891,121 @@ type Config struct {
 	Services    []Service    `json:"services"`
 }
 
-func loadConfig(path string) (*Config, error) {
+func loadConfig(path string, logger *log.Logger) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		logger.Error().Err(err).Msg("failed to read config file")
 		return nil, err
 	}
 	var cfg Config
 	if err = json.Unmarshal(data, &cfg); err != nil {
+		logger.Error().Err(err).Msg("failed to unmarshal config")
 		return nil, err
 	}
-	// Validate each service's configuration.
 	for i, svc := range cfg.Services {
 		switch svc.Type {
 		case ServiceTypeAPI:
-			{
-				b, _ := json.Marshal(svc.Config)
-				var apiCfg APIConfig
-				if err := json.Unmarshal(b, &apiCfg); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				if err := apiCfg.Validate(); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				cfg.Services[i].Config = apiCfg
+			b, _ := json.Marshal(svc.Config)
+			var apiCfg APIConfig
+			if err := json.Unmarshal(b, &apiCfg); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
 			}
+			if err := apiCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+			}
+			cfg.Services[i].Config = apiCfg
 		case ServiceTypeSMTP:
-			{
-				b, _ := json.Marshal(svc.Config)
-				var smtpCfg SMTPConfig
-				if err := json.Unmarshal(b, &smtpCfg); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				if err := smtpCfg.Validate(); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				cfg.Services[i].Config = smtpCfg
+			b, _ := json.Marshal(svc.Config)
+			var smtpCfg SMTPConfig
+			if err := json.Unmarshal(b, &smtpCfg); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
 			}
+			if err := smtpCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+			}
+			cfg.Services[i].Config = smtpCfg
 		case ServiceTypeSMPP:
-			{
-				b, _ := json.Marshal(svc.Config)
-				var smppCfg SMPPConfig
-				if err := json.Unmarshal(b, &smppCfg); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				if err := smppCfg.Validate(); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				cfg.Services[i].Config = smppCfg
+			b, _ := json.Marshal(svc.Config)
+			var smppCfg SMPPConfig
+			if err := json.Unmarshal(b, &smppCfg); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
 			}
+			if err := smppCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+			}
+			cfg.Services[i].Config = smppCfg
 		case ServiceTypeDB:
-			{
-				b, _ := json.Marshal(svc.Config)
-				var dbCfg DatabaseConfig
-				if err := json.Unmarshal(b, &dbCfg); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				if err := dbCfg.Validate(); err != nil {
-					return nil, fmt.Errorf("service %s: %v", svc.Name, err)
-				}
-				cfg.Services[i].Config = dbCfg
+			b, _ := json.Marshal(svc.Config)
+			var dbCfg DatabaseConfig
+			if err := json.Unmarshal(b, &dbCfg); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
 			}
+			if err := dbCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("service %s: %v", svc.Name, err)
+			}
+			cfg.Services[i].Config = dbCfg
 		}
 	}
 	return &cfg, nil
 }
 
 func main() {
-	configPath := flag.String("config", "config.json", "Path to configuration file")
-	flag.Parse()
-
-	cfg, err := loadConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	serviceStore := NewInMemoryServiceStore()
-	credentialStore := NewInMemoryCredentialStore()
-	integration := NewIntegrationSystem(serviceStore, credentialStore)
-
-	for _, cred := range cfg.Credentials {
-		if err := credentialStore.AddCredential(cred); err != nil {
-			log.Fatalf("Failed to add credential %s: %v", cred.Key, err)
-		}
-	}
-
-	for _, svc := range cfg.Services {
-		if err := serviceStore.AddService(svc); err != nil {
-			log.Fatalf("Failed to add service %s: %v", svc.Name, err)
-		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	logger := &log.DefaultLogger
+	initMetrics()
+	metricsSrv := &http.Server{Addr: ":9090", Handler: promhttp.Handler()}
 	go func() {
-		sig := <-sigCh
-		log.Printf("Received signal: %v, initiating shutdown", sig)
-		cancel()
-		if err := integration.Shutdown(context.Background()); err != nil {
-			log.Printf("Error during shutdown: %v", err)
+		logger.Info().Msg("Starting metrics server on :9090")
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal().Err(err).Msg("Metrics server error")
 		}
 	}()
-
-	// Listen for SIGHUP to support configuration reload without downtime.
+	configPath := flag.String("config", "config.json", "Path to configuration file")
+	flag.Parse()
+	cfg, err := loadConfig(*configPath, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("Failed to load config")
+	}
+	serviceStore := NewInMemoryServiceStore()
+	credentialStore := NewInMemoryCredentialStore()
+	integration := NewIntegrationSystem(serviceStore, credentialStore, logger)
+	for _, cred := range cfg.Credentials {
+		if err := credentialStore.AddCredential(cred); err != nil {
+			logger.Fatal().Err(err).Str("key", cred.Key).Msg("Failed to add credential")
+		}
+	}
+	for _, svc := range cfg.Services {
+		if err := serviceStore.AddService(svc); err != nil {
+			logger.Fatal().Err(err).Str("name", svc.Name).Msg("Failed to add service")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
 	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	signal.Notify(reloadCh, syscall.SIGHUP)
+	var bgWG sync.WaitGroup
+	bgWG.Add(1)
 	go func() {
+		defer bgWG.Done()
 		for {
 			<-reloadCh
-			log.Println("Received SIGHUP: Reloading configuration...")
-			newCfg, err := loadConfig(*configPath)
+			logger.Info().Msg("Received SIGHUP: reloading configuration")
+			newCfg, err := loadConfig(*configPath, logger)
 			if err != nil {
-				log.Printf("Failed to reload config: %v", err)
+				logger.Error().Err(err).Msg("Config reload failed")
 				continue
 			}
-			// Update services.
 			for _, svc := range newCfg.Services {
 				if err := serviceStore.UpdateService(svc); err != nil {
 					_ = serviceStore.AddService(svc)
 				}
 			}
-			// Update credentials.
 			for _, cred := range newCfg.Credentials {
 				if err := credentialStore.UpdateCredential(cred); err != nil {
 					_ = credentialStore.AddCredential(cred)
 				}
 			}
-			// Update circuit breakers for API services with new thresholds.
 			integration.cbLock.Lock()
 			for _, svc := range newCfg.Services {
 				if svc.Type == ServiceTypeAPI {
@@ -950,46 +1015,63 @@ func main() {
 				}
 			}
 			integration.cbLock.Unlock()
-			log.Println("Configuration reloaded successfully.")
+			logger.Info().Msg("Configuration reloaded successfully")
 		}
 	}()
-
 	if err := integration.HealthCheck(ctx); err != nil {
-		log.Printf("Health check failed: %v", err)
+		logger.Error().Err(err).Msg("Health check failed")
 	} else {
-		log.Println("All services are healthy.")
+		logger.Info().Msg("All services are healthy")
 	}
-
-	emailPayload := EmailPayload{
-		To:      []string{"recipient@example.com"},
-		Message: []byte("Test email message"),
+	integration.wg.Add(4)
+	go func() {
+		defer integration.wg.Done()
+		emailPayload := EmailPayload{
+			To:      []string{"recipient@example.com"},
+			Message: []byte("Test email message"),
+		}
+		if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
+			logger.Error().Err(err).Msg("Email operation failed")
+		} else {
+			logger.Info().Msg("Email sent successfully")
+		}
+	}()
+	go func() {
+		defer integration.wg.Done()
+		apiPayload := []byte(`{"example": "data"}`)
+		apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
+		if err != nil {
+			logger.Error().Err(err).Msg("API request failed")
+		} else if resp, ok := apiResult.(*http.Response); ok {
+			logger.Info().Str("status", resp.Status).Msg("API request succeeded")
+		}
+	}()
+	go func() {
+		defer integration.wg.Done()
+		if _, err := integration.Execute(ctx, "sms-service", "Test SMS message"); err != nil {
+			logger.Error().Err(err).Msg("SMS operation failed")
+		} else {
+			logger.Info().Msg("SMS sent successfully")
+		}
+	}()
+	go func() {
+		defer integration.wg.Done()
+		dbResult, err := integration.Execute(ctx, "prod-database", "SELECT * FROM users;")
+		if err != nil {
+			logger.Error().Err(err).Msg("Database query failed")
+		} else {
+			logger.Info().Any("result", dbResult).Msg("Database query result")
+		}
+	}()
+	<-sigCh
+	logger.Info().Msg("Received termination signal, shutting down...")
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error().Err(err).Msg("Metrics server shutdown failed")
 	}
-	if _, err := integration.Execute(ctx, "production-email", emailPayload); err != nil {
-		log.Fatalf("Email operation failed: %v", err)
-	}
-	log.Println("Email sent successfully.")
-
-	apiPayload := []byte(`{"example": "data"}`)
-	apiResult, err := integration.Execute(ctx, "some-api-service", apiPayload)
-	if err != nil {
-		log.Printf("API request failed: %v", err)
-	} else if resp, ok := apiResult.(*http.Response); ok {
-		log.Printf("API request succeeded with status: %s", resp.Status)
-	}
-
-	if _, err := integration.Execute(ctx, "sms-service", "Test SMS message"); err != nil {
-		log.Printf("SMS operation failed: %v", err)
-	} else {
-		log.Println("SMS sent successfully.")
-	}
-
-	dbResult, err := integration.Execute(ctx, "prod-database", "SELECT * FROM users;")
-	if err != nil {
-		log.Printf("Database query failed: %v", err)
-	} else {
-		log.Printf("Database query result: %v", dbResult)
-	}
-
-	<-ctx.Done()
-	log.Println("Exiting integration system.")
+	bgWG.Wait()
+	_ = integration.Shutdown(context.Background())
+	logger.Info().Msg("Exiting integration system.")
 }
