@@ -80,25 +80,24 @@ type OAuth2Credential struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
-// Add a new struct for configurable auth header mapping.
+// AuthHeader configurable auth header mapping.
 type AuthHeader struct {
 	Header string `json:"header"`
 	Prefix string `json:"prefix"`
 }
 
-// Modify APIConfig to allow configurable auth headers.
+// APIConfig to allow configurable auth headers.
 type APIConfig struct {
-	URL                     string            `json:"url"`
-	Method                  string            `json:"method"`
-	Headers                 map[string]string `json:"headers"`
-	DataKey                 string            `json:"data_key"`
-	RequestBody             string            `json:"request_body"`
-	Timeout                 string            `json:"timeout"` // e.g., "10s"
-	TLSInsecureSkipVerify   bool              `json:"tls_insecure_skip_verify"`
-	RetryCount              int               `json:"retry_count"`
-	CircuitBreakerThreshold int               `json:"circuit_breaker_threshold"`
-	// New field for configurable authentication header mappings.
-	AuthHeaders map[string]AuthHeader `json:"auth_headers"`
+	URL                     string                `json:"url"`
+	Method                  string                `json:"method"`
+	Headers                 map[string]string     `json:"headers"`
+	DataKey                 string                `json:"data_key"`
+	RequestBody             string                `json:"request_body"`
+	Timeout                 string                `json:"timeout"` // e.g., "10s"
+	TLSInsecureSkipVerify   bool                  `json:"tls_insecure_skip_verify"`
+	RetryCount              int                   `json:"retry_count"`
+	CircuitBreakerThreshold int                   `json:"circuit_breaker_threshold"`
+	AuthHeaders             map[string]AuthHeader `json:"auth_headers"`
 }
 
 func (cfg APIConfig) Validate() error {

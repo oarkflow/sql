@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
 
 	"github.com/oarkflow/sql/integrations"
@@ -22,18 +21,7 @@ func main() {
 		panic(err)
 	}
 	service := "some-api-service"
-	payload := map[string]any{
-		"userId": 1,
-		"id":     1000,
-		"title":  "sunt aut facere repellat provident occaecati excepturi optio reprehenderit",
-		"body":   "quia et suscipit\nsuscipit recusandae consequuntur expedita et cum\nreprehenderit molestiae ut ut quas totam\nnostrum rerum est autem sunt rem eveniet architecto",
-	}
-	bt, err := json.Marshal(payload)
-	if err != nil {
-		logger.Error().Err(err).Msg("Failed to marshal payload")
-		return
-	}
-	resp, err := manager.Execute(ctx, service, bt)
+	resp, err := manager.Execute(ctx, service, nil)
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
 	} else {

@@ -105,7 +105,7 @@ func (is *Manager) getCircuitBreaker(serviceName string, threshold int) *Circuit
 	return cb
 }
 
-func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, body []byte) (*http.Response, error) {
+func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, body any) (*http.Response, error) {
 	service, err := is.services.GetService(serviceName)
 	if err != nil {
 		return nil, err
@@ -122,7 +122,19 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 			}
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, bytes.NewReader(body))
+	var reader io.Reader
+	switch body := body.(type) {
+	case []byte:
+		reader = bytes.NewReader(body)
+	case nil:
+	default:
+		bodyBytes, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(bodyBytes)
+	}
+	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +186,7 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 }
 
 // ExecuteAPIRequestWithRetry uses context-aware backoff.
-func (is *Manager) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body []byte, maxRetries int) (*http.Response, error) {
+func (is *Manager) ExecuteAPIRequestWithRetry(ctx context.Context, serviceName string, body any, maxRetries int) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	baseDelay := time.Second
@@ -494,17 +506,12 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 	var execErr error
 	switch service.Type {
 	case ServiceTypeAPI:
-		body, ok := payload.([]byte)
-		if !ok {
-			execErr = fmt.Errorf("invalid payload for API service, expected []byte")
-			break
-		}
 		maxRetries := 3
 		apiCfg, ok := service.Config.(APIConfig)
 		if ok && apiCfg.RetryCount > 0 {
 			maxRetries = apiCfg.RetryCount
 		}
-		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, body, maxRetries)
+		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, payload, maxRetries)
 		if err != nil {
 			execErr = err
 		} else {

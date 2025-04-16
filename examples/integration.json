@@ -1,0 +1,29 @@
+{
+	"config": {
+		"url": "https://dummyjson.com/users",
+		"method": "GET",
+		"data_key": "users",
+		"headers": {
+			"Content-Type": "application/json",
+			"X-Request-ID": "unique-request-id"
+		},
+		"timeout": "10s",
+		"tls_insecure_skip_verify": false,
+		"retry_count": 3,
+		"circuit_breaker_threshold": 5,
+		"auth_headers": {
+			"api_key": {
+				"header": "X-API-Key",
+				"prefix": ""
+			},
+			"bearer": {
+				"header": "Authorization",
+				"prefix": "Bearer "
+			},
+			"oauth2": {
+				"header": "Authorization",
+				"prefix": "Bearer "
+			}
+		}
+	}
+}
