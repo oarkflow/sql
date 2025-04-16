@@ -18,14 +18,14 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/checkpoints"
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contracts"
-	"github.com/oarkflow/etl/pkg/mappers"
-	"github.com/oarkflow/etl/pkg/transformers"
-	"github.com/oarkflow/etl/pkg/utils"
-	"github.com/oarkflow/etl/pkg/utils/sqlutil"
+	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/checkpoints"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/contracts"
+	"github.com/oarkflow/sql/pkg/mappers"
+	"github.com/oarkflow/sql/pkg/transformers"
+	"github.com/oarkflow/sql/pkg/utils"
+	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
 // -------------------------

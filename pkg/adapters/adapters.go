@@ -16,11 +16,11 @@ import (
 
 	"github.com/oarkflow/json"
 
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contracts"
-	"github.com/oarkflow/etl/pkg/utils"
-	"github.com/oarkflow/etl/pkg/utils/fileutil"
-	"github.com/oarkflow/etl/pkg/utils/sqlutil"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/contracts"
+	"github.com/oarkflow/sql/pkg/utils"
+	"github.com/oarkflow/sql/pkg/utils/fileutil"
+	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
 func NewLookupLoader(lkup config.DataConfig) (contracts.LookupLoader, error) {

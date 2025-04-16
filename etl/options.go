@@ -6,11 +6,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contracts"
-	"github.com/oarkflow/etl/pkg/transformers"
-	utils2 "github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/contracts"
+	"github.com/oarkflow/sql/pkg/transformers"
+	utils2 "github.com/oarkflow/sql/pkg/utils"
 )
 
 type Option func(*ETL) error

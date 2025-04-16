@@ -6,8 +6,8 @@ import (
 
 	"github.com/oarkflow/json"
 
-	"github.com/oarkflow/etl"
-	"github.com/oarkflow/etl/pkg/config"
+	"github.com/oarkflow/sql/etl"
+	"github.com/oarkflow/sql/pkg/config"
 )
 
 var currentConfig config.Config

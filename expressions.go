@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oarkflow/etl/pkg/utils"
-	"github.com/oarkflow/etl/pkg/utils/fileutil"
+	"github.com/oarkflow/sql/pkg/utils"
+	"github.com/oarkflow/sql/pkg/utils/fileutil"
 )
 
 func loadDataForSubquery() []utils.Record {

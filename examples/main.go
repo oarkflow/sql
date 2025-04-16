@@ -5,12 +5,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/sql"
+	sql2 "github.com/oarkflow/sql"
+	"github.com/oarkflow/sql/pkg/config"
 )
 
 func main() {
-	sql.RegisterIntegration("test_db", &sql.SQLIntegration{
+	sql2.RegisterIntegration("test_db", &sql2.SQLIntegration{
 		DataConfig: &config.DataConfig{
 			Driver:   "postgres",
 			Host:     "127.0.0.1",
@@ -20,18 +20,18 @@ func main() {
 			Database: "clear_dev",
 		},
 	})
-	sql.RegisterIntegration("posts", &sql.RESTIntegration{
+	sql2.RegisterIntegration("posts", &sql2.RESTIntegration{
 		Endpoint: "https://jsonplaceholder.typicode.com/posts",
 	})
-	sql.RegisterIntegration("comments", &sql.RESTIntegration{
+	sql2.RegisterIntegration("comments", &sql2.RESTIntegration{
 		Endpoint: "https://jsonplaceholder.typicode.com/comments",
 	})
-	sql.RegisterIntegration("articles", &sql.WebIntegration{
+	sql2.RegisterIntegration("articles", &sql2.WebIntegration{
 		Endpoint:     "http://metalsucks.net",
 		Rules:        "article",
 		Target:       "text",
 		OutputFormat: "string",
-		FieldMappings: []sql.FieldMapping{
+		FieldMappings: []sql2.FieldMapping{
 			{
 				Field:    "title",
 				Selector: ".post-title a",
@@ -51,7 +51,7 @@ func main() {
 		}
 		queryStr := string(bytes)
 		start := time.Now()
-		fmt.Println(sql.Query(queryStr))
+		fmt.Println(sql2.Query(queryStr))
 		fmt.Println("Took", time.Since(start))
 		fmt.Println()
 	}

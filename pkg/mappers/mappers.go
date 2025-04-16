@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	utils2 "github.com/oarkflow/etl/pkg/utils"
+	utils2 "github.com/oarkflow/sql/pkg/utils"
 )
 
 type FieldMapper struct {

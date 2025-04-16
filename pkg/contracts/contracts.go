@@ -3,8 +3,8 @@ package contracts
 import (
 	"context"
 
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/utils"
 )
 
 type SourceOption struct {

@@ -1,4 +1,4 @@
-module github.com/oarkflow/etl
+module github.com/oarkflow/sql
 
 go 1.24.2
 

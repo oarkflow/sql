@@ -14,9 +14,9 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/oarkflow/json"
 
-	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/utils"
 )
 
 type Integration interface {

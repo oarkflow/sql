@@ -9,7 +9,7 @@ import (
 
 	"github.com/oarkflow/convert"
 
-	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/sql/pkg/utils"
 )
 
 type EvalContext struct {

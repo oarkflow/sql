@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/oarkflow/etl/pkg/contracts"
+	"github.com/oarkflow/sql/pkg/contracts"
 )
 
 func NewAppender[T any](file, extension string, appendMode bool, size ...int) (contracts.Appender[T], error) {

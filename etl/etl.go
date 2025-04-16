@@ -17,12 +17,12 @@ import (
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/transaction"
 
-	"github.com/oarkflow/etl/pkg/adapters"
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/contracts"
-	"github.com/oarkflow/etl/pkg/transactions"
-	"github.com/oarkflow/etl/pkg/utils"
-	"github.com/oarkflow/etl/pkg/utils/sqlutil"
+	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/contracts"
+	"github.com/oarkflow/sql/pkg/transactions"
+	"github.com/oarkflow/sql/pkg/utils"
+	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
 func init() {

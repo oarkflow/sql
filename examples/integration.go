@@ -8,7 +8,7 @@ import (
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
 
-	"github.com/oarkflow/etl/integrations"
+	"github.com/oarkflow/sql/integrations"
 )
 
 func main() {

@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oarkflow/etl/pkg/config"
-	"github.com/oarkflow/etl/pkg/utils"
+	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/utils"
 )
 
 type AggregatorTransformer struct {
