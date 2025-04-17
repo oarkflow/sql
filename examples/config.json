@@ -191,13 +191,10 @@
             "name": "production-email",
             "type": "smtp",
             "config": {
-                "server": "smtp.example.com",
-                "port": 465,
-                "from": "no-reply@example.com",
-                "use_tls": true,
-                "use_starttls": false,
-                "connection_timeout": "10s",
-                "max_connections": 10
+                "host": "localhost",
+                "port": 1025,
+                "from_address": "no-reply@example.com",
+                "encryption": "tls"
             },
             "credential_key": "smtp-service-key",
             "enabled": true,
@@ -208,8 +205,8 @@
             "name": "sms-service",
             "type": "smpp",
             "config": {
-                "system_type": "production",
-                "host": "smpp.example.com",
+                "system_type": "",
+                "host": "localhost",
                 "port": 2775,
                 "source_addr": "SENDER",
                 "dest_addr": "RECIPIENT",

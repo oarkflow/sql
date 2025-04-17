@@ -107,8 +107,9 @@ func (c *InMemoryCredentialStore) AddCredential(cred Credential) error {
 }
 
 func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool) (Credential, error) {
-	if len(requireAuth) > 0 && !requireAuth[0] {
-		return Credential{}, nil
+	hasCredential := false
+	if len(requireAuth) > 0 && requireAuth[0] {
+		hasCredential = true
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -118,7 +119,10 @@ func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool)
 	defer c.mu.RUnlock()
 	cred, exists := c.credentials[key]
 	if !exists {
-		return Credential{}, fmt.Errorf("credential not found: %s", key)
+		if hasCredential {
+			return Credential{}, fmt.Errorf("credential not found: %s", key)
+		}
+		return Credential{}, nil
 	}
 	return cred, nil
 }

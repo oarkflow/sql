@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/smtp"
 	"net/url"
 	"sync"
 	"time"
@@ -20,17 +19,23 @@ import (
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/json/jsonparser"
 	"github.com/oarkflow/log"
+	"github.com/oarkflow/mail"
+	"github.com/oarkflow/smpp"
+	"github.com/oarkflow/smpp/pdu/pdufield"
 	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/squealx/connection"
 )
 
 type Manager struct {
-	services        ServiceStore
-	credentials     CredentialStore
-	circuitBreakers map[string]*CircuitBreaker
-	m               sync.Mutex
-	logger          *log.Logger
-	wg              sync.WaitGroup
+	onSmppMessageReport func(manager *smpp.Manager, sms *smpp.Message, parts []*smpp.Part)
+	services            ServiceStore
+	credentials         CredentialStore
+	circuitBreakers     map[string]*CircuitBreaker
+	asyncClients        map[string]any
+	asyncMu             sync.RWMutex
+	m                   sync.Mutex
+	logger              *log.Logger
+	wg                  sync.WaitGroup
 }
 
 type Options func(*Manager)
@@ -58,12 +63,17 @@ func New(opts ...Options) *Manager {
 		services:        NewInMemoryServiceStore(),
 		credentials:     NewInMemoryCredentialStore(),
 		circuitBreakers: make(map[string]*CircuitBreaker),
+		asyncClients:    make(map[string]any),
 		logger:          &log.DefaultLogger,
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
 	return m
+}
+
+func (is *Manager) SetOnSmppMessageReport(fn func(manager *smpp.Manager, sms *smpp.Message, parts []*smpp.Part)) {
+	is.onSmppMessageReport = fn
 }
 
 func (is *Manager) Lock() {
@@ -113,6 +123,19 @@ func (is *Manager) getCircuitBreaker(serviceName string, threshold int) *Circuit
 		is.circuitBreakers[serviceName] = cb
 	}
 	return cb
+}
+
+func (is *Manager) SetAsyncClient(serviceName string, client any) {
+	is.asyncMu.Lock()
+	defer is.asyncMu.Unlock()
+	is.asyncClients[serviceName] = client
+}
+
+func (is *Manager) GetAsyncClient(serviceName string) (any, bool) {
+	is.asyncMu.RLock()
+	defer is.asyncMu.RUnlock()
+	client, ok := is.asyncClients[serviceName]
+	return client, ok
 }
 
 func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, body any) (*http.Response, error) {
@@ -541,11 +564,7 @@ type SMSPayload struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
 	Message string `json:"message"`
-}
-
-type EmailPayload struct {
-	To      []string `json:"to"`
-	Message []byte   `json:"message"`
+	Test    bool   `json:"test"`
 }
 
 type HTTPResponse struct {
@@ -622,19 +641,19 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		grpcResp, execErr = is.ExecuteGRPCRequest(ctx, serviceName, req)
 		res = grpcResp
 	case ServiceTypeSMTP:
-		emailPayload, ok := payload.(EmailPayload)
+		emailPayload, ok := payload.(mail.Mail)
 		if !ok {
 			execErr = fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
 			break
 		}
-		execErr = is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
+		res, execErr = is.SendEmail(ctx, serviceName, emailPayload)
 	case ServiceTypeSMPP:
 		msg, ok := payload.(SMSPayload)
 		if !ok {
 			execErr = fmt.Errorf("invalid payload for SMPP service, expected to and message")
 			break
 		}
-		execErr = is.SendSMSViaSMPP(ctx, serviceName, msg)
+		res, execErr = is.SendSMSViaSMPP(ctx, serviceName, msg)
 	case ServiceTypeDB:
 		query, ok := payload.(string)
 		if !ok {
@@ -706,83 +725,104 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 	return res, execErr
 }
 
-func (is *Manager) SendEmail(ctx context.Context, serviceName string, to []string, message []byte) error {
+func (is *Manager) SendEmail(ctx context.Context, serviceName string, email mail.Mail) (map[string]any, error) {
 	service, err := is.GetService(serviceName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cfg, ok := service.Config.(SMTPConfig)
 	if !ok {
-		return fmt.Errorf("not a valid SMTP configuration for service: %s", serviceName)
+		return nil, fmt.Errorf("not a valid SMTP configuration for service: %s", serviceName)
 	}
 	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	authData, ok := cred.Data.(map[string]interface{})
-	if !ok {
-		return errors.New("invalid SMTP credential data")
+	var username, password, awsAccessKey, awsSecretKey, region, charset string
+	switch auth := cred.Data.(type) {
+	case SMTPAuthCredential:
+		username = auth.Username
+		password = auth.Password
+		awsAccessKey = auth.AwsAccessKey
+		awsSecretKey = auth.AwsSecretKey
+		region = auth.Region
+		charset = auth.Charset
+	case *SMTPAuthCredential:
+		username = auth.Username
+		password = auth.Password
+		awsAccessKey = auth.AwsAccessKey
+		awsSecretKey = auth.AwsSecretKey
+		region = auth.Region
+		charset = auth.Charset
+	case map[string]any:
+		username, _ = auth["username"].(string)
+		password, _ = auth["password"].(string)
+		awsAccessKey, _ = auth["aws_access_key"].(string)
+		awsSecretKey, _ = auth["aws_secret_key"].(string)
+		region, _ = auth["aws_region"].(string)
+		charset, _ = auth["aws_charset"].(string)
 	}
-	username, uok := authData["username"].(string)
-	password, pok := authData["password"].(string)
-	if !uok || !pok {
-		return errors.New("invalid SMTP credential fields")
+	if cfg.Encryption == "" {
+		cfg.Encryption = "tls"
 	}
-	auth := smtp.PlainAuth("", username, password, cfg.Server)
-	if cfg.UseTLS {
-		tlsConfig := &tls.Config{InsecureSkipVerify: false, ServerName: cfg.Server}
-		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		client, err := smtp.NewClient(conn, cfg.Server)
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-		if err = client.Auth(auth); err != nil {
-			return err
-		}
-		if err = client.Mail(cfg.From); err != nil {
-			return err
-		}
-		for _, addr := range to {
-			if err = client.Rcpt(addr); err != nil {
-				return err
-			}
-		}
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
-		defer w.Close()
-		_, err = w.Write(message)
-		return err
+	if charset == "" {
+		charset = "utf-8"
 	}
-	return smtp.SendMail(fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), auth, cfg.From, to, message)
+	if region == "" {
+		region = "us-east-1"
+	}
+	hasAWS := awsAccessKey != "" && awsSecretKey != ""
+	hasBasic := username != "" && password != ""
+	if !hasAWS && !hasBasic {
+		return nil, errors.New("missing SMTP credentials")
+	}
+	mailCfg := mail.Config{
+		Host:         cfg.Host,
+		Username:     username,
+		Password:     password,
+		Encryption:   cfg.Encryption,
+		FromAddress:  cfg.FromAddress,
+		Port:         cfg.Port,
+		Region:       region,
+		AwsAccessKey: awsAccessKey,
+		AwsSecretKey: awsSecretKey,
+		Charset:      charset,
+	}
+	mailer := mail.New(mailCfg, nil)
+	if email.From == "" {
+		email.From = cfg.FromAddress
+	}
+	err = mailer.Send(email)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"message": "Email sent successfully",
+	}, nil
 }
 
-func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, message SMSPayload) error {
-	// For SMPP, we simulate the SMS sending.
+func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, message SMSPayload) (any, error) {
+	var client *smpp.Manager
+	asyncClient, clientExists := is.GetAsyncClient(serviceName)
 	service, err := is.GetService(serviceName)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
 	cfg, ok := service.Config.(SMPPConfig)
 	if !ok {
-		return fmt.Errorf("not a valid SMPP configuration for service: %s", serviceName)
+		return nil, fmt.Errorf("not a valid SMPP configuration for service: %s", serviceName)
 	}
 	var smppUser, smppPass string
 	if service.CredentialKey != "" {
 		cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if cred.Type != CredentialTypeSMPP {
-			return fmt.Errorf("expected SMPP credential for service %s", serviceName)
+			return nil, fmt.Errorf("expected SMPP credential for service %s", serviceName)
 		}
-		data, ok := cred.Data.(map[string]interface{})
+		data, ok := cred.Data.(map[string]any)
 		if ok {
 			if u, ok := data["username"].(string); ok {
 				smppUser = u
@@ -792,10 +832,49 @@ func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, messa
 			}
 		}
 	}
-	is.logger.Info().Any("config", cfg).Str("service", serviceName).
-		Str("message", message.Message).Str("username", smppUser).Str("pass", smppPass).
-		Msg("Simulated sending SMS with SMPP credentials")
-	return nil
+	if !clientExists {
+		setting := smpp.Setting{
+			URL: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+			Auth: smpp.Auth{
+				SystemID: smppUser,
+				Password: smppPass,
+			},
+			Register:        pdufield.FinalDeliveryReceipt,
+			OnMessageReport: is.onSmppMessageReport,
+		}
+		manager, err := smpp.NewManager(setting)
+		if err != nil {
+			return nil, err
+		}
+		if !message.Test {
+			is.SetAsyncClient(serviceName, manager)
+		}
+		asyncClient = manager
+	}
+	client, ok = asyncClient.(*smpp.Manager)
+	if !ok {
+		return nil, fmt.Errorf("invalid async client type for service %s", serviceName)
+	}
+	from := cfg.SourceAddr
+	if message.From != "" {
+		from = message.From
+	}
+	msg := smpp.Message{
+		Message: message.Message,
+		To:      message.To,
+		From:    from,
+	}
+	resp, err := client.Send(msg)
+	if err != nil {
+		return nil, err
+	}
+	is.logger.Info().
+		Str("service", serviceName).
+		Str("message", message.Message).
+		Str("to", message.To).
+		Str("username", smppUser).
+		Msg("Sending SMS with SMPP credentials")
+	return resp, nil
 }
 
 func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string) (any, error) {
@@ -922,22 +1001,6 @@ func (is *Manager) HealthCheck(ctx context.Context) error {
 				if err != nil || resp.StatusCode >= 400 {
 					errCh <- fmt.Errorf("health check failed for API service %s", s.Name)
 				}
-			case ServiceTypeSMTP:
-				cfg, ok := s.Config.(SMTPConfig)
-				if !ok {
-					errCh <- fmt.Errorf("invalid SMTP configuration for service %s", s.Name)
-					return
-				}
-				if cfg.UseTLS {
-					tlsConfig := &tls.Config{InsecureSkipVerify: false, ServerName: cfg.Server}
-					conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), tlsConfig)
-					if err != nil {
-						errCh <- fmt.Errorf("health check failed for SMTP service %s: %v", s.Name, err)
-						return
-					}
-					conn.Close()
-				}
-				// Add additional health checks as needed.
 			}
 		}(service)
 	}

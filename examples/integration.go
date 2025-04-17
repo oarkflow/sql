@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/oarkflow/log"
+	"github.com/oarkflow/mail"
 
 	"github.com/oarkflow/sql/integrations"
 )
@@ -20,13 +21,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	service := "webcrawler-service"
-	svc, err := manager.GetService(service)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(integrations.RequiredConfigFormat(svc.Type))
-	resp, err := manager.Execute(ctx, service, nil)
+	service := "production-email"
+	resp, err := manager.Execute(ctx, service, mail.Mail{
+		To:   []string{"info@example.com"},
+		Body: "This is a test message",
+	})
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
 	} else {
@@ -40,16 +39,16 @@ func main() {
 		}
 		fmt.Println(resp.StatusCode)
 	default:
-		// fmt.Println(resp)
+		fmt.Println(resp)
 	}
 	// testServices(ctx, manager)
 }
 
 func testServices(ctx context.Context, manager *integrations.Manager) {
 	services := map[string]any{
-		"production-email": integrations.EmailPayload{
-			To:      []string{"recipient@example.com"},
-			Message: []byte("Test email message"),
+		"production-email": mail.Mail{
+			To:   []string{"recipient@example.com"},
+			Body: "Test email message",
 		},
 		"graphql-service":   "{ user { id name } }",
 		"grpc-service":      "Test gRPC request",

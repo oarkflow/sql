@@ -56,8 +56,12 @@ type BasicAuthCredential struct {
 }
 
 type SMTPAuthCredential struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	AwsAccessKey string `json:"aws_access_key"`
+	AwsSecretKey string `json:"aws_secret_key"`
+	Charset      string `json:"charset"`
+	Region       string `json:"region"`
 }
 
 type SMPPCredential struct {
@@ -116,24 +120,26 @@ func (cfg APIConfig) Validate() error {
 
 // SMTPConfig for sending emails.
 type SMTPConfig struct {
-	Server            string `json:"server"`
-	Port              int    `json:"port"`
-	From              string `json:"from"`
-	UseTLS            bool   `json:"use_tls"`
-	UseSTARTTLS       bool   `json:"use_starttls"`
-	ConnectionTimeout string `json:"connection_timeout"`
-	MaxConnections    int    `json:"max_connections"`
+	Host         string `json:"host" yaml:"host" env:"MAIL_HOST"`
+	Username     string `json:"username" yaml:"username" env:"MAIL_USERNAME"`
+	Password     string `json:"password" yaml:"password" env:"MAIL_PASSWORD"`
+	Encryption   string `json:"encryption" yaml:"encryption" env:"MAIL_ENCRYPTION"`
+	FromAddress  string `json:"from_address" yaml:"from_address" env:"MAIL_FROM_ADDRESS"`
+	AwsAccessKey string `json:"aws_access_key"`
+	AwsSecretKey string `json:"aws_secret_key"`
+	FromName     string `json:"from_name" yaml:"from_name" env:"MAIL_FROM_NAME"`
+	EmailLayout  string `json:"layout" yaml:"layout" env:"MAIL_LAYOUT"`
+	Port         int    `json:"port" yaml:"port" env:"MAIL_PORT"`
+	Charset      string `json:"charset"`
+	Region       string `json:"region"`
 }
 
 func (cfg SMTPConfig) Validate() error {
-	if cfg.Server == "" {
+	if cfg.Host == "" {
 		return errors.New("SMTPConfig: server must be provided")
 	}
 	if cfg.Port == 0 {
 		return errors.New("SMTPConfig: port must be provided")
-	}
-	if _, err := time.ParseDuration(cfg.ConnectionTimeout); err != nil {
-		return fmt.Errorf("SMTPConfig: invalid connection_timeout: %v", err)
 	}
 	return nil
 }
@@ -496,13 +502,10 @@ func RequiredConfigFormat(serviceType ServiceType) (map[string]any, []map[string
 		}
 	case ServiceTypeSMTP:
 		cfg = SMTPConfig{
-			Server:            "smtp.example.com",
-			Port:              587,
-			From:              "noreply@example.com",
-			UseTLS:            true,
-			UseSTARTTLS:       false,
-			ConnectionTimeout: "10s",
-			MaxConnections:    10,
+			Host:        "smtp.example.com",
+			Port:        587,
+			FromAddress: "noreply@example.com",
+			Encryption:  "tls",
 		}
 		if m, _ := sampleFromStruct(SMTPAuthCredential{Username: "smtp_user", Password: "smtp_pass"}); m != nil {
 			creds = append(creds, map[string]any{"type": CredentialTypeBasicAuth, "data": m})

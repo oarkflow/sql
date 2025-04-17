@@ -21,6 +21,7 @@ require (
 
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
+	github.com/aws/aws-sdk-go v1.55.6 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/goccy/go-reflect v1.2.0 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
@@ -29,14 +30,19 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.7.4 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/microsoft/go-mssqldb v1.8.0 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
+	github.com/oarkflow/mail v0.0.0-20250417110231-93db61906e50 // indirect
+	github.com/oarkflow/render v0.0.1 // indirect
 	github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611 // indirect
 	github.com/oarkflow/xsync v0.0.5 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
+	github.com/toorop/go-dkim v0.0.0-20250226130143-9025cce95817 // indirect
+	github.com/xhit/go-simple-mail/v2 v2.16.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/net v0.39.0 // indirect
