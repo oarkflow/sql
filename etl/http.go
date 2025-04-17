@@ -5,18 +5,19 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/basicauth"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/xid"
-
-	"github.com/gofiber/fiber/v2"
 
 	"github.com/oarkflow/sql/pkg/adapters"
 	"github.com/oarkflow/sql/pkg/checkpoints"
@@ -277,6 +278,17 @@ func (m *Manager) Serve(addr string) error {
 	app := fiber.New()
 	app.Use(logger.New())
 
+	// If dashboard credentials are set via env variables, secure endpoints.
+	user := os.Getenv("DASHBOARD_USER")
+	pass := os.Getenv("DASHBOARD_PASS")
+	if user != "" && pass != "" {
+		app.Use(basicauth.New(basicauth.Config{
+			Users: map[string]string{
+				user: pass,
+			},
+		}))
+	}
+
 	// Home page with links.
 	app.Get("/", func(c *fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -324,7 +336,8 @@ func (m *Manager) Serve(addr string) error {
 		defer m.mu.Unlock()
 		html := "<h1>ETL Jobs</h1><ul>"
 		for id, etl := range m.etls {
-			html += fmt.Sprintf("<li>ID: %s - Status: %s - <a href=\"/etls/%s\">Details</a></li> - <a href=\"/etls/%s/start\">Start</a></li>", id, etl.Status, id, id)
+			// Fixed HTML: one list item per job containing both links.
+			html += fmt.Sprintf("<li>ID: %s - Status: %s - <a href=\"/etls/%s\">Details</a> - <a href=\"/etls/%s/start\">Start</a></li>", id, etl.Status, id, id)
 		}
 		html += "</ul>"
 		return c.SendString(html)
@@ -340,10 +353,10 @@ func (m *Manager) Serve(addr string) error {
 		if !ok {
 			return c.Status(404).SendString("ETL not found")
 		}
+		// Use a background context to run the ETL job to avoid cancellation of the request context.
 		go func(etl *ETL) {
-			err := etl.Run(c.Context())
-			if err != nil {
-				panic(err)
+			if err := etl.Run(context.Background()); err != nil {
+				log.Printf("ETL job %s failed asynchronously: %v", id, err)
 			}
 		}(etl)
 		return c.Redirect("/etls/" + id)

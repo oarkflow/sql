@@ -126,6 +126,7 @@ type ETL struct {
 	dashboardPass   string
 	dedupEnabled    bool
 	dedupField      string
+	Logger          *log.Logger
 
 	CreatedAt time.Time
 	LastRunAt time.Time
@@ -144,6 +145,7 @@ func defaultConfig() *ETL {
 		lookupStore:    make(map[string][]utils.Record),
 		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
 		metrics:        &Metrics{},
+		Logger:         log.Default(),
 		CreatedAt:      time.Now(),
 		Status:         "INACTIVE",
 	}
@@ -242,16 +244,23 @@ type Summary struct {
 	StartedAt string  `json:"started_at"`
 	LastRunAt string  `json:"last_run_at"`
 	Status    string  `json:"status"`
+	ErrorRate float64 `json:"error_rate"` // New field: percentage of errors over extracted records.
 }
 
 func (e *ETL) GetSummary() Summary {
+	metrics := e.GetMetrics()
+	var errorRate float64
+	if metrics.Extracted > 0 {
+		errorRate = float64(metrics.Errors) / float64(metrics.Extracted) * 100
+	}
 	return Summary{
-		Metrics:   e.GetMetrics(),
+		Metrics:   metrics,
 		ID:        e.ID,
 		Name:      e.Name,
 		StartedAt: e.CreatedAt.Format(time.RFC3339),
 		LastRunAt: e.LastRunAt.Format(time.RFC3339),
 		Status:    e.Status,
+		ErrorRate: errorRate,
 	}
 }
 
@@ -303,19 +312,59 @@ func (e *ETL) Run(ctx context.Context) error {
 	e.LastRunAt = time.Now()
 	e.Status = "RUNNING"
 	if e.streamingMode {
-		log.Println("[ETL] Streaming mode is enabled.")
+		if e.Logger != nil {
+			e.Logger.Println("[ETL] Streaming mode is enabled.")
+		} else {
+			log.Println("[ETL] Streaming mode is enabled.")
+		}
 	}
 	if e.distributedMode {
-		log.Println("[ETL] Distributed mode is enabled.")
+		if e.Logger != nil {
+			e.Logger.Println("[ETL] Distributed mode is enabled.")
+		} else {
+			log.Println("[ETL] Distributed mode is enabled.")
+		}
 	}
 	overallStart := time.Now()
 	if e.pipelineConfig == nil {
 		e.pipelineConfig = e.buildDefaultPipeline()
 	}
 	err := e.runPipeline(ctx, e.pipelineConfig)
+	// Check for errors returned by the pipeline.
+	if err != nil {
+		e.Status = "FAILED"
+		if e.Logger != nil {
+			e.Logger.Printf("[ETL] Pipeline error: %v", err)
+		} else {
+			log.Printf("[ETL] Pipeline error: %v", err)
+		}
+		return err
+	}
+	// Enhancement: Mark as FAILED if error threshold exceeded.
+	if atomic.LoadInt64(&e.metrics.Errors) >= int64(e.maxErrorCount) {
+		e.Status = "FAILED"
+		err = fmt.Errorf("maximum error threshold exceeded (%d errors)", e.metrics.Errors)
+		if e.Logger != nil {
+			e.Logger.Println("[ETL]", err)
+		} else {
+			log.Println("[ETL]", err)
+		}
+		return err
+	}
 	elapsed := time.Since(overallStart)
-	log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
-	return err
+	if e.Logger != nil {
+		e.Logger.Printf("[ETL] Total pipeline execution time: %v", elapsed)
+		e.Logger.Printf("[ETL] Summary: %+v", e.GetSummary())
+	} else {
+		log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
+		log.Printf("[ETL] Summary: %+v", e.GetSummary())
+	}
+	// Enhancement: Publish summary metrics after successful run.
+	if e.eventBus != nil {
+		summary := e.GetSummary()
+		e.eventBus.Publish("Summary", summary)
+	}
+	return nil
 }
 
 func (e *ETL) StreamingMode() bool {
@@ -339,6 +388,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			validations:   e.validations,
 			eventBus:      e.eventBus,
 			metrics:       e.metrics,
+			Logger:        e.Logger,
 		},
 		"normalize": &NormalizeNode{
 			schema:      e.normalizeSchema,
@@ -494,6 +544,7 @@ type SourceNode struct {
 	validations   *Validations
 	eventBus      *EventBus
 	metrics       *Metrics
+	Logger        *log.Logger
 }
 
 func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping) (<-chan utils.Record, error) {
@@ -534,9 +585,14 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			}
 			count := 0
 			for rec := range ch {
-				out <- rec
-				atomic.AddInt64(&sn.metrics.Extracted, 1)
-				count++
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					out <- rec
+					atomic.AddInt64(&sn.metrics.Extracted, 1)
+					count++
+				}
 			}
 			if sn.eventBus != nil {
 				sn.eventBus.Publish("AfterExtract", count)
@@ -551,12 +607,20 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 					log.Printf("[SourceNode] ValidateAfterExtract error: %v", err)
 				}
 			}
-			log.Printf("[Source] %T extracted %d records", source, count)
+			if sn.Logger != nil {
+				sn.Logger.Printf("[Source] %T extracted %d records", source, count)
+			} else {
+				log.Printf("[Source] %T extracted %d records", source, count)
+			}
 		}(src)
 	}
 	go func() {
 		wg.Wait()
-		close(out)
+		select {
+		case <-ctx.Done():
+		default:
+			close(out)
+		}
 	}()
 	return out, nil
 }
@@ -977,10 +1041,15 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 func (ln *LoaderNode) batchRecords(ctx context.Context) {
 	batch := make([]utils.Record, 0, ln.batchSize)
 	for rec := range ln.inChan {
-		batch = append(batch, rec)
-		if len(batch) >= ln.batchSize {
-			ln.batchChan <- batch
-			batch = make([]utils.Record, 0, ln.batchSize)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			batch = append(batch, rec)
+			if len(batch) >= ln.batchSize {
+				ln.batchChan <- batch
+				batch = make([]utils.Record, 0, ln.batchSize)
+			}
 		}
 	}
 	if len(batch) > 0 {

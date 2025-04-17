@@ -215,3 +215,25 @@ func WithDashboardAuth(user, pass string) Option {
 		return nil
 	}
 }
+
+// Enhancement: Option to inject a custom logger.
+func WithLogger(logger *log.Logger) Option {
+	return func(e *ETL) error {
+		if logger == nil {
+			return fmt.Errorf("WithLogger: provided logger is nil")
+		}
+		e.Logger = logger
+		return nil
+	}
+}
+
+// Enhancement: Option to set a maximum error threshold.
+func WithMaxErrorThreshold(threshold int) Option {
+	return func(e *ETL) error {
+		if threshold <= 0 {
+			return fmt.Errorf("WithMaxErrorThreshold: threshold must be positive")
+		}
+		e.maxErrorCount = threshold
+		return nil
+	}
+}

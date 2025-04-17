@@ -2,6 +2,7 @@ package etl
 
 import (
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -39,6 +40,7 @@ func LookupInGlobal(args ...any) (any, error) {
 	// Build a unique cache key.
 	cacheKey := datasetKey + ":" + lookupField + ":" + sourceValStr + ":" + targetField
 	if cached, found := GlobalLookupCache.Load(cacheKey); found {
+		log.Printf("lookupIn: cache hit for key %s", cacheKey)
 		return cached, nil
 	}
 
@@ -58,4 +60,12 @@ func LookupInGlobal(args ...any) (any, error) {
 	}
 
 	return nil, fmt.Errorf("lookupIn: no matching value for %s in dataset %s", sourceValStr, datasetKey)
+}
+
+// ClearGlobalLookupCache clears all entries from the GlobalLookupCache.
+func ClearGlobalLookupCache() {
+	GlobalLookupCache.Range(func(key, value any) bool {
+		GlobalLookupCache.Delete(key)
+		return true
+	})
 }
