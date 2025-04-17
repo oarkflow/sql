@@ -13,23 +13,21 @@ type ServiceType string
 type CredentialType string
 
 const (
-	ServiceTypeAPI  ServiceType = "rest"
-	ServiceTypeSMTP ServiceType = "smtp"
-	ServiceTypeSMPP ServiceType = "smpp"
-	ServiceTypeDB   ServiceType = "database"
-
-	ServiceTypeGraphQL   ServiceType = "graphql"
-	ServiceTypeSOAP      ServiceType = "soap"
-	ServiceTypeGRPC      ServiceType = "grpc"
-	ServiceTypeKafka     ServiceType = "kafka"
-	ServiceTypeMQTT      ServiceType = "mqtt"
-	ServiceTypeFTP       ServiceType = "ftp"
-	ServiceTypeSFTP      ServiceType = "sftp"
-	ServiceTypePush      ServiceType = "push"
-	ServiceTypeSlack     ServiceType = "slack"
-	ServiceTypeCustomTCP ServiceType = "custom_tcp"
-	ServiceTypeVoIP      ServiceType = "voip"
-	// New WebCrawler integration service type.
+	ServiceTypeAPI        ServiceType = "rest"
+	ServiceTypeSMTP       ServiceType = "smtp"
+	ServiceTypeSMPP       ServiceType = "smpp"
+	ServiceTypeDB         ServiceType = "database"
+	ServiceTypeGraphQL    ServiceType = "graphql"
+	ServiceTypeSOAP       ServiceType = "soap"
+	ServiceTypeGRPC       ServiceType = "grpc"
+	ServiceTypeKafka      ServiceType = "kafka"
+	ServiceTypeMQTT       ServiceType = "mqtt"
+	ServiceTypeFTP        ServiceType = "ftp"
+	ServiceTypeSFTP       ServiceType = "sftp"
+	ServiceTypePush       ServiceType = "push"
+	ServiceTypeSlack      ServiceType = "slack"
+	ServiceTypeCustomTCP  ServiceType = "custom_tcp"
+	ServiceTypeVoIP       ServiceType = "voip"
 	ServiceTypeWebCrawler ServiceType = "webcrawler"
 )
 

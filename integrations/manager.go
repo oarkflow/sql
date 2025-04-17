@@ -537,9 +537,15 @@ func getHTTPClient(timeout string, insecure bool) *http.Client {
 	}
 }
 
+type SMSPayload struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Message string `json:"message"`
+}
+
 type EmailPayload struct {
-	To      []string
-	Message []byte
+	To      []string `json:"to"`
+	Message []byte   `json:"message"`
 }
 
 type HTTPResponse struct {
@@ -623,12 +629,12 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		}
 		execErr = is.SendEmail(ctx, serviceName, emailPayload.To, emailPayload.Message)
 	case ServiceTypeSMPP:
-		msg, ok := payload.(string)
+		msg, ok := payload.(SMSPayload)
 		if !ok {
-			execErr = fmt.Errorf("invalid payload for SMPP service, expected string message")
+			execErr = fmt.Errorf("invalid payload for SMPP service, expected to and message")
 			break
 		}
-		execErr = is.SendSMS(ctx, serviceName, msg)
+		execErr = is.SendSMSViaSMPP(ctx, serviceName, msg)
 	case ServiceTypeDB:
 		query, ok := payload.(string)
 		if !ok {
@@ -757,7 +763,7 @@ func (is *Manager) SendEmail(ctx context.Context, serviceName string, to []strin
 	return smtp.SendMail(fmt.Sprintf("%s:%d", cfg.Server, cfg.Port), auth, cfg.From, to, message)
 }
 
-func (is *Manager) SendSMS(ctx context.Context, serviceName string, message string) error {
+func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, message SMSPayload) error {
 	// For SMPP, we simulate the SMS sending.
 	service, err := is.GetService(serviceName)
 	if err != nil {
@@ -787,7 +793,7 @@ func (is *Manager) SendSMS(ctx context.Context, serviceName string, message stri
 		}
 	}
 	is.logger.Info().Any("config", cfg).Str("service", serviceName).
-		Str("message", message).Str("username", smppUser).Str("pass", smppPass).
+		Str("message", message.Message).Str("username", smppUser).Str("pass", smppPass).
 		Msg("Simulated sending SMS with SMPP credentials")
 	return nil
 }
