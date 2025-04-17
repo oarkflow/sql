@@ -14,7 +14,6 @@ require (
 	github.com/oarkflow/expr v0.0.11
 	github.com/oarkflow/json v0.0.24
 	github.com/oarkflow/log v1.0.83
-	github.com/oarkflow/mq v0.0.15
 	github.com/oarkflow/squealx v0.0.46
 	github.com/oarkflow/xid v1.2.5
 	gopkg.in/yaml.v3 v3.0.1
