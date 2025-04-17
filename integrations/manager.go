@@ -303,7 +303,7 @@ func (is *Manager) ExecuteKafkaMessage(ctx context.Context, serviceName string, 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	is.logger.Info().Str("topic", cfg.Topic).Msgf("Simulated Kafka message sent: %s", message)
+	is.logger.Info().Str("service_name", serviceName).Str("topic", cfg.Topic).Msgf("Simulated Kafka message sent: %s", message)
 	return nil
 }
 
@@ -322,7 +322,7 @@ func (is *Manager) ExecuteMQTTMessage(ctx context.Context, serviceName string, m
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	is.logger.Info().Str("topic", cfg.Topic).Msgf("Simulated MQTT message sent: %s", message)
+	is.logger.Info().Str("service_name", serviceName).Str("topic", cfg.Topic).Msgf("Simulated MQTT message sent: %s", message)
 	return nil
 }
 
@@ -353,7 +353,7 @@ func (is *Manager) ExecuteFTPTransfer(ctx context.Context, serviceName string) e
 	if err != nil {
 		return err
 	}
-	is.logger.Info().Msg("FTP NOOP command executed successfully")
+	is.logger.Info().Str("service_name", serviceName).Msg("FTP NOOP command executed successfully")
 	return nil
 }
 
@@ -374,7 +374,7 @@ func (is *Manager) ExecuteSFTPTransfer(ctx context.Context, serviceName string) 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	is.logger.Info().Msg("Simulated SFTP transfer executed successfully")
+	is.logger.Info().Str("service_name", serviceName).Msg("Simulated SFTP transfer executed successfully")
 	return nil
 }
 
@@ -393,7 +393,7 @@ func (is *Manager) ExecutePushNotification(ctx context.Context, serviceName stri
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	is.logger.Info().Msgf("Simulated push notification sent via %s: %s", cfg.Provider, message)
+	is.logger.Info().Str("service_name", serviceName).Msgf("Simulated push notification sent via %s: %s", cfg.Provider, message)
 	return nil
 }
 
@@ -422,7 +422,7 @@ func (is *Manager) ExecuteSlackMessage(ctx context.Context, serviceName string, 
 	if err != nil {
 		return err
 	}
-	is.logger.Info().Msg("Slack message sent successfully")
+	is.logger.Info().Str("service_name", serviceName).Msg("Slack message sent successfully")
 	return nil
 }
 
@@ -445,7 +445,7 @@ func (is *Manager) ExecuteCustomTCPMessage(ctx context.Context, serviceName stri
 	if err != nil {
 		return err
 	}
-	is.logger.Info().Msg("Custom TCP message sent successfully")
+	is.logger.Info().Str("service_name", serviceName).Msg("Custom TCP message sent successfully")
 	return nil
 }
 
@@ -464,7 +464,7 @@ func (is *Manager) ExecuteVoIPCall(ctx context.Context, serviceName string, targ
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
-	is.logger.Info().Msgf("Simulated VoIP call to %s via SIP server %s", target, cfg.SIPServer)
+	is.logger.Info().Str("service_name", serviceName).Msgf("Simulated VoIP call to %s via SIP server %s", target, cfg.SIPServer)
 	return "voip call connected", nil
 }
 
@@ -843,7 +843,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if err != nil {
 		return nil, err
 	}
-	is.logger.Info().Str("driver", cfg.Driver).Str("query", query).Msg("Simulated executing database query")
+	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Str("query", query).Msg("Executing database query")
 	return dest, nil
 }
 
