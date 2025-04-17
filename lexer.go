@@ -232,6 +232,11 @@ func (l *Lexer) skipWhitespaceAndComments() {
 			l.skipBlockComment()
 			continue
 		}
+		// Support for "#" style comments
+		if l.ch == '#' {
+			l.skipLineComment()
+			continue
+		}
 		break
 	}
 }

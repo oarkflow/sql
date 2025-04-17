@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"math" // <-- added import for math functions
 	"sort"
 	"strconv"
 	"strings"
@@ -46,10 +47,11 @@ func (ctx *EvalContext) evalExpression(expr Expression, row utils.Record) any {
 	case *CaseExpression:
 		return ctx.evalCaseExpression(e, row)
 	case *Star:
-
 		return nil
 	case *Subquery:
 		return ctx.evalSubquery(e, row)
+	case *ExistsExpression:
+		return ctx.evalExistsExpression(e, row)
 	default:
 		ctx.logError(fmt.Sprintf("Unsupported expression type: %T", expr))
 		return nil
@@ -108,7 +110,6 @@ func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) 
 	s, ok1 := leftVal.(string)
 	pat, ok2 := pattern.(string)
 	if ok1 && ok2 {
-
 		match := sqlLikeMatch(s, pat)
 		if e.Not {
 			return !match
@@ -121,7 +122,7 @@ func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) 
 func (ctx *EvalContext) evalFunctionCall(fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
-	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER":
+	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW", "CURRENT_TIMESTAMP", "ROUND":
 		return ctx.evalScalarFunction(fc, row)
 	default:
 		ctx.logError("Unsupported function: " + name)
@@ -165,7 +166,6 @@ func (ctx *EvalContext) evalWindowFunction(e *WindowFunction, row utils.Record) 
 		}
 		return nil
 	default:
-
 		return ctx.evalExpression(e.Func, row)
 	}
 }
@@ -184,7 +184,6 @@ func (ctx *EvalContext) evalCaseExpression(e *CaseExpression, row utils.Record) 
 }
 
 func (ctx *EvalContext) evalSubquery(e *Subquery, row utils.Record) any {
-
 	oldOuter := ctx.OuterRow
 	ctx.OuterRow = row
 	subRows, err := e.Query.executeQuery(loadDataForSubquery())
@@ -199,6 +198,14 @@ func (ctx *EvalContext) evalSubquery(e *Subquery, row utils.Record) any {
 		return v
 	}
 	return nil
+}
+
+func (ctx *EvalContext) evalExistsExpression(e *ExistsExpression, row utils.Record) any {
+	subRows, err := e.Subquery.Query.executeQuery(nil)
+	if err != nil || len(subRows) == 0 {
+		return false
+	}
+	return true
 }
 
 func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Record) any {
@@ -224,7 +231,6 @@ func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Reco
 				return lnum / rnum
 			}
 		} else if e.Operator == MINUS {
-
 			leftStr, okL := left.(string)
 			rightStr, okR := right.(string)
 			if okL && okR {
@@ -239,6 +245,10 @@ func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Reco
 	}
 
 	switch e.Operator {
+	case "||":
+		leftStr := fmt.Sprintf("%v", left)
+		rightStr := fmt.Sprintf("%v", right)
+		return leftStr + rightStr
 	case "=":
 		return utils.CompareValues(left, right) == 0
 	case "!=":
@@ -268,6 +278,8 @@ func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Reco
 func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
+	case "NOW", "CURRENT_TIMESTAMP":
+		return time.Now().Format("2006-01-02 15:04:05")
 	case "COALESCE":
 		for _, arg := range fc.Args {
 			val := ctx.evalExpression(arg, row)
@@ -342,7 +354,6 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			ctx.logError("TO_DATE parse error: " + err.Error())
 			return nil
 		}
-
 		return t.Format("2006-01-02")
 	case "TO_NUMBER":
 		if len(fc.Args) < 1 {
@@ -355,6 +366,26 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			return nil
 		}
 		return f
+	case "ROUND":
+		if len(fc.Args) < 1 {
+			ctx.logError("ROUND requires at least 1 argument")
+			return nil
+		}
+		val := ctx.evalExpression(fc.Args[0], row)
+		num, ok := convert.ToFloat64(val)
+		if !ok {
+			ctx.logError("ROUND: unable to convert argument to number")
+			return nil
+		}
+		precision := 0.0
+		if len(fc.Args) >= 2 {
+			pVal := ctx.evalExpression(fc.Args[1], row)
+			if p, ok := convert.ToFloat64(pVal); ok {
+				precision = p
+			}
+		}
+		factor := math.Pow(10, precision)
+		return math.Round(num*factor) / factor
 	default:
 		ctx.logError("Unsupported scalar function: " + name)
 		return nil

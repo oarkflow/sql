@@ -249,6 +249,17 @@ func (sq *Subquery) ExpressionNode()      {}
 func (sq *Subquery) TokenLiteral() string { return "(" + sq.Query.TokenLiteral() + ")" }
 func (sq *Subquery) String() string       { return "(" + sq.Query.String() + ")" }
 
+// Add new expression type for EXISTS subquery evaluation.
+type ExistsExpression struct {
+	Subquery *Subquery
+}
+
+func (ee *ExistsExpression) ExpressionNode()      {}
+func (ee *ExistsExpression) TokenLiteral() string { return "EXISTS" }
+func (ee *ExistsExpression) String() string {
+	return fmt.Sprintf("EXISTS %s", ee.Subquery.String())
+}
+
 type TableReference struct {
 	Source   string
 	Name     string

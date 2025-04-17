@@ -49,7 +49,7 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 		p.nextToken()
 	}
 	if p.curToken.Type != SELECT {
-		p.errors = append(p.errors, "SQL must begin with SELECT")
+		p.errors = append(p.errors, fmt.Sprintf("SQL must begin with SELECT (at line %d, col %d)", p.curToken.Line, p.curToken.Column))
 		return nil
 	}
 	query := p.parseSelectQuery()
@@ -76,11 +76,17 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 	}
 	if p.peekToken.Type == UNION || p.peekToken.Type == INTERSECT || p.peekToken.Type == EXCEPT {
 		compOp := p.peekToken.Type
-		p.nextToken()
+		if compOp == UNION && p.peekTokenIsOneOf([]TokenType{ALL}) {
+			p.nextToken() // consume UNION
+			p.nextToken() // consume ALL
+			compOp = TokenType("UNION ALL")
+		} else {
+			p.nextToken() // consume compound op
+		}
 		p.nextToken()
 		rightStmt := p.ParseQueryStatement()
 		if rightStmt == nil || rightStmt.Query == nil {
-			p.errors = append(p.errors, "Invalid compound query")
+			p.errors = append(p.errors, fmt.Sprintf("Invalid compound query near token %s (line %d, col %d)", p.peekToken.Type, p.peekToken.Line, p.peekToken.Column))
 			return nil
 		}
 		stmt.Compound = &CompoundQuery{
@@ -138,8 +144,6 @@ func (p *Parser) parseSelectQuery() *SQL {
 		query.Distinct = true
 	}
 	query.Select = p.parseSelectClause()
-	// --- Begin change ---
-	// Ensure the FROM token is explicitly consumed.
 	if p.peekToken.Type == FROM {
 		p.nextToken() // consume FROM
 	} else if p.curToken.Type != FROM {
@@ -147,7 +151,6 @@ func (p *Parser) parseSelectQuery() *SQL {
 		return nil
 	}
 	p.nextToken()
-	// --- End change ---
 	query.From = p.parseTableReference()
 	for p.peekTokenIsOneOf([]TokenType{INNER, LEFT, RIGHT, FULL, CROSS, JOIN}) {
 		p.nextToken()
@@ -209,7 +212,6 @@ func (p *Parser) parseSelectClause() *SelectClause {
 }
 
 func (p *Parser) parseSelectExpression() Expression {
-	// Check for qualified star (e.g. "p.*")
 	if p.curToken.Type == IDENT && strings.HasSuffix(p.curToken.Literal, ".*") {
 		alias := strings.TrimSuffix(p.curToken.Literal, ".*")
 		return &QualifiedStar{Alias: alias}
@@ -306,7 +308,14 @@ func (p *Parser) parseTableReference() *TableReference {
 func (p *Parser) parseJoinClause() *JoinClause {
 	jc := &JoinClause{}
 	joinType := ""
-	if p.curToken.Type == INNER || p.curToken.Type == LEFT || p.curToken.Type == RIGHT || p.curToken.Type == FULL || p.curToken.Type == CROSS {
+	if p.curToken.Type == NATURAL {
+		joinType = "NATURAL"
+		p.nextToken()
+		if p.curToken.Type != JOIN {
+			p.errors = append(p.errors, "expected JOIN after NATURAL")
+			return nil
+		}
+	} else if p.curToken.Type == INNER || p.curToken.Type == LEFT || p.curToken.Type == RIGHT || p.curToken.Type == FULL || p.curToken.Type == CROSS {
 		joinType = p.curToken.Literal
 		if p.peekToken.Type == OUTER {
 			p.nextToken()
@@ -325,7 +334,7 @@ func (p *Parser) parseJoinClause() *JoinClause {
 		p.errors = append(p.errors, "JOIN table must be specified using a valid data source function or subquery")
 		return nil
 	}
-	if joinType != "CROSS" && joinType != "CROSS JOIN" {
+	if joinType != "CROSS" && joinType != "CROSS JOIN" && joinType != "NATURAL" {
 		if !p.expectPeek(ON) {
 			return nil
 		}
@@ -635,6 +644,17 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	}
 	var leftExp Expression
 	switch p.curToken.Type {
+	case EXISTS:
+		// Parse EXISTS subquery expression.
+		if !p.expectPeek(LPAREN) {
+			return nil
+		}
+		p.nextToken()
+		subStmt := p.ParseQueryStatement()
+		if !p.expectPeek(RPAREN) {
+			return nil
+		}
+		leftExp = &ExistsExpression{Subquery: &Subquery{Query: subStmt.Query}}
 	case ASTERISK:
 		leftExp = &Star{}
 	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF:

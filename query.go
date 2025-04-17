@@ -118,6 +118,9 @@ func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
 		leftRes, _ := qs.Compound.Left.executeQuery(mainRows)
 		rightRes, _ := qs.Compound.Right.executeQuery(mainRows)
 		switch qs.Compound.Operator {
+		case UNION_ALL:
+			// New handling for UNION ALL: simply append both result sets.
+			result = UnionAll(leftRes, rightRes)
 		case UNION:
 			result = utils.Union(leftRes, rightRes)
 		case INTERSECT:
@@ -127,6 +130,12 @@ func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
 		}
 	}
 	return result, nil
+}
+
+// New helper for UNION ALL compound query
+func UnionAll(a, b []utils.Record) []utils.Record {
+	// UNION ALL: simply return concatenated records
+	return append(a, b...)
 }
 
 func (qs *QueryStatement) statementNode()       {}
@@ -370,8 +379,13 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	if query.GroupBy != nil {
 		groups := make(map[string][]utils.Record)
 		for _, row := range filteredRows {
-			keyVal := ctx.evalExpression(query.GroupBy.Fields[0], row)
-			key := fmt.Sprintf("%v", keyVal)
+			var keyParts []string
+			// Support multiple grouping fields.
+			for _, expr := range query.GroupBy.Fields {
+				val := ctx.evalExpression(expr, row)
+				keyParts = append(keyParts, fmt.Sprintf("%v", val))
+			}
+			key := strings.Join(keyParts, "||")
 			groups[key] = append(groups[key], row)
 		}
 		for _, groupRows := range groups {
@@ -777,6 +791,50 @@ func executeFullJoin(leftRows, rightRows []utils.Record, alias string, joinOn Ex
 	return newResult
 }
 
+func executeNaturalJoin(leftRows, rightRows []utils.Record, alias string) []utils.Record {
+	var newResult []utils.Record
+	for _, leftRow := range leftRows {
+		for _, rightRow := range rightRows {
+			// Determine common keys between leftRow and rightRow.
+			common := make([]string, 0)
+			for k := range leftRow {
+				if _, ok := rightRow[k]; ok {
+					common = append(common, k)
+				}
+			}
+			// If no common keys, skip natural join.
+			if len(common) == 0 {
+				continue
+			}
+			// Check all common columns are equal.
+			match := true
+			for _, k := range common {
+				if utils.CompareValues(leftRow[k], rightRow[k]) != 0 {
+					match = false
+					break
+				}
+			}
+			if match {
+				// Merge rows: include all keys from left; for right add keys not already in left.
+				merged := make(utils.Record)
+				// Copy left row.
+				for k, v := range leftRow {
+					merged[k] = v
+				}
+				// Merge right row without duplicate keys.
+				for k, v := range rightRow {
+					if _, exists := merged[k]; !exists {
+						merged[k] = v
+					}
+				}
+				// Optionally, add alias handling if needed.
+				newResult = append(newResult, merged)
+			}
+		}
+	}
+	return newResult
+}
+
 func executeDefaultJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
 	var newResult []utils.Record
 	for _, leftRow := range leftRows {
@@ -814,6 +872,8 @@ func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
 			newResult = executeRightJoin(currentRows, joinRows, alias, join.On)
 		case "FULL", "FULL JOIN", "FULL OUTER", "FULL OUTER JOIN", "OUTER", "OUTER JOIN":
 			newResult = executeFullJoin(currentRows, joinRows, alias, join.On)
+		case "NATURAL":
+			newResult = executeNaturalJoin(currentRows, joinRows, alias)
 		default:
 			newResult = executeDefaultJoin(currentRows, joinRows, alias, join.On)
 		}

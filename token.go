@@ -9,22 +9,26 @@ import (
 var (
 	reserved    = []string{"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN", "ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WITH", "TRUE", "FALSE"}
 	precedences = map[TokenType]int{
-		PLUS:     10,
-		MINUS:    10,
-		ASTERISK: 20,
-		SLASH:    20,
-		ASSIGN:   5,
-		NOT_EQ:   5,
-		LT:       5,
-		GT:       5,
-		LTE:      5,
-		GTE:      5,
-		BETWEEN:  5,
-		LPAREN:   30,
-
-		IN:   5,
-		LIKE: 5,
-		NOT:  5,
+		PLUS:      10,
+		MINUS:     10,
+		ASTERISK:  20,
+		SLASH:     20,
+		CONCAT_OP: 10, // <-- added precedence for "||"
+		ASSIGN:    5,
+		NOT_EQ:    5,
+		LT:        5,
+		GT:        5,
+		LTE:       5,
+		GTE:       5,
+		BETWEEN:   5,
+		LPAREN:    30,
+		IN:        5,
+		LIKE:      5,
+		NOT:       5,
+		UNION:     1,
+		INTERSECT: 1,
+		EXCEPT:    1,
+		UNION_ALL: 1, // Treat UNION_ALL with the same precedence as UNION
 	}
 )
 
@@ -115,6 +119,13 @@ const (
 	DENSE_RANK = "DENSE_RANK"
 
 	CASE = "CASE"
+
+	NATURAL           = "NATURAL"
+	NOW               = "NOW"
+	CURRENT_TIMESTAMP = "CURRENT_TIMESTAMP"
+
+	CONCAT_OP = "||"        // <-- new constant for string concatenation operator
+	UNION_ALL = "UNION ALL" // New constant for compound UNION ALL
 )
 
 func lookupKeyword(ident string) TokenType {
@@ -232,6 +243,12 @@ func lookupKeyword(ident string) TokenType {
 		return DENSE_RANK
 	case "CASE":
 		return CASE
+	case "NATURAL":
+		return NATURAL
+	case "NOW":
+		return NOW
+	case "CURRENT_TIMESTAMP":
+		return CURRENT_TIMESTAMP
 	case "TRUE":
 		return BOOL
 	case "FALSE":
