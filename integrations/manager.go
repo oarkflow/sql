@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -598,6 +599,11 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		if ok && apiCfg.RetryCount > 0 {
 			maxRetries = apiCfg.RetryCount
 		}
+		apiCfg.URL = strings.TrimSpace(apiCfg.URL)
+		if apiCfg.URL == "" {
+			execErr = fmt.Errorf("empty URL for API Request")
+			break
+		}
 		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, payload, maxRetries)
 		if err != nil {
 			execErr = err
@@ -623,6 +629,11 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 			execErr = fmt.Errorf("invalid payload for GraphQL service, expected query string")
 			break
 		}
+		query = strings.TrimSpace(query)
+		if query == "" {
+			execErr = fmt.Errorf("empty query for graphQL")
+			break
+		}
 		res, execErr = is.ExecuteGraphQLRequest(ctx, serviceName, query)
 	case ServiceTypeSOAP:
 		xmlPayload, ok := payload.([]byte)
@@ -646,6 +657,15 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 			execErr = fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
 			break
 		}
+		emailPayload.Body = strings.TrimSpace(emailPayload.Body)
+		if emailPayload.Body == "" {
+			execErr = fmt.Errorf("invalid payload for sending email")
+			break
+		}
+		if len(emailPayload.To) == 0 {
+			execErr = fmt.Errorf("invalid recipient for sending email")
+			break
+		}
 		res, execErr = is.SendEmail(ctx, serviceName, emailPayload)
 	case ServiceTypeSMPP:
 		msg, ok := payload.(SMSPayload)
@@ -653,11 +673,25 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 			execErr = fmt.Errorf("invalid payload for SMPP service, expected to and message")
 			break
 		}
+		msg.Message = strings.TrimSpace(msg.Message)
+		if msg.Message == "" {
+			execErr = fmt.Errorf("invalid payload for sending SMS")
+			break
+		}
+		if len(msg.To) == 0 {
+			execErr = fmt.Errorf("invalid recipient for sending SMS")
+			break
+		}
 		res, execErr = is.SendSMSViaSMPP(ctx, serviceName, msg)
 	case ServiceTypeDB:
 		query, ok := payload.(string)
 		if !ok {
 			execErr = fmt.Errorf("invalid payload for DB service, expected query string")
+			break
+		}
+		query = strings.TrimSpace(query)
+		if query == "" {
+			execErr = fmt.Errorf("empty query for DB")
 			break
 		}
 		res, execErr = is.ExecuteDatabaseQuery(ctx, serviceName, query)
