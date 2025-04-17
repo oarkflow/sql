@@ -835,6 +835,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 		MaxIdleCons: cfg.MaxIdleConns,
 		MaxOpenCons: cfg.MaxOpenConns,
 	})
+	defer db.Close()
 	if err != nil {
 		return nil, err
 	}

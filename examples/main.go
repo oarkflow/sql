@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -60,10 +61,11 @@ func main() {
 			},
 		},
 	}
-	sql.RegisterIntegration(dbService, dbCredential)
-	sql.RegisterIntegration(postService)
-	sql.RegisterIntegration(commentService)
-	sql.RegisterIntegration(articleService)
+	ctx := context.WithValue(context.Background(), "user_id", "1")
+	sql.RegisterIntegrationForUser(ctx, dbService, dbCredential)
+	sql.RegisterIntegrationForUser(ctx, postService)
+	sql.RegisterIntegrationForUser(ctx, commentService)
+	sql.RegisterIntegrationForUser(ctx, articleService)
 	queries := []string{
 		"query.sql",
 		"crawl.sql",
@@ -77,12 +79,12 @@ func main() {
 		}
 		queryStr := string(bytes)
 		start := time.Now()
-		fmt.Println(sql.Query(queryStr))
+		fmt.Println(sql.Query(ctx, queryStr))
 		fmt.Println("Took", time.Since(start))
 		fmt.Println()
 	}
 	query := `SELECT p.*, c.comment
 FROM read_service('posts') AS p
-JOIN read_service('comments') AS c ON p.id = c.postId;`
-	fmt.Println(sql.Query(query))
+JOIN read_service('comments') AS c ON p.id = c.postId LIMIT 1;`
+	fmt.Println(sql.Query(ctx, query))
 }

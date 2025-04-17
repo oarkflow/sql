@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -13,9 +14,9 @@ func loadDataForSubquery() []utils.Record {
 	return nil
 }
 
-func (tr *TableReference) loadData() ([]utils.Record, error) {
+func (tr *TableReference) loadData(ctx context.Context) ([]utils.Record, error) {
 	if tr.Subquery != nil {
-		return tr.Subquery.executeQuery(nil)
+		return tr.Subquery.executeQuery(ctx, nil)
 	}
 
 	switch strings.ToLower(tr.Source) {
@@ -48,7 +49,7 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 		}
 		return rows, nil
 	case "read_service":
-		return ReadService(tr.Name)
+		return ReadServiceForUser(ctx, tr.Name)
 	default:
 		if tr.Name == "dual" {
 			return []utils.Record{{}}, nil

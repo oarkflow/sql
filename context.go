@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"context"
 	"fmt"
 	"math" // <-- added import for math functions
 	"sort"
@@ -26,39 +27,39 @@ func NewEvalContext() *EvalContext {
 	}
 }
 
-func (ctx *EvalContext) evalExpression(expr Expression, row utils.Record) any {
+func (ctx *EvalContext) evalExpression(c context.Context, expr Expression, row utils.Record) any {
 	switch e := expr.(type) {
 	case *Identifier:
-		return ctx.evalIdentifier(e, row)
+		return ctx.evalIdentifier(c, e, row)
 	case *Literal:
 		return e.Value
 	case *AliasExpression:
-		return ctx.evalExpression(e.Expr, row)
+		return ctx.evalExpression(c, e.Expr, row)
 	case *BinaryExpression:
-		return ctx.evalBinaryExpression(e, row)
+		return ctx.evalBinaryExpression(c, e, row)
 	case *InExpression:
-		return ctx.evalInExpression(e, row)
+		return ctx.evalInExpression(c, e, row)
 	case *LikeExpression:
-		return ctx.evalLikeExpression(e, row)
+		return ctx.evalLikeExpression(c, e, row)
 	case *FunctionCall:
-		return ctx.evalFunctionCall(e, row)
+		return ctx.evalFunctionCall(c, e, row)
 	case *WindowFunction:
-		return ctx.evalWindowFunction(e, row)
+		return ctx.evalWindowFunction(c, e, row)
 	case *CaseExpression:
-		return ctx.evalCaseExpression(e, row)
+		return ctx.evalCaseExpression(c, e, row)
 	case *Star:
 		return nil
 	case *Subquery:
-		return ctx.evalSubquery(e, row)
+		return ctx.evalSubquery(c, e, row)
 	case *ExistsExpression:
-		return ctx.evalExistsExpression(e, row)
+		return ctx.evalExistsExpression(c, e, row)
 	default:
 		ctx.logError(fmt.Sprintf("Unsupported expression type: %T", expr))
 		return nil
 	}
 }
 
-func (ctx *EvalContext) evalIdentifier(id *Identifier, row utils.Record) any {
+func (ctx *EvalContext) evalIdentifier(c context.Context, id *Identifier, row utils.Record) any {
 	// Support for alias fields: check full key first then fallback.
 	if strings.Contains(id.Value, ".") {
 		// Try full key (e.g. "t1.work_item_id")
@@ -89,11 +90,11 @@ func (ctx *EvalContext) evalIdentifier(id *Identifier, row utils.Record) any {
 	return nil
 }
 
-func (ctx *EvalContext) evalInExpression(e *InExpression, row utils.Record) any {
-	leftVal := ctx.evalExpression(e.Left, row)
+func (ctx *EvalContext) evalInExpression(c context.Context, e *InExpression, row utils.Record) any {
+	leftVal := ctx.evalExpression(c, e.Left, row)
 	found := false
 	for _, exp := range e.List {
-		if utils.CompareValues(ctx.evalExpression(exp, row), leftVal) == 0 {
+		if utils.CompareValues(ctx.evalExpression(c, exp, row), leftVal) == 0 {
 			found = true
 			break
 		}
@@ -104,9 +105,9 @@ func (ctx *EvalContext) evalInExpression(e *InExpression, row utils.Record) any 
 	return found
 }
 
-func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) any {
-	leftVal := ctx.evalExpression(e.Left, row)
-	pattern := ctx.evalExpression(e.Pattern, row)
+func (ctx *EvalContext) evalLikeExpression(c context.Context, e *LikeExpression, row utils.Record) any {
+	leftVal := ctx.evalExpression(c, e.Left, row)
+	pattern := ctx.evalExpression(c, e.Pattern, row)
 	s, ok1 := leftVal.(string)
 	pat, ok2 := pattern.(string)
 	if ok1 && ok2 {
@@ -127,42 +128,42 @@ func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) 
 	return false
 }
 
-func (ctx *EvalContext) evalFunctionCall(fc *FunctionCall, row utils.Record) any {
+func (ctx *EvalContext) evalFunctionCall(c context.Context, fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
 	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW", "CURRENT_TIMESTAMP", "ROUND", "DATEDIFF":
-		return ctx.evalScalarFunction(fc, row)
+		return ctx.evalScalarFunction(c, fc, row)
 	default:
 		ctx.logError("Unsupported function: " + name)
 		return nil
 	}
 }
 
-func (ctx *EvalContext) evalWindowFunction(e *WindowFunction, row utils.Record) any {
+func (ctx *EvalContext) evalWindowFunction(c context.Context, e *WindowFunction, row utils.Record) any {
 	fnName := strings.ToUpper(e.Func.TokenLiteral())
 	switch fnName {
 	case "COUNT":
-		key := ctx.getPartitionKey(row, e.PartitionBy)
+		key := ctx.getPartitionKey(c, row, e.PartitionBy)
 		count := 0
 		for _, r := range ctx.CurrentResultSet {
-			if ctx.getPartitionKey(r, e.PartitionBy) == key {
+			if ctx.getPartitionKey(c, r, e.PartitionBy) == key {
 				count++
 			}
 		}
 		return count
 	case "ROW_NUMBER":
-		key := ctx.getPartitionKey(row, e.PartitionBy)
+		key := ctx.getPartitionKey(c, row, e.PartitionBy)
 		var partitionRows []utils.Record
 		for _, r := range ctx.CurrentResultSet {
-			if ctx.getPartitionKey(r, e.PartitionBy) == key {
+			if ctx.getPartitionKey(c, r, e.PartitionBy) == key {
 				partitionRows = append(partitionRows, r)
 			}
 		}
 
 		if e.OrderBy != nil && len(e.OrderBy.Fields) > 0 {
 			sort.SliceStable(partitionRows, func(i, j int) bool {
-				vi := ctx.evalExpression(e.OrderBy.Fields[0], partitionRows[i])
-				vj := ctx.evalExpression(e.OrderBy.Fields[0], partitionRows[j])
+				vi := ctx.evalExpression(c, e.OrderBy.Fields[0], partitionRows[i])
+				vj := ctx.evalExpression(c, e.OrderBy.Fields[0], partitionRows[j])
 				return utils.CompareValues(vi, vj) < 0
 			})
 		}
@@ -174,27 +175,27 @@ func (ctx *EvalContext) evalWindowFunction(e *WindowFunction, row utils.Record) 
 		}
 		return nil
 	default:
-		return ctx.evalExpression(e.Func, row)
+		return ctx.evalExpression(c, e.Func, row)
 	}
 }
 
-func (ctx *EvalContext) evalCaseExpression(e *CaseExpression, row utils.Record) any {
+func (ctx *EvalContext) evalCaseExpression(c context.Context, e *CaseExpression, row utils.Record) any {
 	for _, wc := range e.WhenClauses {
-		cond := ctx.evalExpression(wc.Condition, row)
+		cond := ctx.evalExpression(c, wc.Condition, row)
 		if b, ok := cond.(bool); ok && b {
-			return ctx.evalExpression(wc.Result, row)
+			return ctx.evalExpression(c, wc.Result, row)
 		}
 	}
 	if e.Else != nil {
-		return ctx.evalExpression(e.Else, row)
+		return ctx.evalExpression(c, e.Else, row)
 	}
 	return nil
 }
 
-func (ctx *EvalContext) evalSubquery(e *Subquery, row utils.Record) any {
+func (ctx *EvalContext) evalSubquery(c context.Context, e *Subquery, row utils.Record) any {
 	oldOuter := ctx.OuterRow
 	ctx.OuterRow = row
-	subRows, err := e.Query.executeQuery(loadDataForSubquery())
+	subRows, err := e.Query.executeQuery(c, loadDataForSubquery())
 
 	ctx.OuterRow = oldOuter
 	if err != nil || len(subRows) == 0 {
@@ -208,17 +209,17 @@ func (ctx *EvalContext) evalSubquery(e *Subquery, row utils.Record) any {
 	return nil
 }
 
-func (ctx *EvalContext) evalExistsExpression(e *ExistsExpression, row utils.Record) any {
-	subRows, err := e.Subquery.Query.executeQuery(nil)
+func (ctx *EvalContext) evalExistsExpression(c context.Context, e *ExistsExpression, row utils.Record) any {
+	subRows, err := e.Subquery.Query.executeQuery(c, nil)
 	if err != nil || len(subRows) == 0 {
 		return false
 	}
 	return true
 }
 
-func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Record) any {
-	left := ctx.evalExpression(e.Left, row)
-	right := ctx.evalExpression(e.Right, row)
+func (ctx *EvalContext) evalBinaryExpression(c context.Context, e *BinaryExpression, row utils.Record) any {
+	left := ctx.evalExpression(c, e.Left, row)
+	right := ctx.evalExpression(c, e.Right, row)
 
 	if isArithmeticOperator(e.Operator) {
 		lnum, okA := convert.ToFloat64(left)
@@ -287,14 +288,14 @@ func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Reco
 	}
 }
 
-func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) any {
+func (ctx *EvalContext) evalScalarFunction(c context.Context, fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
 	case "NOW", "CURRENT_TIMESTAMP":
 		return time.Now().Format("2006-01-02 15:04:05")
 	case "COALESCE":
 		for _, arg := range fc.Args {
-			val := ctx.evalExpression(arg, row)
+			val := ctx.evalExpression(c, arg, row)
 			if !isNilOrEmpty(val) {
 				return val
 			}
@@ -303,7 +304,7 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 	case "CONCAT":
 		var parts []string
 		for _, arg := range fc.Args {
-			val := ctx.evalExpression(arg, row)
+			val := ctx.evalExpression(c, arg, row)
 			parts = append(parts, fmt.Sprintf("%v", val))
 		}
 		return strings.Join(parts, "")
@@ -312,18 +313,18 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			ctx.logError("IF requires at least 3 arguments")
 			return nil
 		}
-		cond := ctx.evalExpression(fc.Args[0], row)
+		cond := ctx.evalExpression(c, fc.Args[0], row)
 		if b, ok := cond.(bool); ok && b {
-			return ctx.evalExpression(fc.Args[1], row)
+			return ctx.evalExpression(c, fc.Args[1], row)
 		}
-		return ctx.evalExpression(fc.Args[2], row)
+		return ctx.evalExpression(c, fc.Args[2], row)
 	case "SUBSTR":
 		if len(fc.Args) < 2 {
 			ctx.logError("SUBSTR requires at least 2 arguments")
 			return nil
 		}
-		s := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
-		startVal, ok := convert.ToFloat64(ctx.evalExpression(fc.Args[1], row))
+		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
+		startVal, ok := convert.ToFloat64(ctx.evalExpression(c, fc.Args[1], row))
 		if !ok {
 			return nil
 		}
@@ -332,7 +333,7 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			return ""
 		}
 		if len(fc.Args) == 3 {
-			lenVal, ok := convert.ToFloat64(ctx.evalExpression(fc.Args[2], row))
+			lenVal, ok := convert.ToFloat64(ctx.evalExpression(c, fc.Args[2], row))
 			if !ok {
 				return nil
 			}
@@ -345,21 +346,21 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 		}
 		return s[start:]
 	case "LENGTH":
-		s := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
+		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
 		return len(s)
 	case "UPPER":
-		s := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
+		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
 		return strings.ToUpper(s)
 	case "LOWER":
-		s := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
+		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
 		return strings.ToLower(s)
 	case "TO_DATE":
 		if len(fc.Args) < 2 {
 			ctx.logError("TO_DATE requires 2 arguments")
 			return nil
 		}
-		dateStr := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
-		formatStr := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[1], row))
+		dateStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
+		formatStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
 		layout := sqlDateFormatToGoLayout(formatStr)
 		t, err := time.Parse(layout, dateStr)
 		if err != nil {
@@ -371,7 +372,7 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 		if len(fc.Args) < 1 {
 			return nil
 		}
-		numStr := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
+		numStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
 		f, err := strconv.ParseFloat(numStr, 64)
 		if err != nil {
 			ctx.logError("TO_NUMBER parse error: " + err.Error())
@@ -383,7 +384,7 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			ctx.logError("ROUND requires at least 1 argument")
 			return nil
 		}
-		val := ctx.evalExpression(fc.Args[0], row)
+		val := ctx.evalExpression(c, fc.Args[0], row)
 		num, ok := convert.ToFloat64(val)
 		if !ok {
 			ctx.logError("ROUND: unable to convert argument to number")
@@ -391,7 +392,7 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 		}
 		precision := 0.0
 		if len(fc.Args) >= 2 {
-			pVal := ctx.evalExpression(fc.Args[1], row)
+			pVal := ctx.evalExpression(c, fc.Args[1], row)
 			if p, ok := convert.ToFloat64(pVal); ok {
 				precision = p
 			}
@@ -403,8 +404,8 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 			ctx.logError("DATEDIFF requires 2 arguments")
 			return nil
 		}
-		date1Str := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
-		date2Str := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[1], row))
+		date1Str := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
+		date2Str := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
 		t1, err1 := time.Parse("2006-01-02", date1Str)
 		t2, err2 := time.Parse("2006-01-02", date2Str)
 		if err1 != nil || err2 != nil {
@@ -419,13 +420,13 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 	}
 }
 
-func (ctx *EvalContext) getPartitionKey(row utils.Record, exprs []Expression) string {
+func (ctx *EvalContext) getPartitionKey(c context.Context, row utils.Record, exprs []Expression) string {
 	if len(exprs) == 0 {
 		return "all"
 	}
 	var parts []string
 	for _, expr := range exprs {
-		val := ctx.evalExpression(expr, row)
+		val := ctx.evalExpression(c, expr, row)
 		parts = append(parts, fmt.Sprintf("%v", val))
 	}
 	return strings.Join(parts, "|")

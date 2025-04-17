@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/convert"
+	"github.com/oarkflow/log"
 
 	"github.com/oarkflow/sql/pkg/utils"
 )
@@ -77,14 +79,25 @@ func sqlLikeMatch(s, pattern string) bool {
 	return re.MatchString(s)
 }
 
-func Query(query string) ([]utils.Record, error) {
+func Query(ctx context.Context, query string) ([]utils.Record, error) {
+	start := time.Now()
 	lexer := NewLexer(query)
 	parser := NewParser(lexer)
 	program := parser.ParseQueryStatement()
 	if len(parser.errors) != 0 {
 		return nil, errors.New(strings.Join(parser.errors, "\t"))
 	}
-	return program.parseAndExecute()
+	records, err := program.parseAndExecute(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latency := time.Since(start)
+	userID := ctx.Value("user_id")
+	if userID == nil {
+		return records, nil
+	}
+	log.Info().Any("user_id", userID).Str("latency", fmt.Sprintf("%s", latency)).Msg("Executed query")
+	return records, nil
 }
 
 type QueryStatement struct {
@@ -93,8 +106,8 @@ type QueryStatement struct {
 	Compound *CompoundQuery
 }
 
-func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
-	mainRows, err := qs.Query.From.loadData()
+func (qs *QueryStatement) parseAndExecute(ctx context.Context) ([]utils.Record, error) {
+	mainRows, err := qs.Query.From.loadData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -105,18 +118,18 @@ func (qs *QueryStatement) parseAndExecute() ([]utils.Record, error) {
 		}
 	}
 	if len(qs.Query.Joins) > 0 {
-		mainRows, err = qs.Query.executeJoins(mainRows)
+		mainRows, err = qs.Query.executeJoins(ctx, mainRows)
 		if err != nil {
 			return nil, err
 		}
 	}
-	result, err := qs.Query.executeQuery(mainRows)
+	result, err := qs.Query.executeQuery(ctx, mainRows)
 	if err != nil {
 		return nil, err
 	}
 	if qs.Compound != nil {
-		leftRes, _ := qs.Compound.Left.executeQuery(mainRows)
-		rightRes, _ := qs.Compound.Right.executeQuery(mainRows)
+		leftRes, _ := qs.Compound.Left.executeQuery(ctx, mainRows)
+		rightRes, _ := qs.Compound.Right.executeQuery(ctx, mainRows)
 		switch qs.Compound.Operator {
 		case UNION_ALL:
 			// New handling for UNION ALL: simply append both result sets.
@@ -292,11 +305,11 @@ func intersectRecords(a, b []utils.Record) []utils.Record {
 	return result
 }
 
-func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
+func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.Record, error) {
 	if len(rows) == 0 {
 		if query.From != nil {
 			var err error
-			rows, err = query.From.loadData()
+			rows, err = query.From.loadData(c)
 			if err != nil {
 				return nil, err
 			}
@@ -316,7 +329,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			var set []utils.Record
 			for _, row := range rows {
 				// Use evalExpression to apply alias rules
-				val := ctx.evalExpression(&Identifier{Value: cond.Field}, row)
+				val := ctx.evalExpression(c, &Identifier{Value: cond.Field}, row)
 				if val != nil {
 					keyStr := fmt.Sprintf("%v", val)
 					if evaluateCondition(keyStr, cond.Operator, cond.Value) {
@@ -335,7 +348,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 	} else {
 		for _, row := range rows {
 			if query.Where != nil {
-				result := ctx.evalExpression(query.Where, row)
+				result := ctx.evalExpression(c, query.Where, row)
 				if b, ok := result.(bool); !ok || !b {
 					continue
 				}
@@ -361,7 +374,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			var temp []utils.Record
 			for _, row := range rows {
 				if query.Where != nil {
-					result := ctx.evalExpression(query.Where, row)
+					result := ctx.evalExpression(c, query.Where, row)
 					if b, ok := result.(bool); !ok || !b {
 						continue
 					}
@@ -382,7 +395,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 			var keyParts []string
 			// Support multiple grouping fields.
 			for _, expr := range query.GroupBy.Fields {
-				val := ctx.evalExpression(expr, row)
+				val := ctx.evalExpression(c, expr, row)
 				keyParts = append(keyParts, fmt.Sprintf("%v", val))
 			}
 			key := strings.Join(keyParts, "||")
@@ -401,7 +414,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						sum := 0.0
 						count := 0.0
 						for _, r := range groupRows {
-							val := ctx.evalExpression(fc.Args[0], r)
+							val := ctx.evalExpression(c, fc.Args[0], r)
 							num, ok := convert.ToFloat64(val)
 							if ok {
 								sum += num
@@ -416,7 +429,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 					case "SUM":
 						sum := 0.0
 						for _, r := range groupRows {
-							val := ctx.evalExpression(fc.Args[0], r)
+							val := ctx.evalExpression(c, fc.Args[0], r)
 							num, ok := convert.ToFloat64(val)
 							if ok {
 								sum += num
@@ -427,7 +440,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						var minVal float64
 						first := true
 						for _, r := range groupRows {
-							val := ctx.evalExpression(fc.Args[0], r)
+							val := ctx.evalExpression(c, fc.Args[0], r)
 							num, ok := convert.ToFloat64(val)
 							if ok {
 								if first {
@@ -447,7 +460,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						var maxVal float64
 						first := true
 						for _, r := range groupRows {
-							val := ctx.evalExpression(fc.Args[0], r)
+							val := ctx.evalExpression(c, fc.Args[0], r)
 							num, ok := convert.ToFloat64(val)
 							if ok {
 								if first {
@@ -467,7 +480,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						var minVal, maxVal float64
 						first := true
 						for _, r := range groupRows {
-							val := ctx.evalExpression(fc.Args[0], r)
+							val := ctx.evalExpression(c, fc.Args[0], r)
 							num, ok := convert.ToFloat64(val)
 							if ok {
 								if first {
@@ -493,11 +506,11 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						resultRow[colName] = nil
 					}
 				} else {
-					resultRow[colName] = ctx.evalExpression(underlying, groupRows[0])
+					resultRow[colName] = ctx.evalExpression(c, underlying, groupRows[0])
 				}
 			}
 			if query.Having != nil {
-				hv := ctx.evalExpression(query.Having, resultRow)
+				hv := ctx.evalExpression(c, query.Having, resultRow)
 				if b, ok := hv.(bool); !ok || !b {
 					continue
 				}
@@ -517,7 +530,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 					sum := 0.0
 					count := 0.0
 					for _, r := range filteredRows {
-						val := ctx.evalExpression(fc.Args[0], r)
+						val := ctx.evalExpression(c, fc.Args[0], r)
 						num, ok := convert.ToFloat64(val)
 						if ok {
 							sum += num
@@ -532,7 +545,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 				case "SUM":
 					sum := 0.0
 					for _, r := range filteredRows {
-						val := ctx.evalExpression(fc.Args[0], r)
+						val := ctx.evalExpression(c, fc.Args[0], r)
 						num, ok := convert.ToFloat64(val)
 						if ok {
 							sum += num
@@ -543,7 +556,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 					var minVal float64
 					first := true
 					for _, r := range filteredRows {
-						val := ctx.evalExpression(fc.Args[0], r)
+						val := ctx.evalExpression(c, fc.Args[0], r)
 						num, ok := convert.ToFloat64(val)
 						if ok {
 							if first {
@@ -563,7 +576,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 					var maxVal float64
 					first := true
 					for _, r := range filteredRows {
-						val := ctx.evalExpression(fc.Args[0], r)
+						val := ctx.evalExpression(c, fc.Args[0], r)
 						num, ok := convert.ToFloat64(val)
 						if ok {
 							if first {
@@ -583,7 +596,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 					var minVal, maxVal float64
 					first := true
 					for _, r := range filteredRows {
-						val := ctx.evalExpression(fc.Args[0], r)
+						val := ctx.evalExpression(c, fc.Args[0], r)
 						num, ok := convert.ToFloat64(val)
 						if ok {
 							if first {
@@ -610,7 +623,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 				}
 			} else {
 				if len(filteredRows) > 0 {
-					resultRow[colName] = ctx.evalExpression(underlying, filteredRows[0])
+					resultRow[colName] = ctx.evalExpression(c, underlying, filteredRows[0])
 				} else {
 					resultRow[colName] = nil
 				}
@@ -638,7 +651,7 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 						}
 					}
 				default:
-					newRow[colName] = ctx.evalExpression(underlying, row)
+					newRow[colName] = ctx.evalExpression(c, underlying, row)
 				}
 			}
 			resultRows = append(resultRows, newRow)
@@ -666,8 +679,8 @@ func (query *SQL) executeQuery(rows []utils.Record) ([]utils.Record, error) {
 				if index < len(query.OrderBy.Directions) {
 					dir = query.OrderBy.Directions[index]
 				}
-				vi := ctx.evalExpression(expr, resultRows[i])
-				vj := ctx.evalExpression(expr, resultRows[j])
+				vi := ctx.evalExpression(c, expr, resultRows[i])
+				vj := ctx.evalExpression(c, expr, resultRows[j])
 				cmp := utils.CompareValues(vi, vj)
 				if cmp == 0 {
 					continue
@@ -706,14 +719,14 @@ func executeCrossJoin(leftRows, rightRows []utils.Record, alias string) []utils.
 	return newResult
 }
 
-func executeLeftJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+func executeLeftJoin(c context.Context, leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
 	var newResult []utils.Record
 	for _, leftRow := range leftRows {
 		matched := false
 		for _, rightRow := range rightRows {
 			merged := utils.MergeRows(leftRow, rightRow, alias)
 			ctx := NewEvalContext()
-			cond := ctx.evalExpression(joinOn, merged)
+			cond := ctx.evalExpression(c, joinOn, merged)
 			if b, ok := cond.(bool); ok && b {
 				newResult = append(newResult, merged)
 				matched = true
@@ -727,14 +740,14 @@ func executeLeftJoin(leftRows, rightRows []utils.Record, alias string, joinOn Ex
 	return newResult
 }
 
-func executeRightJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+func executeRightJoin(c context.Context, leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
 	var newResult []utils.Record
 	for _, rightRow := range rightRows {
 		matched := false
 		for _, leftRow := range leftRows {
 			merged := utils.MergeRows(leftRow, rightRow, alias)
 			ctx := NewEvalContext()
-			cond := ctx.evalExpression(joinOn, merged)
+			cond := ctx.evalExpression(c, joinOn, merged)
 			if b, ok := cond.(bool); ok && b {
 				newResult = append(newResult, merged)
 				matched = true
@@ -748,7 +761,7 @@ func executeRightJoin(leftRows, rightRows []utils.Record, alias string, joinOn E
 	return newResult
 }
 
-func executeFullJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+func executeFullJoin(c context.Context, leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
 	var newResult []utils.Record
 	leftMatched := make(map[string]bool)
 	for _, leftRow := range leftRows {
@@ -756,7 +769,7 @@ func executeFullJoin(leftRows, rightRows []utils.Record, alias string, joinOn Ex
 		for _, rightRow := range rightRows {
 			merged := utils.MergeRows(leftRow, rightRow, alias)
 			ctx := NewEvalContext()
-			cond := ctx.evalExpression(joinOn, merged)
+			cond := ctx.evalExpression(c, joinOn, merged)
 			if b, ok := cond.(bool); ok && b {
 				newResult = append(newResult, merged)
 				matched = true
@@ -774,7 +787,7 @@ func executeFullJoin(leftRows, rightRows []utils.Record, alias string, joinOn Ex
 		for _, leftRow := range leftRows {
 			merged := utils.MergeRows(leftRow, rightRow, alias)
 			ctx := NewEvalContext()
-			cond := ctx.evalExpression(joinOn, merged)
+			cond := ctx.evalExpression(c, joinOn, merged)
 			if b, ok := cond.(bool); ok && b {
 				key := utils.RecordKey(leftRow, rightRow)
 				if leftMatched[key] {
@@ -835,13 +848,13 @@ func executeNaturalJoin(leftRows, rightRows []utils.Record, alias string) []util
 	return newResult
 }
 
-func executeDefaultJoin(leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
+func executeDefaultJoin(c context.Context, leftRows, rightRows []utils.Record, alias string, joinOn Expression) []utils.Record {
 	var newResult []utils.Record
 	for _, leftRow := range leftRows {
 		for _, rightRow := range rightRows {
 			merged := utils.MergeRows(leftRow, rightRow, alias)
 			ctx := NewEvalContext()
-			cond := ctx.evalExpression(joinOn, merged)
+			cond := ctx.evalExpression(c, joinOn, merged)
 			if b, ok := cond.(bool); ok && b {
 				newResult = append(newResult, merged)
 			}
@@ -850,10 +863,10 @@ func executeDefaultJoin(leftRows, rightRows []utils.Record, alias string, joinOn
 	return newResult
 }
 
-func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
+func (query *SQL) executeJoins(ctx context.Context, rows []utils.Record) ([]utils.Record, error) {
 	currentRows := rows
 	for _, join := range query.Joins {
-		joinRows, err := join.Table.loadData()
+		joinRows, err := join.Table.loadData(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load join table %s: %s", join.Table.Name, err)
 		}
@@ -867,15 +880,15 @@ func (query *SQL) executeJoins(rows []utils.Record) ([]utils.Record, error) {
 		case "CROSS", "CROSS JOIN":
 			newResult = executeCrossJoin(currentRows, joinRows, alias)
 		case "LEFT", "LEFT JOIN", "LEFT OUTER", "LEFT OUTER JOIN":
-			newResult = executeLeftJoin(currentRows, joinRows, alias, join.On)
+			newResult = executeLeftJoin(ctx, currentRows, joinRows, alias, join.On)
 		case "RIGHT", "RIGHT JOIN", "RIGHT OUTER", "RIGHT OUTER JOIN":
-			newResult = executeRightJoin(currentRows, joinRows, alias, join.On)
+			newResult = executeRightJoin(ctx, currentRows, joinRows, alias, join.On)
 		case "FULL", "FULL JOIN", "FULL OUTER", "FULL OUTER JOIN", "OUTER", "OUTER JOIN":
-			newResult = executeFullJoin(currentRows, joinRows, alias, join.On)
+			newResult = executeFullJoin(ctx, currentRows, joinRows, alias, join.On)
 		case "NATURAL":
 			newResult = executeNaturalJoin(currentRows, joinRows, alias)
 		default:
-			newResult = executeDefaultJoin(currentRows, joinRows, alias, join.On)
+			newResult = executeDefaultJoin(ctx, currentRows, joinRows, alias, join.On)
 		}
 		currentRows = newResult
 	}
