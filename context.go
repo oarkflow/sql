@@ -110,6 +110,14 @@ func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) 
 	s, ok1 := leftVal.(string)
 	pat, ok2 := pattern.(string)
 	if ok1 && ok2 {
+		// New: enable case-insensitive matching when pattern starts with "i:"
+		if strings.HasPrefix(pat, "i:") {
+			pat = pat[2:]
+			if e.Not {
+				return !strings.Contains(strings.ToLower(s), strings.ToLower(pat))
+			}
+			return strings.Contains(strings.ToLower(s), strings.ToLower(pat))
+		}
 		match := sqlLikeMatch(s, pat)
 		if e.Not {
 			return !match
@@ -122,7 +130,7 @@ func (ctx *EvalContext) evalLikeExpression(e *LikeExpression, row utils.Record) 
 func (ctx *EvalContext) evalFunctionCall(fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
-	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW", "CURRENT_TIMESTAMP", "ROUND":
+	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW", "CURRENT_TIMESTAMP", "ROUND", "DATEDIFF":
 		return ctx.evalScalarFunction(fc, row)
 	default:
 		ctx.logError("Unsupported function: " + name)
@@ -269,6 +277,10 @@ func (ctx *EvalContext) evalBinaryExpression(e *BinaryExpression, row utils.Reco
 		leftVal, _ := convert.ToBool(left)
 		rightVal, _ := convert.ToBool(right)
 		return leftVal && rightVal
+	case "OR":
+		leftVal, _ := convert.ToBool(left)
+		rightVal, _ := convert.ToBool(right)
+		return leftVal || rightVal
 	default:
 		ctx.logError("Unsupported binary operator: " + e.Operator)
 		return nil
@@ -386,6 +398,21 @@ func (ctx *EvalContext) evalScalarFunction(fc *FunctionCall, row utils.Record) a
 		}
 		factor := math.Pow(10, precision)
 		return math.Round(num*factor) / factor
+	case "DATEDIFF":
+		if len(fc.Args) < 2 {
+			ctx.logError("DATEDIFF requires 2 arguments")
+			return nil
+		}
+		date1Str := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[0], row))
+		date2Str := fmt.Sprintf("%v", ctx.evalExpression(fc.Args[1], row))
+		t1, err1 := time.Parse("2006-01-02", date1Str)
+		t2, err2 := time.Parse("2006-01-02", date2Str)
+		if err1 != nil || err2 != nil {
+			ctx.logError("DATEDIFF parse error: invalid date format")
+			return nil
+		}
+		diff := t1.Sub(t2)
+		return int(diff.Hours() / 24)
 	default:
 		ctx.logError("Unsupported scalar function: " + name)
 		return nil

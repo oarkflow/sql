@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	reserved    = []string{"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN", "ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WITH", "TRUE", "FALSE"}
+	reserved    = []string{"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN", "ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WITH", "TRUE", "FALSE", "OR"}
 	precedences = map[TokenType]int{
 		PLUS:      10,
 		MINUS:     10,
@@ -25,6 +25,7 @@ var (
 		IN:        5,
 		LIKE:      5,
 		NOT:       5,
+		OR:        3, // <-- added precedence for OR with lower priority than AND (assumed AND is 5)
 		UNION:     1,
 		INTERSECT: 1,
 		EXCEPT:    1,
@@ -78,6 +79,7 @@ const (
 	MIN      = "MIN"
 	MAX      = "MAX"
 	DIFF     = "DIFF"
+	DATEDIFF = "DATEDIFF" // <-- new constant for DATEDIFF function
 	AS       = "AS"
 	JOIN     = "JOIN"
 	INNER    = "INNER"
@@ -126,6 +128,7 @@ const (
 
 	CONCAT_OP = "||"        // <-- new constant for string concatenation operator
 	UNION_ALL = "UNION ALL" // New constant for compound UNION ALL
+	OR        = "OR"        // <-- new constant for logical OR operator
 )
 
 func lookupKeyword(ident string) TokenType {
@@ -167,6 +170,8 @@ func lookupKeyword(ident string) TokenType {
 		return MAX
 	case "DIFF":
 		return DIFF
+	case "DATEDIFF": // <-- new lookup for DATEDIFF
+		return DATEDIFF
 	case "AS":
 		return AS
 	case "JOIN":
@@ -253,6 +258,8 @@ func lookupKeyword(ident string) TokenType {
 		return BOOL
 	case "FALSE":
 		return BOOL
+	case "OR":
+		return OR
 	default:
 		return IDENT
 	}

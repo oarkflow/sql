@@ -35,6 +35,13 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to process file %s: %w", tr.Name, err)
 		}
+		// New: Evict an entry if cache size exceeds maxTableCacheSize.
+		if len(tableCache) >= maxTableCacheSize {
+			for key := range tableCache {
+				delete(tableCache, key)
+				break
+			}
+		}
 		tableCache[cacheKey] = tableCacheEntry{
 			rows:    rows,
 			modTime: modTime,
@@ -43,6 +50,9 @@ func (tr *TableReference) loadData() ([]utils.Record, error) {
 	case "read_service":
 		return ReadService(tr.Name)
 	default:
+		if tr.Name == "dual" {
+			return []utils.Record{{}}, nil
+		}
 		return nil, fmt.Errorf("unsupported data source: %s", tr.Source)
 	}
 }

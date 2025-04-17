@@ -154,8 +154,7 @@ func (p *Parser) parseSelectQuery() *SQL {
 	query.From = p.parseTableReference()
 	for p.peekTokenIsOneOf([]TokenType{INNER, LEFT, RIGHT, FULL, CROSS, JOIN}) {
 		p.nextToken()
-		join := p.parseJoinClause()
-		if join != nil {
+		if join := p.parseJoinClause(); join != nil {
 			query.Joins = append(query.Joins, join)
 		}
 	}
@@ -657,7 +656,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 		leftExp = &ExistsExpression{Subquery: &Subquery{Query: subStmt.Query}}
 	case ASTERISK:
 		leftExp = &Star{}
-	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF:
+	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF, DATEDIFF: // <-- added DATEDIFF here
 		if p.peekToken.Type == LPAREN {
 			leftExp = p.parseFunctionCall()
 		} else {

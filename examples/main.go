@@ -69,6 +69,7 @@ func main() {
 		"crawl.sql",
 		"db_query.sql",
 	}
+	queries = []string{}
 	for _, query := range queries {
 		bytes, err := os.ReadFile(query)
 		if err != nil {
@@ -80,4 +81,8 @@ func main() {
 		fmt.Println("Took", time.Since(start))
 		fmt.Println()
 	}
+	query := `SELECT p.*, c.comment
+FROM read_service('posts') AS p
+JOIN read_service('comments') AS c ON p.id = c.postId;`
+	fmt.Println(sql.Query(query))
 }
