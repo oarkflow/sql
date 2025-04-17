@@ -5,40 +5,65 @@ import (
 	"os"
 	"time"
 
-	sql2 "github.com/oarkflow/sql"
-	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql"
+	"github.com/oarkflow/sql/integrations"
 )
 
 func main() {
-	sql2.RegisterIntegration("test_db", &sql2.SQLIntegration{
-		DataConfig: &config.DataConfig{
+	dbService := integrations.Service{
+		Name: "test_db",
+		Type: integrations.ServiceTypeDB,
+		Config: integrations.DatabaseConfig{
 			Driver:   "postgres",
 			Host:     "127.0.0.1",
 			Port:     5432,
-			Username: "postgres",
-			Password: "postgres",
 			Database: "clear_dev",
 		},
-	})
-	sql2.RegisterIntegration("posts", &sql2.RESTIntegration{
-		Endpoint: "https://jsonplaceholder.typicode.com/posts",
-	})
-	sql2.RegisterIntegration("comments", &sql2.RESTIntegration{
-		Endpoint: "https://jsonplaceholder.typicode.com/comments",
-	})
-	sql2.RegisterIntegration("articles", &sql2.WebIntegration{
-		Endpoint:     "http://metalsucks.net",
-		Rules:        "article",
-		Target:       "text",
-		OutputFormat: "string",
-		FieldMappings: []sql2.FieldMapping{
-			{
-				Field:    "title",
-				Selector: ".post-title a",
-				Target:   "text",
+	}
+	dbCredential := integrations.Credential{
+		Type: integrations.CredentialTypeDatabase,
+		Data: integrations.DatabaseCredential{
+			Username: "postgres",
+			Password: "postgres",
+		},
+	}
+	postService := integrations.Service{
+		Name: "posts",
+		Type: integrations.ServiceTypeAPI,
+		Config: integrations.APIConfig{
+			URL:    "https://jsonplaceholder.typicode.com/posts",
+			Method: "GET",
+		},
+	}
+	commentService := integrations.Service{
+		Name: "comments",
+		Type: integrations.ServiceTypeAPI,
+		Config: integrations.APIConfig{
+			URL:    "https://jsonplaceholder.typicode.com/comments",
+			Method: "GET",
+		},
+	}
+	articleService := integrations.Service{
+		Name: "articles",
+		Type: integrations.ServiceTypeWebCrawler,
+		Config: integrations.WebCrawlerConfig{
+			Endpoint:     "http://metalsucks.net",
+			Rules:        "article",
+			Target:       "text",
+			OutputFormat: "string",
+			FieldMappings: []integrations.FieldMapping{
+				{
+					Field:    "title",
+					Selector: ".post-title a",
+					Target:   "text",
+				},
 			},
 		},
-	})
+	}
+	sql.RegisterIntegration(dbService, dbCredential)
+	sql.RegisterIntegration(postService)
+	sql.RegisterIntegration(commentService)
+	sql.RegisterIntegration(articleService)
 	queries := []string{
 		"query.sql",
 		"crawl.sql",
@@ -51,7 +76,7 @@ func main() {
 		}
 		queryStr := string(bytes)
 		start := time.Now()
-		fmt.Println(sql2.Query(queryStr))
+		fmt.Println(sql.Query(queryStr))
 		fmt.Println("Took", time.Since(start))
 		fmt.Println()
 	}
