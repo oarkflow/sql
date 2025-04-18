@@ -3,6 +3,7 @@ module github.com/oarkflow/sql
 go 1.24.2
 
 require (
+	github.com/dgraph-io/ristretto v0.2.0
 	github.com/go-sql-driver/mysql v1.9.2
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/gofrs/flock v0.12.1
@@ -24,6 +25,7 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/aws/aws-sdk-go v1.55.6 // indirect
+	github.com/cespare/xxhash/v2 v2.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/goccy/go-reflect v1.2.0 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
@@ -39,6 +41,7 @@ require (
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/render v0.0.1 // indirect
 	github.com/oarkflow/xsync v0.0.5 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/toorop/go-dkim v0.0.0-20250226130143-9025cce95817 // indirect
 	github.com/xhit/go-simple-mail/v2 v2.16.0 // indirect

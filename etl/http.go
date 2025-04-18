@@ -362,6 +362,22 @@ func (m *Manager) Serve(addr string) error {
 		return c.Redirect("/etls/" + id)
 	})
 
+	app.Post("/etls/:id/stop", func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		m.mu.Lock()
+		etl, ok := m.etls[id]
+		m.mu.Unlock()
+		if !ok {
+			return c.Status(404).SendString("ETL not found")
+		}
+		if etl.cancelFunc != nil {
+			etl.cancelFunc()
+			etl.Status = "STOPPED"
+			return c.SendString(fmt.Sprintf("ETL job %s has been stopped", id))
+		}
+		return c.Status(400).SendString("ETL job cannot be stopped (it may not be running)")
+	})
+
 	app.Post("/etls/:id/adjust-worker", func(c *fiber.Ctx) error {
 		id := c.Params("id")
 		m.mu.Lock()
@@ -421,6 +437,16 @@ func (m *Manager) Serve(addr string) error {
 			return c.Status(404).SendString("ETL not found")
 		}
 		return c.JSON(etl.GetMetrics())
+	})
+
+	app.Post("/shutdown", func(c *fiber.Ctx) error {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			if err := app.Shutdown(); err != nil {
+				log.Printf("Error during shutdown: %v", err)
+			}
+		}()
+		return c.SendString("Server is shutting down...")
 	})
 
 	log.Printf("Starting API server on %s", addr)

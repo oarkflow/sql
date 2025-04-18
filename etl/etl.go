@@ -2,9 +2,8 @@ package etl
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"os/signal"
@@ -13,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/expr"
-	"github.com/oarkflow/json"
 	"github.com/oarkflow/transaction"
 
 	"github.com/oarkflow/sql/pkg/adapters"
@@ -45,6 +44,8 @@ type Validations struct {
 	ValidateAfterExtract  func(ctx context.Context, recordCount int) error
 	ValidateBeforeLoad    func(ctx context.Context, batch []utils.Record) error
 	ValidateAfterLoad     func(ctx context.Context, batch []utils.Record) error
+	ValidateSchema        func(rec utils.Record) error
+	ValidateBusinessRules func(rec utils.Record) error
 }
 
 type Plugin interface {
@@ -72,7 +73,6 @@ type Metrics struct {
 }
 
 func (m *Metrics) AddWorkerActivity(activity WorkerActivity) {
-	fmt.Println("Worker Activity")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.WorkerActivities = append(m.WorkerActivities, activity)
@@ -83,6 +83,7 @@ func Shutdown(cancel context.CancelFunc) {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
+		signal.Stop(sigChan)
 		log.Printf("Received signal: %v. Initiating graceful shutdown...", sig)
 		cancel()
 	}()
@@ -106,7 +107,7 @@ type ETL struct {
 	retryDelay      time.Duration
 	rawChanBuffer   int
 	checkpointFunc  func(rec utils.Record) string
-	lastCheckpoint  string
+	lastCheckpoint  *atomic.Value
 	cpMutex         sync.Mutex
 	maxErrorCount   int
 	errorCount      int
@@ -134,6 +135,8 @@ type ETL struct {
 }
 
 func defaultConfig() *ETL {
+	v := new(atomic.Value)
+	v.Store("")
 	return &ETL{
 		workerCount:    4,
 		batchSize:      100,
@@ -148,6 +151,7 @@ func defaultConfig() *ETL {
 		Logger:         log.Default(),
 		CreatedAt:      time.Now(),
 		Status:         "INACTIVE",
+		lastCheckpoint: v,
 	}
 }
 
@@ -244,7 +248,7 @@ type Summary struct {
 	StartedAt string  `json:"started_at"`
 	LastRunAt string  `json:"last_run_at"`
 	Status    string  `json:"status"`
-	ErrorRate float64 `json:"error_rate"` // New field: percentage of errors over extracted records.
+	ErrorRate float64 `json:"error_rate"`
 }
 
 func (e *ETL) GetSummary() Summary {
@@ -309,6 +313,9 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 }
 
 func (e *ETL) Run(ctx context.Context) error {
+	if e.Status == "RUNNING" {
+		return fmt.Errorf("ETL job %s is already running", e.ID)
+	}
 	e.LastRunAt = time.Now()
 	e.Status = "RUNNING"
 	if e.streamingMode {
@@ -330,7 +337,6 @@ func (e *ETL) Run(ctx context.Context) error {
 		e.pipelineConfig = e.buildDefaultPipeline()
 	}
 	err := e.runPipeline(ctx, e.pipelineConfig)
-	// Check for errors returned by the pipeline.
 	if err != nil {
 		e.Status = "FAILED"
 		if e.Logger != nil {
@@ -340,7 +346,6 @@ func (e *ETL) Run(ctx context.Context) error {
 		}
 		return err
 	}
-	// Enhancement: Mark as FAILED if error threshold exceeded.
 	if atomic.LoadInt64(&e.metrics.Errors) >= int64(e.maxErrorCount) {
 		e.Status = "FAILED"
 		err = fmt.Errorf("maximum error threshold exceeded (%d errors)", e.metrics.Errors)
@@ -359,7 +364,6 @@ func (e *ETL) Run(ctx context.Context) error {
 		log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
 		log.Printf("[ETL] Summary: %+v", e.GetSummary())
 	}
-	// Enhancement: Publish summary metrics after successful run.
 	if e.eventBus != nil {
 		summary := e.GetSummary()
 		e.eventBus.Publish("Summary", summary)
@@ -380,6 +384,11 @@ func (e *ETL) EventBus() *EventBus {
 }
 
 func (e *ETL) buildDefaultPipeline() *PipelineConfig {
+	cache, _ := ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1e5 * 10, // ten times expected entries
+		MaxCost:     1e5,      // ~100k entries max
+		BufferItems: 64,
+	})
 	nodes := map[string]contracts.Node{
 		"source": &SourceNode{
 			sources:       e.sources,
@@ -395,6 +404,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			workerCount: e.workerCount,
 			metrics:     e.metrics,
 			NodeName:    "normalize",
+			ctx:         context.Background(),
 		},
 		"map": &MapNode{
 			mappers:     e.mappers,
@@ -403,34 +413,40 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			eventBus:    e.eventBus,
 			metrics:     e.metrics,
 			NodeName:    "map",
+			ctx:         context.Background(),
 		},
 		"transform": &TransformNode{
-			transformers: e.transformers,
-			workerCount:  e.workerCount,
-			hooks:        e.hooks,
-			eventBus:     e.eventBus,
-			metrics:      e.metrics,
-			NodeName:     "transform",
+			transformers:    e.transformers,
+			workerCount:     e.workerCount,
+			hooks:           e.hooks,
+			eventBus:        e.eventBus,
+			metrics:         e.metrics,
+			NodeName:        "transform",
+			deadLetterQueue: make(chan utils.Record, e.workerCount*2),
+			ctx:             context.Background(),
 		},
 		"load": &LoaderNode{
-			loaders:         e.loaders,
-			workerCount:     e.loaderWorkers,
-			batchSize:       e.batchSize,
-			retryCount:      e.retryCount,
-			retryDelay:      e.retryDelay,
-			circuitBreaker:  e.circuitBreaker,
-			checkpointStore: e.checkpointStore,
-			checkpointFunc:  e.checkpointFunc,
-			cpMutex:         &e.cpMutex,
-			lastCheckpoint:  e.lastCheckpoint,
-			hooks:           e.hooks,
-			validations:     e.validations,
-			eventBus:        e.eventBus,
-			dedupEnabled:    e.dedupEnabled,
-			dedupField:      e.dedupField,
-			dedupCache:      make(map[string]struct{}),
-			metrics:         e.metrics,
-			NodeName:        "load",
+			loaders:            e.loaders,
+			workerCount:        e.loaderWorkers,
+			batchSize:          e.batchSize,
+			retryCount:         e.retryCount,
+			retryDelay:         e.retryDelay,
+			circuitBreaker:     e.circuitBreaker,
+			checkpointStore:    e.checkpointStore,
+			checkpointFunc:     e.checkpointFunc,
+			cpMutex:            &e.cpMutex,
+			lastCheckpoint:     e.lastCheckpoint,
+			hooks:              e.hooks,
+			validations:        e.validations,
+			eventBus:           e.eventBus,
+			dedupEnabled:       e.dedupEnabled,
+			dedupField:         e.dedupField,
+			dedupCache:         cache,
+			metrics:            e.metrics,
+			NodeName:           "load",
+			checkpointInterval: 5 * time.Second,
+			lastCheckpointTime: time.Now(),
+			deadLetterQueueCap: 1000,
 		},
 	}
 	edges := []dagEdge{
@@ -636,9 +652,12 @@ type NormalizeNode struct {
 	workerProgress     map[int]int64
 	metrics            *Metrics
 	NodeName           string
+	activeWorkers      int32
+	ctx                context.Context
 }
 
 func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+	nn.ctx = ctx
 	nn.inChan = in
 	nn.outChan = make(chan utils.Record, nn.workerCount*2)
 	nn.workerProgress = make(map[int]int64)
@@ -707,14 +726,11 @@ func (nn *NormalizeNode) normalizeWorker(ctx context.Context, index int) {
 }
 
 func (nn *NormalizeNode) AdjustWorker(newCount int) {
-	nn.mu.Lock()
-	oldCount := int(atomic.LoadInt32(&nn.desiredWorkerCount))
-	atomic.StoreInt32(&nn.desiredWorkerCount, int32(newCount))
-	nn.mu.Unlock()
-	if newCount > oldCount {
-		for i := oldCount; i < newCount; i++ {
+	oldCount := atomic.SwapInt32(&nn.desiredWorkerCount, int32(newCount))
+	if newCount > int(oldCount) {
+		for i := int(oldCount); i < newCount; i++ {
 			nn.wg.Add(1)
-			go nn.normalizeWorker(context.Background(), i)
+			go nn.normalizeWorker(nn.ctx, i)
 			activity := WorkerActivity{
 				Node:      nn.NodeName,
 				WorkerID:  i,
@@ -727,7 +743,7 @@ func (nn *NormalizeNode) AdjustWorker(newCount int) {
 		}
 		log.Printf("[NormalizeNode] Increased worker count from %d to %d", oldCount, newCount)
 	} else {
-		log.Printf("[NormalizeNode] Decreased worker count from %d to %d; extra workers will exit and their progress stored", oldCount, newCount)
+		log.Printf("[NormalizeNode] Decreased worker count from %d to %d; extra workers will exit", oldCount, newCount)
 	}
 }
 
@@ -744,9 +760,11 @@ type MapNode struct {
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
 	NodeName           string
+	ctx                context.Context
 }
 
 func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+	mn.ctx = ctx
 	mn.inChan = in
 	mn.outChan = make(chan utils.Record, mn.workerCount*2)
 	mn.workerProgress = make(map[int]int64)
@@ -836,7 +854,7 @@ func (mn *MapNode) AdjustWorker(newCount int) {
 	if newCount > oldCount {
 		for i := oldCount; i < newCount; i++ {
 			mn.wg.Add(1)
-			go mn.mapWorker(context.Background(), i)
+			go mn.mapWorker(mn.ctx, i)
 			activity := WorkerActivity{
 				Node:      mn.NodeName,
 				WorkerID:  i,
@@ -866,9 +884,12 @@ type TransformNode struct {
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
 	NodeName           string
+	deadLetterQueue    chan utils.Record
+	ctx                context.Context
 }
 
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+	tn.ctx = ctx
 	tn.inChan = in
 	tn.outChan = make(chan utils.Record, tn.workerCount*2)
 	tn.workerProgress = make(map[int]int64)
@@ -940,6 +961,7 @@ func (tn *TransformNode) transformWorker(ctx context.Context, index int) {
 				log.Printf("[TransformNode Worker %d] Error: %v", index, err)
 				localFailed++
 				atomic.AddInt64(&tn.metrics.Errors, 1)
+				tn.deadLetterQueue <- rec
 				continue
 			}
 			for _, r := range transformed {
@@ -974,7 +996,7 @@ func (tn *TransformNode) AdjustWorker(newCount int) {
 	if newCount > oldCount {
 		for i := oldCount; i < newCount; i++ {
 			tn.wg.Add(1)
-			go tn.transformWorker(context.Background(), i)
+			go tn.transformWorker(tn.ctx, i)
 			activity := WorkerActivity{
 				Node:      tn.NodeName,
 				WorkerID:  i,
@@ -1002,14 +1024,14 @@ type LoaderNode struct {
 	checkpointStore    contracts.CheckpointStore
 	checkpointFunc     func(rec utils.Record) string
 	cpMutex            *sync.Mutex
-	lastCheckpoint     string
+	lastCheckpoint     *atomic.Value
 	hooks              *LifecycleHooks
 	validations        *Validations
 	eventBus           *EventBus
 	dedupEnabled       bool
 	dedupField         string
-	dedupCache         map[string]struct{}
-	dedupLock          sync.Mutex
+	dedupCache         *ristretto.Cache
+	deadLetterLock     sync.Mutex
 	deadLetterQueue    []utils.Record
 	metrics            *Metrics
 	inChan             <-chan utils.Record
@@ -1018,6 +1040,9 @@ type LoaderNode struct {
 	mu                 sync.Mutex
 	workerProgress     map[int]int64
 	NodeName           string
+	checkpointInterval time.Duration
+	lastCheckpointTime time.Time
+	deadLetterQueueCap int
 }
 
 func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
@@ -1038,6 +1063,20 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 	return done, nil
 }
 
+func (ln *LoaderNode) fingerprint(rec utils.Record) string {
+	if ln.dedupField != "" {
+		if v, ok := rec[ln.dedupField]; ok {
+			return fmt.Sprint(v)
+		}
+	}
+	// FNV is faster than full SHA
+	hasher := fnv.New64a()
+	for k, v := range rec {
+		fmt.Fprintf(hasher, "%s=%v;", k, v)
+	}
+	return fmt.Sprint(hasher.Sum64())
+}
+
 func (ln *LoaderNode) batchRecords(ctx context.Context) {
 	batch := make([]utils.Record, 0, ln.batchSize)
 	for rec := range ln.inChan {
@@ -1056,6 +1095,10 @@ func (ln *LoaderNode) batchRecords(ctx context.Context) {
 		ln.batchChan <- batch
 	}
 	close(ln.batchChan)
+}
+
+func (ln *LoaderNode) saveCheckpoint(cp string) {
+	ln.lastCheckpoint.Store(cp)
 }
 
 func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
@@ -1091,25 +1134,13 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 			if ln.dedupEnabled {
 				uniqueBatch := make([]utils.Record, 0, len(batch))
 				for _, rec := range batch {
-					var key string
-					if ln.dedupField != "" {
-						if val, ok := rec[ln.dedupField]; ok {
-							key = fmt.Sprintf("%v", val)
-						} else {
-							data, _ := json.Marshal(rec)
-							key = string(data)
-						}
-					} else {
-						data, _ := json.Marshal(rec)
-						hash := sha256.Sum256(data)
-						key = hex.EncodeToString(hash[:])
-					}
-					ln.dedupLock.Lock()
-					if _, exists := ln.dedupCache[key]; !exists {
-						ln.dedupCache[key] = struct{}{}
+					key := ln.fingerprint(rec)
+					_, exists := ln.dedupCache.Get(key)
+					if !exists {
+						ln.dedupCache.Set(key, true, 1)
 						uniqueBatch = append(uniqueBatch, rec)
+						continue
 					}
-					ln.dedupLock.Unlock()
 				}
 				batch = uniqueBatch
 			}
@@ -1161,14 +1192,26 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 						log.Printf("[LoaderNode Worker %d] Batch load error (transaction): %v", index, err)
 						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						ln.deadLetterLock.Lock()
+						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						} else {
+							log.Printf("Dead letter queue capacity reached; dropping failed batch")
+						}
+						ln.deadLetterLock.Unlock()
 						continue
 					}
 					if err := txnLoader.Commit(storeCtx); err != nil {
 						log.Printf("[LoaderNode Worker %d] Commit error: %v", index, err)
 						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						ln.deadLetterLock.Lock()
+						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						} else {
+							log.Printf("Dead letter queue capacity reached; dropping failed batch")
+						}
+						ln.deadLetterLock.Unlock()
 						continue
 					}
 				} else {
@@ -1181,7 +1224,13 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 						log.Printf("[LoaderNode Worker %d] Batch load error: %v", index, err)
 						localFailed++
 						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						ln.deadLetterLock.Lock()
+						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+						} else {
+							log.Printf("Dead letter queue capacity reached; dropping failed batch")
+						}
+						ln.deadLetterLock.Unlock()
 						continue
 					}
 				}
@@ -1189,14 +1238,19 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 				atomic.AddInt64(&ln.metrics.Loaded, int64(len(batch)))
 				if ln.checkpointStore != nil && ln.checkpointFunc != nil {
 					cp := ln.checkpointFunc(batch[len(batch)-1])
+					now := time.Now()
 					ln.cpMutex.Lock()
-					if cp > ln.lastCheckpoint {
-						if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
-							log.Printf("[LoaderNode Worker %d] Checkpoint error: %v", index, err)
-							localFailed++
-							atomic.AddInt64(&ln.metrics.Errors, 1)
-						} else {
-							ln.lastCheckpoint = cp
+					if now.Sub(ln.lastCheckpointTime) >= ln.checkpointInterval {
+						currentCp, _ := ln.lastCheckpoint.Load().(string)
+						if cp > currentCp {
+							if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
+								log.Printf("[LoaderNode Worker %d] Checkpoint error: %v", index, err)
+								localFailed++
+								atomic.AddInt64(&ln.metrics.Errors, 1)
+							} else {
+								ln.lastCheckpoint.Store(cp)
+								ln.lastCheckpointTime = now
+							}
 						}
 					}
 					ln.cpMutex.Unlock()

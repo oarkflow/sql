@@ -10,12 +10,12 @@ import (
 	"github.com/oarkflow/sql/pkg/config"
 )
 
-func main() {
+func mai1n() {
 	manager := etl.NewManager()
 	manager.Serve(":8081")
 }
 
-func ma1in() {
+func main() {
 	paths := []string{
 		"assets/prod.yaml",
 		// "assets/multiple-source.yaml",
