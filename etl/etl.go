@@ -368,6 +368,7 @@ func (e *ETL) Run(ctx context.Context) error {
 		summary := e.GetSummary()
 		e.eventBus.Publish("Summary", summary)
 	}
+	e.Status = "COMPLETED"
 	return nil
 }
 

@@ -436,7 +436,7 @@ func (m *Manager) Serve(addr string) error {
 		if !ok {
 			return c.Status(404).SendString("ETL not found")
 		}
-		return c.JSON(etl.GetMetrics())
+		return c.JSON(etl.GetSummary())
 	})
 
 	app.Post("/shutdown", func(c *fiber.Ctx) error {
