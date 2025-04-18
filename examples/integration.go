@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"time"
 
 	"github.com/oarkflow/log"
 	"github.com/oarkflow/mail"
@@ -21,10 +22,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	service := "production-email"
-	resp, err := manager.Execute(ctx, service, mail.Mail{
-		To:   []string{"info@example.com"},
-		Body: "This is a test message",
+	service := "sms-service"
+	resp, err := manager.Execute(ctx, service, integrations.SMSPayload{
+		To:      "9779856034616",
+		From:    "9832497",
+		Message: "This is a test message",
 	})
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
@@ -41,6 +43,7 @@ func main() {
 	default:
 		fmt.Println(resp)
 	}
+	time.Sleep(20 * time.Second)
 	// testServices(ctx, manager)
 }
 

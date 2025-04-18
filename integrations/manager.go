@@ -575,6 +575,23 @@ type HTTPResponse struct {
 }
 
 // Execute dispatches an operation based on service type.
+// Generic converter: safely converts any -> T using type assertion or JSON
+func convertPayload[T any](payload any) (T, error) {
+	var zero T
+	if v, ok := payload.(T); ok {
+		return v, nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return zero, fmt.Errorf("marshal payload to JSON: %w", err)
+	}
+	if err := json.Unmarshal(b, &zero); err != nil {
+		return zero, fmt.Errorf("unmarshal JSON into %T: %w", zero, err)
+	}
+	return zero, nil
+}
+
+// Execute dispatches service execution by service type.
 func (is *Manager) Execute(ctx context.Context, serviceName string, payload any) (any, error) {
 	service, err := is.GetService(serviceName)
 	if err != nil {
@@ -594,15 +611,19 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 	var execErr error
 	switch service.Type {
 	case ServiceTypeAPI:
-		maxRetries := 3
-		apiCfg, ok := service.Config.(APIConfig)
-		if ok && apiCfg.RetryCount > 0 {
-			maxRetries = apiCfg.RetryCount
+		apiCfg, err := convertPayload[APIConfig](service.Config)
+		if err != nil {
+			execErr = fmt.Errorf("invalid API config: %w", err)
+			break
 		}
 		apiCfg.URL = strings.TrimSpace(apiCfg.URL)
 		if apiCfg.URL == "" {
-			execErr = fmt.Errorf("empty URL for API Request")
+			execErr = fmt.Errorf("empty URL for API request")
 			break
+		}
+		maxRetries := 3
+		if apiCfg.RetryCount > 0 {
+			maxRetries = apiCfg.RetryCount
 		}
 		resp, err := is.ExecuteAPIRequestWithRetry(ctx, serviceName, payload, maxRetries)
 		if err != nil {
@@ -652,34 +673,26 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 		grpcResp, execErr = is.ExecuteGRPCRequest(ctx, serviceName, req)
 		res = grpcResp
 	case ServiceTypeSMTP:
-		emailPayload, ok := payload.(mail.Mail)
-		if !ok {
-			execErr = fmt.Errorf("invalid payload for SMTP service, expected EmailPayload")
+		emailPayload, err := convertPayload[mail.Mail](payload)
+		if err != nil {
+			execErr = fmt.Errorf("invalid SMTP payload: %w", err)
 			break
 		}
 		emailPayload.Body = strings.TrimSpace(emailPayload.Body)
-		if emailPayload.Body == "" {
-			execErr = fmt.Errorf("invalid payload for sending email")
-			break
-		}
-		if len(emailPayload.To) == 0 {
-			execErr = fmt.Errorf("invalid recipient for sending email")
+		if emailPayload.Body == "" || len(emailPayload.To) == 0 {
+			execErr = fmt.Errorf("invalid email body or recipients")
 			break
 		}
 		res, execErr = is.SendEmail(ctx, serviceName, emailPayload)
 	case ServiceTypeSMPP:
-		msg, ok := payload.(SMSPayload)
-		if !ok {
-			execErr = fmt.Errorf("invalid payload for SMPP service, expected to and message")
+		msg, err := convertPayload[SMSPayload](payload)
+		if err != nil {
+			execErr = fmt.Errorf("invalid SMPP payload: %w", err)
 			break
 		}
 		msg.Message = strings.TrimSpace(msg.Message)
-		if msg.Message == "" {
-			execErr = fmt.Errorf("invalid payload for sending SMS")
-			break
-		}
-		if len(msg.To) == 0 {
-			execErr = fmt.Errorf("invalid recipient for sending SMS")
+		if msg.Message == "" || len(msg.To) == 0 {
+			execErr = fmt.Errorf("invalid SMS message or recipient")
 			break
 		}
 		res, execErr = is.SendSMSViaSMPP(ctx, serviceName, msg)
