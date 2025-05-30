@@ -2,19 +2,25 @@ package adapters
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/oarkflow/json"
+	"github.com/streadway/amqp"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -33,6 +39,12 @@ func NewLookupLoader(lkup config.DataConfig) (contracts.LookupLoader, error) {
 		return NewSQLAdapterAsSource(db, "", lkup.Source), nil
 	case "csv", "json":
 		return NewFileAdapter(lkup.File, "source", false), nil
+	case "nosql":
+		return NewNoSQLAdapter(lkup), nil
+	case "rest":
+		return NewRESTAdapter(lkup), nil
+	case "mq":
+		return NewMQAdapter(lkup), nil
 	default:
 		return nil, fmt.Errorf("unsupported lookup type: %s", lkup.Type)
 	}
@@ -651,4 +663,301 @@ func readUntilDoubleEnter(r io.Reader) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// New adapter implementations for additional sources
+
+// ---------- NoSQL Adapter (MongoDB) ----------
+
+type NoSQLAdapter struct {
+	config     config.DataConfig
+	client     *mongo.Client
+	collection *mongo.Collection
+}
+
+func NewNoSQLAdapter(cfg config.DataConfig) contracts.LookupLoader {
+	return &NoSQLAdapter{config: cfg}
+}
+
+func (a *NoSQLAdapter) Setup(ctx context.Context) error {
+	// use config.Source as MongoDB connection URI, and config.File as "database.collection" (e.g., "test.users")
+	clientOpts := options.Client().ApplyURI(a.config.Source)
+	client, err := mongo.Connect(ctx, clientOpts)
+	if err != nil {
+		return err
+	}
+	// Check connection
+	if err = client.Ping(ctx, nil); err != nil {
+		return err
+	}
+	a.client = client
+	// Assume config.File has value "dbname.collection"
+	parts := strings.Split(a.config.File, ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("config.File must be in format 'database.collection'")
+	}
+	dbName, collName := parts[0], parts[1]
+	a.collection = client.Database(dbName).Collection(collName)
+	return nil
+}
+
+func (a *NoSQLAdapter) StoreBatch(ctx context.Context, records []utils.Record) error {
+	var docs []interface{}
+	for _, rec := range records {
+		docs = append(docs, rec)
+	}
+	_, err := a.collection.InsertMany(ctx, docs)
+	return err
+}
+
+func (a *NoSQLAdapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
+	ch, err := a.Extract(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
+	var records []utils.Record
+	for rec := range ch {
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func (a *NoSQLAdapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, 100)
+	go func() {
+		defer close(out)
+		cursor, err := a.collection.Find(ctx, struct{}{})
+		if err != nil {
+			log.Printf("NoSQL query error: %v", err)
+			return
+		}
+		defer cursor.Close(ctx)
+		for cursor.Next(ctx) {
+			var rec utils.Record
+			if err := cursor.Decode(&rec); err != nil {
+				log.Printf("Decode error: %v", err)
+				continue
+			}
+			out <- rec
+		}
+	}()
+	return out, nil
+}
+
+func (a *NoSQLAdapter) Close() error {
+	if a.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return a.client.Disconnect(ctx)
+	}
+	return nil
+}
+
+// ---------- REST Adapter ----------
+
+type RESTAdapter struct {
+	config     config.DataConfig
+	httpClient *http.Client
+}
+
+func NewRESTAdapter(cfg config.DataConfig) contracts.LookupLoader {
+	return &RESTAdapter{
+		config:     cfg,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (a *RESTAdapter) Setup(ctx context.Context) error {
+	// Optionally, test connectivity with a GET request.
+	resp, err := a.httpClient.Get(a.config.Source)
+	if err != nil {
+		return err
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return nil
+}
+
+func (a *RESTAdapter) StoreBatch(ctx context.Context, records []utils.Record) error {
+	// POST the records as a JSON array to the REST endpoint.
+	data, err := json.Marshal(records)
+	if err != nil {
+		return err
+	}
+	resp, err := a.httpClient.Post(a.config.Source, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("REST POST returned status %s", resp.Status)
+	}
+	return nil
+}
+
+func (a *RESTAdapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
+	ch, err := a.Extract(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
+	var records []utils.Record
+	for rec := range ch {
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func (a *RESTAdapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan utils.Record, error) {
+	out := make(chan utils.Record, 100)
+	go func() {
+		defer close(out)
+		resp, err := a.httpClient.Get(a.config.Source)
+		if err != nil {
+			log.Printf("REST GET error: %v", err)
+			return
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Printf("Error reading REST response: %v", err)
+			return
+		}
+		// Expecting a JSON array of objects
+		var recs []utils.Record
+		if err := json.Unmarshal(data, &recs); err != nil {
+			log.Printf("JSON unmarshal error: %v", err)
+			return
+		}
+		for _, rec := range recs {
+			out <- rec
+		}
+	}()
+	return out, nil
+}
+
+func (a *RESTAdapter) Close() error {
+	// nothing to close for HTTP client
+	return nil
+}
+
+// ---------- MQ Adapter (AMQP) ----------
+
+type MQAdapter struct {
+	config    config.DataConfig
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	queueName string
+	consumer  <-chan amqp.Delivery
+}
+
+func NewMQAdapter(cfg config.DataConfig) contracts.LookupLoader {
+	return &MQAdapter{config: cfg}
+}
+
+func (a *MQAdapter) Setup(ctx context.Context) error {
+	// use config.Source as the AMQP connection URI
+	conn, err := amqp.Dial(a.config.Source)
+	if err != nil {
+		return err
+	}
+	a.conn = conn
+	ch, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	a.channel = ch
+	// use config.Table as queue name (if empty, use "default")
+	a.queueName = a.config.Table
+	if a.queueName == "" {
+		a.queueName = "default"
+	}
+	_, err = ch.QueueDeclare(
+		a.queueName,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *MQAdapter) StoreBatch(ctx context.Context, records []utils.Record) error {
+	for _, rec := range records {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		err = a.channel.Publish(
+			"", // default exchange
+			a.queueName,
+			false,
+			false,
+			amqp.Publishing{
+				ContentType: "application/json",
+				Body:        data,
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *MQAdapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
+	ch, err := a.Extract(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
+	var records []utils.Record
+	for rec := range ch {
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func (a *MQAdapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan utils.Record, error) {
+	if a.consumer == nil {
+		consumer, err := a.channel.Consume(
+			a.queueName,
+			"",
+			true,
+			false,
+			false,
+			false,
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		a.consumer = consumer
+	}
+	out := make(chan utils.Record, 100)
+	go func() {
+		defer close(out)
+		for d := range a.consumer {
+			var rec utils.Record
+			if err := json.Unmarshal(d.Body, &rec); err != nil {
+				log.Printf("MQ unmarshal error: %v", err)
+				continue
+			}
+			out <- rec
+		}
+	}()
+	return out, nil
+}
+
+func (a *MQAdapter) Close() error {
+	if a.channel != nil {
+		_ = a.channel.Close()
+	}
+	if a.conn != nil {
+		return a.conn.Close()
+	}
+	return nil
 }

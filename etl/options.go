@@ -237,3 +237,27 @@ func WithMaxErrorThreshold(threshold int) Option {
 		return nil
 	}
 }
+
+// New type to represent source configuration.
+type SourceConfig struct {
+	Type   string  // e.g., "mongodb", "rest", "kafka", etc.
+	DB     *sql.DB // used for SQL sources
+	File   string  // file path or endpoint URL
+	Table  string  // table name for file or DB source
+	Query  string  // query for SQL sources
+	Format string  // data format (e.g. "json", "csv", etc.)
+}
+
+// WithMultipleSources creates and adds multiple sources from a slice of SourceConfig.
+func WithMultipleSources(sourceConfs []SourceConfig) Option {
+	return func(e *ETL) error {
+		for _, conf := range sourceConfs {
+			src, err := NewSource(conf.Type, conf.DB, conf.File, conf.Table, conf.Query, conf.Format)
+			if err != nil {
+				return fmt.Errorf("failed to create source of type %s: %w", conf.Type, err)
+			}
+			e.sources = append(e.sources, src)
+		}
+		return nil
+	}
+}

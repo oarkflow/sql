@@ -15,6 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/expr"
 	"github.com/oarkflow/transaction"
+	"github.com/robfig/cron/v3"
 
 	"github.com/oarkflow/sql/pkg/adapters"
 	"github.com/oarkflow/sql/pkg/config"
@@ -372,6 +373,58 @@ func (e *ETL) Run(ctx context.Context) error {
 	return nil
 }
 
+// GetMetadata returns key ETL metadata in a structured format.
+func (e *ETL) GetMetadata() map[string]any {
+	metadata := make(map[string]any)
+	metadata["ID"] = e.ID
+	metadata["Name"] = e.Name
+	metadata["CreatedAt"] = e.CreatedAt.Format(time.RFC3339)
+	metadata["LastRunAt"] = e.LastRunAt.Format(time.RFC3339)
+	metadata["Status"] = e.Status
+	metrics := e.GetMetrics()
+	metadata["Extracted"] = metrics.Extracted
+	metadata["Mapped"] = metrics.Mapped
+	metadata["Transformed"] = metrics.Transformed
+	metadata["Loaded"] = metrics.Loaded
+	metadata["ErrorRate"] = func() float64 {
+		if metrics.Extracted > 0 {
+			return float64(metrics.Errors) / float64(metrics.Extracted) * 100
+		}
+		return 0
+	}()
+	// You can also include additional metadata (e.g. lookup catalog, adapter details, etc.)
+	return metadata
+}
+
+// ScheduleRun starts a cron scheduler that runs the ETL job per the schedule in the pipeline config.
+// If the schedule field is empty, it immediately runs the job.
+func (e *ETL) ScheduleRun(ctx context.Context) error {
+	if e.pipelineConfig == nil || e.pipelineConfig.Schedule == "" {
+		// No scheduling set; run immediately.
+		return e.Run(ctx)
+	}
+	c := cron.New()
+	_, err := c.AddFunc(e.pipelineConfig.Schedule, func() {
+		log.Printf("[ETL %s] Scheduled run starting...", e.ID)
+		if err := e.Run(context.Background()); err != nil {
+			log.Printf("[ETL %s] Scheduled run error: %v", e.ID, err)
+		} else {
+			log.Printf("[ETL %s] Scheduled run completed successfully", e.ID)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("unable to add scheduled function: %w", err)
+	}
+	c.Start()
+	// Listen for cancellation and stop the scheduler accordingly.
+	go func() {
+		<-ctx.Done()
+		c.Stop()
+		log.Printf("[ETL %s] Scheduler stopped", e.ID)
+	}()
+	return nil
+}
+
 func (e *ETL) StreamingMode() bool {
 	return e.streamingMode
 }
@@ -476,8 +529,9 @@ type dagEdge struct {
 }
 
 type PipelineConfig struct {
-	Nodes map[string]contracts.Node
-	Edges []dagEdge
+	Nodes    map[string]contracts.Node
+	Edges    []dagEdge
+	Schedule string
 }
 
 func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
