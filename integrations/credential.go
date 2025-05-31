@@ -113,7 +113,10 @@ func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool)
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return Credential{}, fmt.Errorf("credential key cannot be empty")
+		if hasCredential {
+			return Credential{}, fmt.Errorf("credential key cannot be empty")
+		}
+		return Credential{}, nil
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -9,7 +9,7 @@ import (
 
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
-	"github.com/oarkflow/xid"
+	"github.com/oarkflow/xid/wuid"
 
 	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/utils"
@@ -80,7 +80,7 @@ func RegisterIntegrationForUser(ctx context.Context, service integrations.Servic
 		service.RequireAuth = true
 		credential := credentials[0]
 		if credential.Key == "" {
-			credential.Key = xid.New().String()
+			credential.Key = wuid.New().String()
 		}
 		if err := mgr.UpdateCredential(credential); err != nil {
 			if err := mgr.AddCredential(credential); err != nil {

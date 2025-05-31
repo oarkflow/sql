@@ -17,7 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/json"
-	"github.com/oarkflow/xid"
+	"github.com/oarkflow/xid/wuid"
 
 	"github.com/oarkflow/sql/pkg/adapters"
 	"github.com/oarkflow/sql/pkg/checkpoints"
@@ -196,7 +196,7 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				tableCfg.ValueField,
 			))
 		}
-		id := xid.New().String()
+		id := wuid.New().String()
 		etlJob := NewETL(id, id, opts...)
 		var lookups []contracts.LookupLoader
 		if len(cfg.Lookups) > 0 {

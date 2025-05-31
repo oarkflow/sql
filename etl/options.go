@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/adapters/fileadapter"
+	"github.com/oarkflow/sql/pkg/adapters/ioadapter"
+	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/transformers"
@@ -35,15 +37,15 @@ func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sou
 		if sourceDB == nil {
 			return nil, fmt.Errorf("source database is nil")
 		}
-		src = adapters.NewSQLAdapterAsSource(sourceDB, sourceTable, sourceQuery)
+		src = sqladapter.NewSource(sourceDB, sourceTable, sourceQuery)
 	} else if sourceType == "csv" || sourceType == "json" {
-		file := sourceTable
-		if file == "" {
-			file = sourceFile
+		fileSrc := sourceTable
+		if fileSrc == "" {
+			fileSrc = sourceFile
 		}
-		src = adapters.NewFileAdapter(file, "source", false)
+		src = fileadapter.New(fileSrc, "source", false)
 	} else if sourceType == "stdin" {
-		return adapters.NewIOAdapterSource(os.Stdin, format), nil
+		return ioadapter.NewSource(os.Stdin, format), nil
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
@@ -75,19 +77,19 @@ func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMap
 			if destDB == nil {
 				return fmt.Errorf("destination database is nil")
 			}
-			destination = adapters.NewSQLAdapterAsLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
+			destination = sqladapter.NewLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
 		} else if dest.Type == "csv" || dest.Type == "json" {
-			file := cfg.NewName
-			if file == "" {
-				file = dest.File
+			fileLoader := cfg.NewName
+			if fileLoader == "" {
+				fileLoader = dest.File
 			}
 			appendMode := true
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
-			destination = adapters.NewFileAdapter(file, "loader", appendMode)
+			destination = fileadapter.New(fileLoader, "loader", appendMode)
 		} else if dest.Type == "stdout" {
-			destination = adapters.NewIOAdapterLoader(os.Stdout, dest.Format)
+			destination = ioadapter.NewLoader(os.Stdout, dest.Format)
 		} else {
 			return fmt.Errorf("unsupported destination type: %s", dest.Type)
 		}
@@ -216,7 +218,7 @@ func WithDashboardAuth(user, pass string) Option {
 	}
 }
 
-// Enhancement: Option to inject a custom logger.
+// WithLogger Option to inject a custom logger.
 func WithLogger(logger *log.Logger) Option {
 	return func(e *ETL) error {
 		if logger == nil {
@@ -227,7 +229,7 @@ func WithLogger(logger *log.Logger) Option {
 	}
 }
 
-// Enhancement: Option to set a maximum error threshold.
+// WithMaxErrorThreshold Option to set a maximum error threshold.
 func WithMaxErrorThreshold(threshold int) Option {
 	return func(e *ETL) error {
 		if threshold <= 0 {
@@ -238,7 +240,7 @@ func WithMaxErrorThreshold(threshold int) Option {
 	}
 }
 
-// New type to represent source configuration.
+// SourceConfig type to represent source configuration.
 type SourceConfig struct {
 	Type   string  // e.g., "mongodb", "rest", "kafka", etc.
 	DB     *sql.DB // used for SQL sources

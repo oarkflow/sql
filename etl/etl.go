@@ -17,7 +17,7 @@ import (
 	"github.com/oarkflow/transaction"
 	"github.com/robfig/cron/v3"
 
-	"github.com/oarkflow/sql/pkg/adapters"
+	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/transactions"
@@ -1231,7 +1231,7 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 						atomic.AddInt64(&ln.metrics.Errors, 1)
 						continue
 					}
-					if sqlLoader, ok := loader.(*adapters.SQLAdapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+					if sqlLoader, ok := loader.(*sqladapter.Adapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
 						if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
 							log.Printf("[LoaderNode Worker %d] Table creation error: %v", index, err)
 							localFailed++
