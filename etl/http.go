@@ -15,9 +15,11 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/basicauth"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/xid/wuid"
+	"gopkg.in/yaml.v3"
 
 	"github.com/oarkflow/sql/pkg/adapters"
 	"github.com/oarkflow/sql/pkg/checkpoints"
@@ -29,9 +31,20 @@ import (
 	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
-// -------------------------
-// Manager Implementation
-// -------------------------
+func DetectConfigFormat(input string) (config.Config, error) {
+	trimmed := strings.TrimSpace(input)
+	var cfg config.Config
+	if json.Unmarshal([]byte(trimmed), &cfg) == nil {
+		return cfg, nil
+	}
+	if yaml.Unmarshal([]byte(trimmed), &cfg) == nil {
+		return cfg, nil
+	}
+	if _, err := bcl.Unmarshal([]byte(trimmed), &cfg); err == nil {
+		return cfg, nil
+	}
+	return config.Config{}, fmt.Errorf("unable to detect config format, please provide valid JSON, YAML, or BCL")
+}
 
 type Manager struct {
 	mu   sync.Mutex
@@ -306,7 +319,7 @@ func (m *Manager) Serve(addr string) error {
 	app.Get("/config", func(c *fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		configHTML := `
-			<h1>Enter ETL Config (JSON)</h1>
+			<h1>Enter ETL Config (JSON, YAML or BCL)</h1>
 			<form action="/config" method="POST">
 				<textarea name="config" rows="20" cols="80"></textarea><br>
 				<input type="submit" value="Submit">
@@ -318,11 +331,11 @@ func (m *Manager) Serve(addr string) error {
 	// POST endpoint to accept JSON config and prepare ETL.
 	app.Post("/config", func(c *fiber.Ctx) error {
 		configJSON := c.FormValue("config")
-		var cfg config.Config
-		if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-			return c.Status(400).SendString(fmt.Sprintf("Invalid config JSON: %v", err))
+		cfg, err := DetectConfigFormat(configJSON)
+		if err != nil {
+			return c.Status(400).SendString(fmt.Sprintf("Invalid config format: %v", err))
 		}
-		_, err := m.Prepare(&cfg)
+		_, err = m.Prepare(&cfg)
 		if err != nil {
 			return c.Status(500).SendString(fmt.Sprintf("Error preparing ETL: %v", err))
 		}

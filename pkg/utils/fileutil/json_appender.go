@@ -355,6 +355,9 @@ func (ja *JSONAppender[T]) Close() error {
 		}
 	}
 	ja.mu.Lock()
-	defer ja.mu.Unlock()
+	defer func() {
+		ja.mu.Unlock()
+		_ = os.Remove(ja.fileLock.Path())
+	}()
 	return ja.file.Close()
 }

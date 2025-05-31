@@ -99,6 +99,7 @@ type ETL struct {
 	loaders         []contracts.Loader
 	lookups         []contracts.LookupLoader
 	checkpointStore contracts.CheckpointStore
+	checkpointFile  string // NEW field to hold the checkpoint file path
 	circuitBreaker  *transactions.CircuitBreaker
 	tableCfg        config.TableMapping
 	workerCount     int
@@ -370,6 +371,9 @@ func (e *ETL) Run(ctx context.Context) error {
 		e.eventBus.Publish("Summary", summary)
 	}
 	e.Status = "COMPLETED"
+	if e.checkpointStore != nil {
+		return e.checkpointStore.Remove()
+	}
 	return nil
 }
 

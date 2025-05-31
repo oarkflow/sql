@@ -54,6 +54,7 @@ type Transformer interface {
 type CheckpointStore interface {
 	SaveCheckpoint(ctx context.Context, checkpoint string) error
 	GetCheckpoint(context.Context) (string, error)
+	Remove() error
 }
 
 type Transactional interface {

@@ -8,6 +8,7 @@ require (
 	github.com/gofiber/fiber/v2 v2.52.8
 	github.com/gofrs/flock v0.12.1
 	github.com/lib/pq v1.10.9
+	github.com/oarkflow/bcl v0.0.8
 	github.com/oarkflow/convert v0.0.5
 	github.com/oarkflow/date v0.0.4
 	github.com/oarkflow/dipper v0.0.6
