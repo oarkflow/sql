@@ -16,6 +16,18 @@ import (
 	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
+// getPlaceholder returns the placeholder for parameter n based on the driver.
+func getPlaceholder(driver string, n int) string {
+	switch driver {
+	case "postgres":
+		return fmt.Sprintf("$%d", n)
+	case "mysql", "sqlite", "sqlite3":
+		return "?"
+	default:
+		return "?"
+	}
+}
+
 type Adapter struct {
 	Db              *sql.DB
 	mode            string
@@ -70,7 +82,16 @@ func (l *Adapter) Setup(ctx context.Context) error {
 		if !exists {
 			return nil
 		}
-		_, err = l.Db.ExecContext(ctx, fmt.Sprintf("TRUNCATE TABLE %s", l.Table))
+		var truncateSQL string
+		switch l.Driver {
+		case "postgres", "mysql":
+			truncateSQL = fmt.Sprintf("TRUNCATE TABLE %s", l.Table)
+		case "sqlite", "sqlite3":
+			truncateSQL = fmt.Sprintf("DELETE FROM %s", l.Table)
+		default:
+			return fmt.Errorf("unsupported driver: %s", l.Driver)
+		}
+		_, err = l.Db.ExecContext(ctx, truncateSQL)
 		if err != nil {
 			return fmt.Errorf("truncate error for table %s: %v", l.Table, err)
 		}
@@ -147,7 +168,7 @@ func (l *Adapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
 	for _, rec := range batch {
 		var valPlaceholders []string
 		for _, k := range keys {
-			valPlaceholders = append(valPlaceholders, fmt.Sprintf("$%d", argCounter))
+			valPlaceholders = append(valPlaceholders, getPlaceholder(l.Driver, argCounter))
 			args = append(args, rec[k])
 			argCounter++
 		}
@@ -195,7 +216,6 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 	out := make(chan utils.Record, 100)
 	go func(query string) {
 		defer close(out)
-
 		rows, err := l.Db.QueryContext(ctx, q)
 		if err != nil {
 			log.Printf("SQL query error: %v", err)
@@ -209,7 +229,6 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 			log.Printf("Error getting columns: %v", err)
 			return
 		}
-		// Get column types for type conversion
 		colTypes, err := rows.ColumnTypes()
 		if err != nil {
 			log.Printf("Error getting column types: %v", err)
@@ -228,7 +247,6 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 			rec := make(utils.Record)
 			for i, colName := range cols {
 				var val any
-				// if the scanned value is a []byte, try converting it based on the column type
 				if b, ok := columns[i].([]byte); ok {
 					if b == nil {
 						val = nil
@@ -264,7 +282,6 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 							val = string(b)
 						}
 					default:
-						// default conversion: treat it as a string
 						val = string(b)
 					}
 				} else {
