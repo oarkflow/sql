@@ -5,7 +5,7 @@ sources:
 destination:
     type: "stdout"
     format: "csv"
-    
+
 lookups:
     -   type: "csv"
         file: "users.csv"
@@ -25,3 +25,39 @@ tables:
             facility_id: "eval.{{lookupIn('facilities', 'facility_name', facility, 'id')}}"
             user_id: "eval.{{lookupIn('users', 'email', user_email, 'id')}}"
             is_active: "is_active"
+        relations:
+          -   old_name: "credentials"
+              migrate: true
+              clone_source: false
+              batch_size: 10000
+              update_sequence: true
+              skip_store_error: true
+              truncate_destination: true
+              mapping:
+                  user_id: "eval.{{root.mapping.user_id}}"
+                  credential: "password"
+                  created_at: "eval.{{now()}}"
+                  updated_at: "eval.{{now()}}"
+                  status: "eval.{{'ACTIVE'}}"
+                  is_active: "eval.{{true}}"
+          -   old_name: "user_settings"
+              migrate: true
+              clone_source: false
+              batch_size: 10000
+              update_sequence: true
+              skip_store_error: true
+              truncate_destination: true
+              key_value_table: true
+              key_field: "key"
+              value_field: "value"
+              extra_fields:
+                  user_id: "eval.{{root.mapping.user_id}}"
+                  created_at: "eval.{{now()}}"
+                  updated_at: "eval.{{now()}}"
+              mapping:
+                  user_id: "eval.{{root.mapping.user_id}}"
+                  key: "password"
+                  created_at: "eval.{{now()}}"
+                  updated_at: "eval.{{now()}}"
+                  status: "eval.{{'ACTIVE'}}"
+                  is_active: "eval.{{true}}"

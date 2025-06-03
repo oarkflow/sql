@@ -70,6 +70,25 @@ func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, so
 	}
 }
 
+// selectDestination returns a destination based on TableMapping.DestinationKey.
+// If DestinationKey is set, it looks for a config with that key (matching DataConfig.Key).
+// Otherwise, if there is only one destination, it returns that; else returns the first.
+func selectDestination(dests []config.DataConfig, tm config.TableMapping) (config.DataConfig, error) {
+	if len(dests) == 0 {
+		return config.DataConfig{}, fmt.Errorf("no destinations provided")
+	}
+	if tm.DestinationKey != "" {
+		for _, d := range dests {
+			if d.Key == tm.DestinationKey {
+				return d, nil
+			}
+		}
+		return config.DataConfig{}, fmt.Errorf("destination with key %s not found", tm.DestinationKey)
+	}
+	// No key provided: if only one, or default to the first.
+	return dests[0], nil
+}
+
 func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contracts.Loader

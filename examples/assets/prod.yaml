@@ -9,14 +9,14 @@ sources:
         database: "clear_dev"
         disablelogger: true
 
-destination:
-    type: "json"
-    file: "charge_master.json"
+destinations:
+    -   type: "json"
+        file: "charge_master.json"
 
 deduplication:
     enabled: true
     field: "id"
-    
+
 streaming_mode: true
 distributed_mode: true
 

@@ -62,16 +62,7 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 	defer m.mu.Unlock()
 
 	var preparedIDs []string
-	var destDB *sql.DB
 	var err error
-	if utils.IsSQLType(cfg.Destination.Type) {
-		destDB, err = config.OpenDB(cfg.Destination)
-		if err != nil {
-			log.Printf("Error connecting to destination DB: %v\n", err)
-			return nil, err
-		}
-		defer func() { _ = destDB.Close() }()
-	}
 	if cfg.Buffer == 0 {
 		cfg.Buffer = 50
 	}
@@ -141,16 +132,30 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 	}
 
 	for _, tableCfg := range cfg.Tables {
-		if utils.IsSQLType(cfg.Destination.Type) && !tableCfg.Migrate {
+		// Skip table if migration not requested.
+		if utils.IsSQLType(cfg.Destinations[0].Type) && !tableCfg.Migrate {
 			continue
 		}
 		if tableCfg.OldName == "" && sourceFile != "" {
 			tableCfg.OldName = sourceFile
 		}
-		if tableCfg.NewName == "" && cfg.Destination.File != "" {
-			tableCfg.NewName = cfg.Destination.File
+		// When NewName is not provided, use destination file from selected destination.
+		// Select destination for this table using helper.
+		destCfg, err := selectDestination(cfg.Destinations, tableCfg)
+		if err != nil {
+			return nil, err
 		}
-		if utils.IsSQLType(cfg.Destination.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+		if tableCfg.NewName == "" {
+			tableCfg.NewName = destCfg.File
+		}
+		// For SQL type destination, auto-create table if required.
+		var destDB *sql.DB
+		if utils.IsSQLType(destCfg.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
+			destDB, err = config.OpenDB(destCfg)
+			if err != nil {
+				log.Printf("Error connecting to destination DB: %v\n", err)
+				return nil, err
+			}
 			if err := sqlutil.CreateKeyValueTable(
 				destDB, tableCfg.NewName,
 				tableCfg.KeyField, tableCfg.ValueField, tableCfg.TruncateDestination, tableCfg.ExtraValues,
@@ -158,10 +163,16 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				log.Printf("Error creating key-value table %s: %v", tableCfg.NewName, err)
 				return nil, err
 			}
+		} else if utils.IsSQLType(destCfg.Type) {
+			destDB, err = config.OpenDB(destCfg)
+			if err != nil {
+				log.Printf("Error connecting to destination DB: %v\n", err)
+				return nil, err
+			}
 		}
 		var opts []Option
 		opts = append(opts, WithSources(sources...))
-		opts = append(opts, WithDestination(cfg.Destination, destDB, tableCfg))
+		opts = append(opts, WithDestination(destCfg, destDB, tableCfg))
 		opts = append(opts, WithCheckpoint(checkpoints.NewFileCheckpointStore(checkpointFile), func(rec utils.Record) string {
 			val, ok := rec[checkpointField]
 			if !ok {
@@ -199,6 +210,9 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				tableCfg.Aggregator.Aggregations,
 			)
 			opts = append(opts, WithTransformers(aggTransformer))
+		}
+		if len(tableCfg.Relations) > 0 {
+			opts = append(opts, WithTransformers(transformers.NewRelationsTransformer(tableCfg.Relations)))
 		}
 		if tableCfg.KeyValueTable {
 			opts = append(opts, WithKeyValueTransformer(

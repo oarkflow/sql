@@ -52,6 +52,8 @@ type TableMapping struct {
 	Delete              bool              `yaml:"delete" json:"delete"`
 	Aggregator          *AggregatorConfig `yaml:"aggregator" json:"aggregator"`
 	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
+	DestinationKey      string            `yaml:"destination_key,omitempty" json:"destination_key,omitempty"`
+	Relations           []TableMapping    `yaml:"relations,omitempty" json:"relations,omitempty"`
 }
 
 type Checkpoint struct {
@@ -67,7 +69,7 @@ type Deduplication struct {
 type Config struct {
 	Source          DataConfig     `yaml:"source" json:"source"`
 	Sources         []DataConfig   `yaml:"sources" json:"sources"`
-	Destination     DataConfig     `yaml:"destination" json:"destination"`
+	Destinations    []DataConfig   `yaml:"destinations" json:"destinations"`
 	Lookups         []DataConfig   `yaml:"lookups" json:"lookups"`
 	Tables          []TableMapping `yaml:"tables" json:"tables"`
 	WorkerCount     int            `json:"worker_count" yaml:"worker_count"`
