@@ -508,27 +508,36 @@ type PipelineConfig struct {
 	Nodes    map[string]contracts.Node
 	Edges    []dagEdge
 	Schedule string
+	nodes    map[string]*dagNode // For internal processing
+	queue    []string            // For internal processing
+}
+
+func (pc *PipelineConfig) prepare() (map[string]*dagNode, []string) {
+	if pc.nodes == nil {
+		pc.nodes = make(map[string]*dagNode)
+		for id, node := range pc.Nodes {
+			pc.nodes[id] = &dagNode{
+				id: id,
+				pn: node,
+			}
+		}
+		for _, edge := range pc.Edges {
+			if n, ok := pc.nodes[edge.Target]; ok {
+				n.indegree++
+			}
+		}
+		pc.queue = make([]string, 0)
+		for id, node := range pc.nodes {
+			if node.indegree == 0 {
+				pc.queue = append(pc.queue, id)
+			}
+		}
+	}
+	return pc.nodes, pc.queue
 }
 
 func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
-	nodes := make(map[string]*dagNode)
-	for id, node := range pc.Nodes {
-		nodes[id] = &dagNode{
-			id: id,
-			pn: node,
-		}
-	}
-	for _, edge := range pc.Edges {
-		if n, ok := nodes[edge.Target]; ok {
-			n.indegree++
-		}
-	}
-	var queue []string
-	for id, node := range nodes {
-		if node.indegree == 0 {
-			queue = append(queue, id)
-		}
-	}
+	nodes, queue := pc.prepare()
 	for len(queue) > 0 {
 		currentID := queue[0]
 		queue = queue[1:]
