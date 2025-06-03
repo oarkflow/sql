@@ -8,7 +8,7 @@ import (
 
 type Event struct {
 	Name    string
-	Payload interface{}
+	Payload any
 }
 
 type EventHandler func(Event)
@@ -30,7 +30,7 @@ func (eb *EventBus) Subscribe(eventName string, handler EventHandler) {
 	eb.handlers[eventName] = append(eb.handlers[eventName], handler)
 }
 
-func (eb *EventBus) Publish(eventName string, payload interface{}) {
+func (eb *EventBus) Publish(eventName string, payload any) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
 	if hs, ok := eb.handlers[eventName]; ok {

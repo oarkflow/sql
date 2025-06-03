@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/json"
 
 	"gopkg.in/yaml.v3"
@@ -98,34 +99,42 @@ func Load(path string) (*Config, error) {
 		return LoadYaml(path)
 	case ".json":
 		return LoadJson(path)
+	case ".bcl":
+		return LoadBCL(path)
 	}
 	return nil, errors.New("unsupported file format")
 }
 
-func LoadYaml(path string) (*Config, error) {
+type UnmarshalFunc func(data []byte, v any) error
+
+func loadConfig(path string, unmarshal UnmarshalFunc) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
+	err = unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &cfg, nil
 }
 
+func LoadYaml(path string) (*Config, error) {
+	return loadConfig(path, yaml.Unmarshal)
+}
+
 func LoadJson(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg Config
-	err = json.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return loadConfig(path, func(data []byte, v any) error {
+		return json.Unmarshal(data, v)
+	})
+}
+
+func LoadBCL(path string) (*Config, error) {
+	return loadConfig(path, func(data []byte, v any) error {
+		_, err := bcl.Unmarshal(data, v)
+		return err
+	})
 }
 
 func OpenDB(cfg DataConfig) (*sql.DB, error) {

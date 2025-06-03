@@ -131,7 +131,7 @@ func WithTransformers(list ...contracts.Transformer) Option {
 	}
 }
 
-func WithKeyValueTransformer(extraValues map[string]interface{}, includeFields, excludeFields []string, keyField, valueField string) Option {
+func WithKeyValueTransformer(extraValues map[string]any, includeFields, excludeFields []string, keyField, valueField string) Option {
 	return func(e *ETL) error {
 		e.transformers = append(e.transformers, transformers.NewKeyValue(keyField, valueField, includeFields, excludeFields, extraValues))
 		return nil
@@ -205,26 +205,6 @@ func WithPlugins(plugins ...Plugin) Option {
 			e.plugins = append(e.plugins, p)
 		}
 
-		return nil
-	}
-}
-
-func WithDistributedMode(enabled bool) Option {
-	return func(e *ETL) error {
-		e.distributedMode = enabled
-		if enabled {
-			log.Println("[ETL] Distributed mode enabled.")
-		}
-		return nil
-	}
-}
-
-func WithStreamingMode(enabled bool) Option {
-	return func(e *ETL) error {
-		e.streamingMode = enabled
-		if enabled {
-			log.Println("[ETL] Streaming mode enabled.")
-		}
 		return nil
 	}
 }
