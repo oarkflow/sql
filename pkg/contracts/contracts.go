@@ -38,6 +38,7 @@ type Source interface {
 type Loader interface {
 	Setup(ctx context.Context) error
 	StoreBatch(ctx context.Context, batch []utils.Record) error
+	StoreSingle(ctx context.Context, rec utils.Record) error
 	Close() error
 }
 

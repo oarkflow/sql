@@ -2,7 +2,6 @@ package etl
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/json"
+	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/xid/wuid"
 	"gopkg.in/yaml.v3"
 
@@ -101,7 +101,7 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		if len(tmp) > 0 {
 			sourcesToMigrate = append(sourcesToMigrate, strings.Join(tmp, ", "))
 		}
-		var sourceDB *sql.DB
+		var sourceDB *squealx.DB
 		if utils.IsSQLType(sourceCfg.Type) {
 			sourceDB, err = config.OpenDB(sourceCfg)
 			if err != nil {
@@ -143,7 +143,7 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 			tableCfg.NewName = destCfg.File
 		}
 		// For SQL type destination, auto-create table if required.
-		var destDB *sql.DB
+		var destDB *squealx.DB
 		if utils.IsSQLType(destCfg.Type) && tableCfg.AutoCreateTable && tableCfg.KeyValueTable {
 			destDB, err = config.OpenDB(destCfg)
 			if err != nil {

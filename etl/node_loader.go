@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	
+
 	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/transaction"
-	
+
 	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -52,7 +52,7 @@ type LoaderNode struct {
 	deadLetterQueueCap int
 }
 
-func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, cfg config.TableMapping) (<-chan utils.Record, error) {
 	done := make(chan utils.Record)
 	ln.inChan = in
 	ln.batchChan = make(chan []utils.Record, ln.workerCount)
@@ -61,7 +61,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, _ con
 	go ln.batchRecords(ctx)
 	for i := 0; i < ln.workerCount; i++ {
 		ln.wg.Add(1)
-		go ln.loaderWorker(ctx, i)
+		go ln.loaderWorker(ctx, i, cfg)
 	}
 	go func() {
 		ln.wg.Wait()
@@ -108,10 +108,11 @@ func (ln *LoaderNode) saveCheckpoint(cp string) {
 	ln.lastCheckpoint.Store(cp)
 }
 
-func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
+func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.TableMapping) {
 	defer ln.wg.Done()
 	var localLoaded int64 = 0
 	var localFailed int64 = 0
+	enableBatch := cfg.EnableBatch
 	for {
 		if index >= int(atomic.LoadInt32(&ln.desiredWorkerCount)) {
 			ln.mu.Lock()
@@ -176,69 +177,88 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int) {
 				storeCtx = context.Background()
 			}
 			for _, loader := range ln.loaders {
-				if txnLoader, ok := loader.(contracts.Transactional); ok {
-					if err := txnLoader.Begin(storeCtx); err != nil {
-						log.Printf("[LoaderNode Worker %d] Begin transaction error: %v", index, err)
-						localFailed++
-						atomic.AddInt64(&ln.metrics.Errors, 1)
-						continue
-					}
-					if sqlLoader, ok := loader.(*sqladapter.Adapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
-						if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
-							log.Printf("[LoaderNode Worker %d] Table creation error: %v", index, err)
+				if enableBatch {
+					if txnLoader, ok := loader.(contracts.Transactional); ok {
+						if err := txnLoader.Begin(storeCtx); err != nil {
+							log.Printf("[LoaderNode Worker %d] Begin transaction error: %v", index, err)
 							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
 							continue
 						}
-						sqlLoader.Created = true
-					}
-					err := transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
-						return loader.StoreBatch(storeCtx, batch)
-					})
-					if err != nil {
-						log.Printf("[LoaderNode Worker %d] Batch load error (transaction): %v", index, err)
-						localFailed++
-						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterLock.Lock()
-						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
-						} else {
-							log.Printf("Dead letter queue capacity reached; dropping failed batch")
+						if sqlLoader, ok := loader.(*sqladapter.Adapter); ok && sqlLoader.AutoCreate && !sqlLoader.Created {
+							if err := sqlutil.CreateTableFromRecord(sqlLoader.Db, sqlLoader.Driver, sqlLoader.Table, sqlLoader.NormalizeSchema); err != nil {
+								log.Printf("[LoaderNode Worker %d] Table creation error: %v", index, err)
+								localFailed++
+								atomic.AddInt64(&ln.metrics.Errors, 1)
+								continue
+							}
+							sqlLoader.Created = true
 						}
-						ln.deadLetterLock.Unlock()
-						continue
-					}
-					if err := txnLoader.Commit(storeCtx); err != nil {
-						log.Printf("[LoaderNode Worker %d] Commit error: %v", index, err)
-						localFailed++
-						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterLock.Lock()
-						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
-						} else {
-							log.Printf("Dead letter queue capacity reached; dropping failed batch")
-						}
-						ln.deadLetterLock.Unlock()
-						continue
-					}
-				} else {
-					err := transaction.RunInTransaction(storeCtx, func(tx *transaction.Transaction) error {
-						return transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+						err := transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
 							return loader.StoreBatch(storeCtx, batch)
 						})
-					})
-					if err != nil {
-						log.Printf("[LoaderNode Worker %d] Batch load error: %v", index, err)
-						localFailed++
-						atomic.AddInt64(&ln.metrics.Errors, 1)
-						ln.deadLetterLock.Lock()
-						if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-							ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
-						} else {
-							log.Printf("Dead letter queue capacity reached; dropping failed batch")
+						if err != nil {
+							log.Printf("[LoaderNode Worker %d] Batch load error (transaction): %v", index, err)
+							localFailed++
+							atomic.AddInt64(&ln.metrics.Errors, 1)
+							ln.deadLetterLock.Lock()
+							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							} else {
+								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+							}
+							ln.deadLetterLock.Unlock()
+							continue
 						}
-						ln.deadLetterLock.Unlock()
-						continue
+						if err := txnLoader.Commit(storeCtx); err != nil {
+							log.Printf("[LoaderNode Worker %d] Commit error: %v", index, err)
+							localFailed++
+							atomic.AddInt64(&ln.metrics.Errors, 1)
+							ln.deadLetterLock.Lock()
+							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							} else {
+								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+							}
+							ln.deadLetterLock.Unlock()
+							continue
+						}
+					} else {
+						err := transaction.RunInTransaction(storeCtx, func(tx *transaction.Transaction) error {
+							return transactions.RetryWithCircuit(ln.retryCount, ln.retryDelay, ln.circuitBreaker, func() error {
+								return loader.StoreBatch(storeCtx, batch)
+							})
+						})
+						if err != nil {
+							log.Printf("[LoaderNode Worker %d] Batch load error: %v", index, err)
+							localFailed++
+							atomic.AddInt64(&ln.metrics.Errors, 1)
+							ln.deadLetterLock.Lock()
+							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							} else {
+								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+							}
+							ln.deadLetterLock.Unlock()
+							continue
+						}
+					}
+				} else {
+					for _, rec := range batch {
+						err := loader.StoreSingle(storeCtx, rec)
+						if err != nil {
+							log.Printf("[LoaderNode Worker %d] Single record load error: %v", index, err)
+							localFailed++
+							atomic.AddInt64(&ln.metrics.Errors, 1)
+							ln.deadLetterLock.Lock()
+							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+								ln.deadLetterQueue = append(ln.deadLetterQueue, rec)
+							} else {
+								log.Printf("Dead letter queue capacity reached; dropping failed record")
+							}
+							ln.deadLetterLock.Unlock()
+							continue
+						}
 					}
 				}
 				localLoaded += int64(len(batch))

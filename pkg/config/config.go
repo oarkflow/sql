@@ -1,7 +1,6 @@
 package config
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/json"
+	"github.com/oarkflow/squealx"
 
 	"gopkg.in/yaml.v3"
 )
@@ -54,6 +54,7 @@ type TableMapping struct {
 	Aggregator          *AggregatorConfig `yaml:"aggregator" json:"aggregator"`
 	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
 	DestinationKey      string            `yaml:"destination_key,omitempty" json:"destination_key,omitempty"`
+	EnableBatch         bool              `yaml:"enable_batch" json:"enable_batch"`
 }
 
 type Checkpoint struct {
@@ -136,7 +137,7 @@ func LoadBCL(path string) (*Config, error) {
 	})
 }
 
-func OpenDB(cfg DataConfig) (*sql.DB, error) {
+func OpenDB(cfg DataConfig) (*squealx.DB, error) {
 	var dsn string
 	if cfg.Driver == "mysql" {
 		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
@@ -146,7 +147,7 @@ func OpenDB(cfg DataConfig) (*sql.DB, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported driver: %s", cfg.Driver)
 	}
-	db, err := sql.Open(cfg.Driver, dsn)
+	db, err := squealx.Open(cfg.Driver, dsn, cfg.Key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

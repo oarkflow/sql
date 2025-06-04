@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
+	convert "github.com/oarkflow/convert/v2"
 	"github.com/oarkflow/dipper"
 	"github.com/oarkflow/expr"
 )
@@ -26,63 +26,24 @@ func NormalizeRecord(rec Record, schema map[string]string) (Record, error) {
 }
 
 func normalizeValue(val any, targetType string) (any, error) {
+	if val == nil {
+		return nil, nil
+	}
 	switch targetType {
 	case "int":
-		switch v := val.(type) {
-		case int:
-			return v, nil
-		case int64:
-			return int(v), nil
-		case float64:
-			return int(v), nil
-		case string:
-			i, err := strconv.Atoi(v)
-			if err != nil {
-				return nil, err
-			}
-			return i, nil
-		case bool:
-			if v {
-				return 1, nil
-			}
-			return 0, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for int conversion: %T", val)
-		}
-	case "bool":
-		switch v := val.(type) {
-		case bool:
-			return v, nil
-		case string:
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				return nil, err
-			}
-			return b, nil
-		case int:
-			return v != 0, nil
-		case float64:
-			return v != 0, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for bool conversion: %T", val)
-		}
+		return convert.ToInt(val)
+	case "bool", "boolean":
+		return convert.ToBool(val)
 	case "float":
-		switch v := val.(type) {
-		case float64:
-			return v, nil
-		case int:
-			return float64(v), nil
-		case string:
-			f, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				return nil, err
-			}
-			return f, nil
-		default:
-			return nil, fmt.Errorf("unsupported type for float conversion: %T", val)
-		}
+		return convert.ToFloat32(val)
+	case "float32":
+		return convert.ToFloat32(val)
+	case "float64":
+		return convert.ToFloat64(val)
 	case "string":
-		return fmt.Sprintf("%v", val), nil
+		return convert.ToString(val)
+	case "datetime", "date", "date-time", "timestamp":
+		return convert.ToTime(val)
 	default:
 		return nil, fmt.Errorf("unknown target type: %s", targetType)
 	}

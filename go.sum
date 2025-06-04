@@ -114,8 +114,8 @@ github.com/oarkflow/render v0.0.1 h1:Caw74Yu8OE/tjCjurhbUkS0Fi9zE/mzVvQa1Cw7m7R4
 github.com/oarkflow/render v0.0.1/go.mod h1:nnRhxhKn9NCPtTfbsaLuyCt86Iv9hMbNPDFQoPucQYI=
 github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611 h1:9Kq03EC+niNyH6y2QW+bBLviR9LcXBVOldMH+rxd/ak=
 github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611/go.mod h1:2oseCxJcTBYdZZ3x9KUymw2TTpPTxrpbzyTTojs2VbQ=
-github.com/oarkflow/squealx v0.0.53 h1:3GuuNdCqrqOrkhfkWIwlxHVsadhz+O29ySMkZwutRz0=
-github.com/oarkflow/squealx v0.0.53/go.mod h1:YCmPIh90NCl9OHQUcuZqpxNsH0q9INkRy93UdBWFhpw=
+github.com/oarkflow/squealx v0.0.54 h1:ek2b/nBbgY3zlHkjO1yfYGYyFdQ13PDK3wG5cgcD4qE=
+github.com/oarkflow/squealx v0.0.54/go.mod h1:YCmPIh90NCl9OHQUcuZqpxNsH0q9INkRy93UdBWFhpw=
 github.com/oarkflow/transaction v0.0.0-20250327101433-368978da8f5a h1:kYJn0CcgCEn/9SbmTzGV6n0x1P7O5CO5BppSPrGHals=
 github.com/oarkflow/transaction v0.0.0-20250327101433-368978da8f5a/go.mod h1:F1DumoCABTbnIsIII9SXr9fJlqYAQU5FD1agv+rXB44=
 github.com/oarkflow/xid v1.2.8 h1:uCIX61Binq2RPMsqImZM6pPGzoZTmRyD6jguxF9aAA0=

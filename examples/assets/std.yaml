@@ -2,9 +2,9 @@ sources:
     -   type: "stdin"
         format: "csv"
 
-destination:
-    type: "stdout"
-    format: "csv"
+destinations:
+    -   type: "stdout"
+        format: "csv"
 
 lookups:
     -   type: "csv"

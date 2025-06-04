@@ -1,7 +1,6 @@
 package etl
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/transformers"
 	utils2 "github.com/oarkflow/sql/pkg/utils"
+	"github.com/oarkflow/squealx"
 )
 
 type Option func(*ETL) error
@@ -31,7 +31,7 @@ func WithPipelineConfig(pc *PipelineConfig) Option {
 	}
 }
 
-func NewSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) (contracts.Source, error) {
+func NewSource(sourceType string, sourceDB *squealx.DB, sourceFile, sourceTable, sourceQuery, format string) (contracts.Source, error) {
 	var src contracts.Source
 	if utils2.IsSQLType(sourceType) {
 		if sourceDB == nil {
@@ -59,7 +59,7 @@ func WithSources(sources ...contracts.Source) Option {
 	}
 }
 
-func WithSource(sourceType string, sourceDB *sql.DB, sourceFile, sourceTable, sourceQuery, format string) Option {
+func WithSource(sourceType string, sourceDB *squealx.DB, sourceFile, sourceTable, sourceQuery, format string) Option {
 	return func(e *ETL) error {
 		src, err := NewSource(sourceType, sourceDB, sourceFile, sourceTable, sourceQuery, format)
 		if err != nil {
@@ -89,7 +89,7 @@ func selectDestination(dests []config.DataConfig, tm config.TableMapping) (confi
 	return dests[0], nil
 }
 
-func WithDestination(dest config.DataConfig, destDB *sql.DB, cfg config.TableMapping) Option {
+func WithDestination(dest config.DataConfig, destDB *squealx.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contracts.Loader
 		if utils2.IsSQLType(dest.Type) {
@@ -241,12 +241,12 @@ func WithMaxErrorThreshold(threshold int) Option {
 
 // SourceConfig type to represent source configuration.
 type SourceConfig struct {
-	Type   string  // e.g., "mongodb", "rest", "kafka", etc.
-	DB     *sql.DB // used for SQL sources
-	File   string  // file path or endpoint URL
-	Table  string  // table name for file or DB source
-	Query  string  // query for SQL sources
-	Format string  // data format (e.g. "json", "csv", etc.)
+	Type   string      // e.g., "mongodb", "rest", "kafka", etc.
+	DB     *squealx.DB // used for SQL sources
+	File   string      // file path or endpoint URL
+	Table  string      // table name for file or DB source
+	Query  string      // query for SQL sources
+	Format string      // data format (e.g. "json", "csv", etc.)
 }
 
 // WithMultipleSources creates and adds multiple sources from a slice of SourceConfig.

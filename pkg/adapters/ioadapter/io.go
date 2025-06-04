@@ -154,9 +154,6 @@ func (ioa *Adapter) Extract(_ context.Context, _ ...contracts.Option) (<-chan ut
 }
 
 func (ioa *Adapter) StoreBatch(_ context.Context, records []utils.Record) error {
-	if ioa.mode != "loader" {
-		return fmt.Errorf("IOAdapter not configured as loader")
-	}
 	switch ioa.format {
 	case "csv":
 		w := csv.NewWriter(ioa.writer)
@@ -205,6 +202,43 @@ func (ioa *Adapter) StoreBatch(_ context.Context, records []utils.Record) error 
 		}
 	}
 	return nil
+}
+
+func (ioa *Adapter) StoreSingle(_ context.Context, rec utils.Record) error {
+	// For single record mode, simply use ioa.writer.
+	switch ioa.format {
+	case "csv":
+		w := csv.NewWriter(ioa.writer)
+		// Write header only if needed (assume already written if not interactive)
+		header := extractCSVHeader(rec)
+		if err := w.Write(header); err != nil {
+			return err
+		}
+		row, err := buildCSVRow(header, rec)
+		if err != nil {
+			return err
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+		w.Flush()
+		return w.Error()
+	case "json":
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		_, err = ioa.writer.Write(data)
+		if err != nil {
+			return err
+		}
+		_, err = ioa.writer.Write([]byte("\n"))
+		return err
+	default:
+		line := fmt.Sprintf("%v", rec)
+		_, err := ioa.writer.Write([]byte(line + "\n"))
+		return err
+	}
 }
 
 func (ioa *Adapter) Close() error {

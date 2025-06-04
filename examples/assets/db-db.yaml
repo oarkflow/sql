@@ -1,0 +1,70 @@
+sources:
+    -   type: "postgres"
+        key: "prod-db"
+        host: "localhost"
+        port: 5432
+        driver: "postgres"
+        username: "postgres"
+        password: "postgres"
+        database: "clear_dev"
+        disablelogger: true
+
+destinations:
+    -   type: "mysql"
+        key: "test-db"
+        host: "localhost"
+        port: 3306
+        driver: "mysql"
+        username: "root"
+        password: "root"
+        database: "testdb"
+        disablelogger: true
+
+deduplication:
+    enabled: true
+    field: "id"
+
+streaming_mode: true
+distributed_mode: true
+
+checkpoint:
+    file: "checkpoint.txt"
+    field: "id"
+
+tables:
+    -   old_name: "charge_master"
+        new_name: "charge_master"
+        migrate: true
+        clone_source: true
+        auto_create_table: true
+        enable_batch: true
+        batch_size: 1000
+        update_sequence: true
+        skip_store_error: true
+        truncate_destination: true
+        normalize_schema:
+            id: "int"
+            work_item_id: "int"
+            cpt_hcpcs_code: "string"
+            client_proc_esc: "string"
+            client_internal_code: "string"
+            charge_amt: "float32"
+            charge_type: "string"
+            physician_category: "string"
+            created_at: "string"
+            updated_at: "string"
+            status: "string"
+            is_active: "bool"
+        mapping:
+            id: "charge_master_id"
+            work_item_id: "work_item_id"
+            cpt_hcpcs_code: "cpt_hcpcs_code"
+            client_proc_esc: "client_proc_esc"
+            client_internal_code: "client_internal_code"
+            charge_amt: "charge_amt"
+            charge_type: "charge_type"
+            physician_category: "physician_category"
+            created_at: "eval.{{now()}}"
+            updated_at: "eval.{{now()}}"
+            status: "eval.{{'ACTIVE'}}"
+            is_active: "eval.{{true}}"

@@ -1,10 +1,11 @@
 package sqlutil
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/oarkflow/squealx"
 )
 
 func BuildUpdateStatement(table string, rec map[string]interface{}) (string, []interface{}) {
@@ -36,7 +37,7 @@ func BuildDeleteStatement(table string, rec map[string]interface{}) (string, []i
 	return q, []interface{}{id}
 }
 
-func UpdateSequence(db *sql.DB, table string) error {
+func UpdateSequence(db *squealx.DB, table string) error {
 	seqName := fmt.Sprintf("%s_seq", table)
 	q := fmt.Sprintf("SELECT setval('%s', (SELECT MAX(id) FROM %s))", seqName, table)
 	if _, err := db.Exec(q); err != nil {
@@ -47,7 +48,10 @@ func UpdateSequence(db *sql.DB, table string) error {
 	return nil
 }
 
-func CreateTableFromRecord(db *sql.DB, driver, table string, schema map[string]string) error {
+func CreateTableFromRecord(db *squealx.DB, driver, table string, schema map[string]string) error {
+	if len(schema) == 0 {
+		return fmt.Errorf("schema cannot be empty for table %s", table)
+	}
 	var columns []string
 	var keys []string
 	for k := range schema {
@@ -62,7 +66,7 @@ func CreateTableFromRecord(db *sql.DB, driver, table string, schema map[string]s
 	return err
 }
 
-func CreateKeyValueTable(db *sql.DB, tableName string, keyField, valueField string, truncate bool, extraValues map[string]any) error {
+func CreateKeyValueTable(db *squealx.DB, tableName string, keyField, valueField string, truncate bool, extraValues map[string]any) error {
 	columns := []string{
 		fmt.Sprintf("%s TEXT", keyField),
 	}
@@ -98,6 +102,7 @@ var (
 		"uint16":      "SMALLINT UNSIGNED",
 		"uint32":      "INT UNSIGNED",
 		"uint64":      "BIGINT UNSIGNED",
+		"float":       "FLOAT",
 		"float32":     "FLOAT",
 		"float64":     "DOUBLE",
 		"string":      "VARCHAR(255)",
@@ -121,6 +126,7 @@ var (
 		"uint16":      "INTEGER",
 		"uint32":      "BIGINT",
 		"uint64":      "BIGINT",
+		"float":       "REAL",
 		"float32":     "REAL",
 		"float64":     "DOUBLE PRECISION",
 		"string":      "VARCHAR(255)",
@@ -144,6 +150,7 @@ var (
 		"uint16":      "INTEGER",
 		"uint32":      "INTEGER",
 		"uint64":      "INTEGER",
+		"float":       "REAL",
 		"float32":     "REAL",
 		"float64":     "REAL",
 		"string":      "TEXT",

@@ -2,13 +2,13 @@ package sqladapter
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/oarkflow/log"
+	"github.com/oarkflow/squealx"
 
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -16,20 +16,8 @@ import (
 	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
-// getPlaceholder returns the placeholder for parameter n based on the driver.
-func getPlaceholder(driver string, n int) string {
-	switch driver {
-	case "postgres":
-		return fmt.Sprintf("$%d", n)
-	case "mysql", "sqlite", "sqlite3":
-		return "?"
-	default:
-		return "?"
-	}
-}
-
 type Adapter struct {
-	Db              *sql.DB
+	Db              *squealx.DB
 	mode            string
 	Table           string
 	truncate        bool
@@ -44,7 +32,8 @@ type Adapter struct {
 	NormalizeSchema map[string]string
 }
 
-func NewLoader(db *sql.DB, destType, driver string, cfg config.TableMapping, normalizeSchema map[string]string) *Adapter {
+// NewLoader creates a new adapter loader using squealx.
+func NewLoader(db *squealx.DB, destType, driver string, cfg config.TableMapping, normalizeSchema map[string]string) *Adapter {
 	autoCreate := false
 	if !cfg.KeyValueTable && cfg.AutoCreateTable {
 		autoCreate = true
@@ -66,7 +55,8 @@ func NewLoader(db *sql.DB, destType, driver string, cfg config.TableMapping, nor
 	}
 }
 
-func NewSource(db *sql.DB, table, query string) *Adapter {
+// NewSource creates a new source adapter using squealx.
+func NewSource(db *squealx.DB, table, query string) *Adapter {
 	return &Adapter{Db: db, Table: table, query: query}
 }
 
@@ -99,7 +89,7 @@ func (l *Adapter) Setup(ctx context.Context) error {
 	return nil
 }
 
-func tableExists(db *sql.DB, tableName, dbType string) (bool, error) {
+func tableExists(db *squealx.DB, tableName, dbType string) (bool, error) {
 	var count int
 	var query string
 	switch dbType {
@@ -163,24 +153,43 @@ func (l *Adapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
 	}
 	sort.Strings(keys)
 	var placeholders []string
-	var args []any
-	argCounter := 1
-	for _, rec := range batch {
-		var valPlaceholders []string
-		for _, k := range keys {
-			valPlaceholders = append(valPlaceholders, getPlaceholder(l.Driver, argCounter))
-			args = append(args, rec[k])
-			argCounter++
-		}
-		placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(valPlaceholders, ", ")))
+	var valPlaceholders []string
+	for _, k := range keys {
+		valPlaceholders = append(valPlaceholders, fmt.Sprintf(":%s", k))
 	}
-	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
+	placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(valPlaceholders, ", ")))
+	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", l.Table, strings.Join(keys, ", "), strings.Join(placeholders, ", "))
+	_, err := l.Db.NamedExec(q, batch)
+	return err
+}
+
+// Refactored StoreSingle using ExecWithReturning
+func (l *Adapter) StoreSingle(ctx context.Context, rec utils.Record) error {
+
+	if l.AutoCreate && !l.Created {
+		if err := sqlutil.CreateTableFromRecord(l.Db, l.Driver, l.Table, l.NormalizeSchema); err != nil {
+			return err
+		}
+		l.Created = true
+	}
+	var keys []string
+	for k := range rec {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var placeholders []string
+	argCounter := 1
+	for _, k := range keys {
+		placeholders = append(placeholders, fmt.Sprintf(":%s", k))
+		argCounter++
+	}
+	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		l.Table,
 		strings.Join(keys, ", "),
 		strings.Join(placeholders, ", "),
 	)
-	_, err := l.Db.ExecContext(ctx, q, args...)
-	return err
+	// Use ExecWithReturning with pointer to args as required.
+	return l.Db.ExecWithReturn(q, &rec)
 }
 
 func (l *Adapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
@@ -221,9 +230,7 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 			log.Printf("SQL query error: %v", err)
 			return
 		}
-		defer func() {
-			_ = rows.Close()
-		}()
+		defer rows.Close()
 		cols, err := rows.Columns()
 		if err != nil {
 			log.Printf("Error getting columns: %v", err)
@@ -250,39 +257,39 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 				if b, ok := columns[i].([]byte); ok {
 					if b == nil {
 						val = nil
-						continue
-					}
-					dbType := colTypes[i].DatabaseTypeName()
-					_, scale, _ := colTypes[i].DecimalSize()
-					switch dbType {
-					case "INT", "INTEGER", "BIGINT", "TINYINT", "SMALLINT", "MEDIUMINT":
-						if num, err := strconv.ParseInt(string(b), 10, 64); err == nil {
-							val = num
-						} else {
-							val = string(b)
-						}
-					case "NUMERIC":
-						if scale > 0 {
+					} else {
+						dbType := colTypes[i].DatabaseTypeName()
+						_, scale, _ := colTypes[i].DecimalSize()
+						switch dbType {
+						case "INT", "INTEGER", "BIGINT", "TINYINT", "SMALLINT", "MEDIUMINT":
 							if num, err := strconv.ParseInt(string(b), 10, 64); err == nil {
 								val = num
 							} else {
 								val = string(b)
 							}
-						} else {
+						case "NUMERIC":
+							if scale > 0 {
+								if num, err := strconv.ParseInt(string(b), 10, 64); err == nil {
+									val = num
+								} else {
+									val = string(b)
+								}
+							} else {
+								if num, err := strconv.ParseFloat(string(b), 64); err == nil {
+									val = num
+								} else {
+									val = string(b)
+								}
+							}
+						case "FLOAT", "DOUBLE", "DECIMAL":
 							if num, err := strconv.ParseFloat(string(b), 64); err == nil {
 								val = num
 							} else {
 								val = string(b)
 							}
-						}
-					case "FLOAT", "DOUBLE", "DECIMAL":
-						if num, err := strconv.ParseFloat(string(b), 64); err == nil {
-							val = num
-						} else {
+						default:
 							val = string(b)
 						}
-					default:
-						val = string(b)
 					}
 				} else {
 					val = columns[i]

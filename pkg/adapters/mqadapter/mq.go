@@ -78,6 +78,10 @@ func (a *Adapter) StoreBatch(ctx context.Context, records []utils.Record) error 
 	return nil
 }
 
+func (a *Adapter) StoreSingle(ctx context.Context, rec utils.Record) error {
+	return a.StoreBatch(ctx, []utils.Record{rec})
+}
+
 func (a *Adapter) LoadData(opts ...contracts.Option) ([]utils.Record, error) {
 	ch, err := a.Extract(context.Background(), opts...)
 	if err != nil {

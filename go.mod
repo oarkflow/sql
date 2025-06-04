@@ -18,7 +18,7 @@ require (
 	github.com/oarkflow/log v1.0.83
 	github.com/oarkflow/mail v0.0.0-20250417110231-93db61906e50
 	github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611
-	github.com/oarkflow/squealx v0.0.53
+	github.com/oarkflow/squealx v0.0.54
 	github.com/oarkflow/xid v1.2.8
 	github.com/rabbitmq/amqp091-go v1.10.0
 	go.mongodb.org/mongo-driver v1.17.3

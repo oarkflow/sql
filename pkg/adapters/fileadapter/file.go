@@ -63,6 +63,11 @@ func (fl *Adapter) StoreBatch(_ context.Context, records []utils.Record) error {
 	return nil
 }
 
+func (fl *Adapter) StoreSingle(_ context.Context, rec utils.Record) error {
+	// Use the underlying appender’s single Append method.
+	return fl.appender.Append(rec)
+}
+
 func (fl *Adapter) Close() error {
 	if fl.appender != nil {
 		err := fl.appender.Close()
