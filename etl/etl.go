@@ -124,10 +124,9 @@ type ETL struct {
 	dedupEnabled    bool
 	dedupField      string
 	Logger          *log.Logger
-
-	CreatedAt time.Time
-	LastRunAt time.Time
-	Status    string
+	CreatedAt       time.Time
+	LastRunAt       time.Time
+	Status          string
 }
 
 func defaultConfig() *ETL {
@@ -185,7 +184,6 @@ func (e *ETL) AdjustWorker(newWorkerCount int) {
 		e.loaderWorkers = 1
 	}
 	log.Printf("[ETL %s] Adjusted worker count to %d and loader workers to %d", e.ID, e.workerCount, e.loaderWorkers)
-
 	e.metrics.AddWorkerActivity(WorkerActivity{
 		Node:      "ETL",
 		WorkerID:  -1,
@@ -509,10 +507,9 @@ type PipelineConfig struct {
 	Edges    []dagEdge
 	Schedule string
 	nodes    map[string]*dagNode // For internal processing
-	queue    []string            // For internal processing
 }
 
-func (pc *PipelineConfig) prepare() (map[string]*dagNode, []string) {
+func (pc *PipelineConfig) prepare() map[string]*dagNode {
 	if pc.nodes == nil {
 		pc.nodes = make(map[string]*dagNode)
 		for id, node := range pc.Nodes {
@@ -526,31 +523,31 @@ func (pc *PipelineConfig) prepare() (map[string]*dagNode, []string) {
 				n.indegree++
 			}
 		}
-		pc.queue = make([]string, 0)
-		for id, node := range pc.nodes {
-			if node.indegree == 0 {
-				pc.queue = append(pc.queue, id)
-			}
-		}
 	}
-	return pc.nodes, pc.queue
+	return pc.nodes
 }
 
 func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
-	nodes, queue := pc.prepare()
+	nodes := pc.prepare()
+	queue := make([]string, 0)
+	for id, node := range pc.nodes {
+		if node.indegree == 0 {
+			queue = append(queue, id)
+		}
+	}
 	for len(queue) > 0 {
 		currentID := queue[0]
 		queue = queue[1:]
 		currentNode := nodes[currentID]
-		var input <-chan utils.Record
+		var inputCh <-chan utils.Record
 		if len(currentNode.inChs) == 0 {
-			input = nil
+			inputCh = nil
 		} else if len(currentNode.inChs) == 1 {
-			input = currentNode.inChs[0]
+			inputCh = currentNode.inChs[0]
 		} else {
-			input = mergeChannels(currentNode.inChs)
+			inputCh = mergeChannels(currentNode.inChs)
 		}
-		outCh, err := currentNode.pn.Process(ctx, input, e.tableCfg)
+		outCh, err := currentNode.pn.Process(ctx, inputCh, e.tableCfg)
 		if err != nil {
 			return fmt.Errorf("error running node %s: %v", currentID, err)
 		}

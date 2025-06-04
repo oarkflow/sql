@@ -54,7 +54,6 @@ type TableMapping struct {
 	Aggregator          *AggregatorConfig `yaml:"aggregator" json:"aggregator"`
 	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
 	DestinationKey      string            `yaml:"destination_key,omitempty" json:"destination_key,omitempty"`
-	Relations           []TableMapping    `yaml:"relations,omitempty" json:"relations,omitempty"`
 }
 
 type Checkpoint struct {

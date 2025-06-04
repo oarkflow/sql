@@ -90,8 +90,8 @@ github.com/montanaflynn/stats v0.7.1 h1:etflOAAHORrCC44V+aR6Ftzort912ZU+YLiSTuV8
 github.com/montanaflynn/stats v0.7.1/go.mod h1:etXPPgVO6n31NxCd9KQUMvCM+ve0ruNzt6R8Bnaayow=
 github.com/ncruces/go-strftime v0.1.9 h1:bY0MQC28UADQmHmaF5dgpLmImcShSi2kHU9XLdhx/f4=
 github.com/ncruces/go-strftime v0.1.9/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/oarkflow/bcl v0.0.8 h1:s/wZBl+Vyg4tlKDAOVEgwk6sqPvPBnw1xTGl7CDDb1k=
-github.com/oarkflow/bcl v0.0.8/go.mod h1:R9EOfBT8A2fjIHeFEE+uTYhMJAQCrHLI1xLCZq4jpcA=
+github.com/oarkflow/bcl v0.0.9 h1:oyt2HfMpGfH7byNSgyIfF+zQ5JcLBLWydBAleac192U=
+github.com/oarkflow/bcl v0.0.9/go.mod h1:R9EOfBT8A2fjIHeFEE+uTYhMJAQCrHLI1xLCZq4jpcA=
 github.com/oarkflow/convert v0.0.5 h1:5s5DlnZLSUweB+EDUjynj0Eput7AkGUEQUvs/j4CWmM=
 github.com/oarkflow/convert v0.0.5/go.mod h1:/N8EEJiKUCtYS//+UfS3IX3ej7K1wIPgW/1nBhbeEXs=
 github.com/oarkflow/date v0.0.4 h1:EwY/wiS3CqZNBx7b2x+3kkJwVNuGk+G0dls76kL/fhU=

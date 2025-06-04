@@ -212,9 +212,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				tableCfg.ValueField,
 			))
 		}
-		if len(tableCfg.Relations) > 0 {
-			opts = append(opts, WithTransformers(transformers.NewRelationsTransformer(tableCfg.Relations)))
-		}
 		id := wuid.New().String()
 		etlJob := NewETL(id, id, opts...)
 		var lookups []contracts.LookupLoader
