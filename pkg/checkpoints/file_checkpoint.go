@@ -50,5 +50,6 @@ func (f *FileCheckpointStore) SaveCheckpoint(_ context.Context, cp string) error
 
 func (f *FileCheckpointStore) Remove() error {
 	fmt.Println("Removing checkpoint file:", f.filename)
-	return os.Remove(f.filename)
+	_ = os.Remove(f.filename)
+	return nil
 }

@@ -16,7 +16,7 @@ import (
 )
 
 type DataConfig struct {
-	Key           string `yaml:"key"`
+	Key           string `yaml:"key" json:"key"`
 	Type          string `yaml:"type" json:"type"`
 	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
 	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
