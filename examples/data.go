@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,7 +9,10 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"reflect"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,19 +79,42 @@ var (
 		"json.Number": "INTEGER",
 		"uuid":        "TEXT",
 	}
+	// Add a generic fallback mapping for unknown drivers.
+	genericDataTypes = map[string]string{
+		"int64":       "BIGINT",
+		"int32":       "INTEGER",
+		"uint32":      "INTEGER",
+		"float64":     "DOUBLE",
+		"bool":        "BOOLEAN",
+		"time":        "TIMESTAMP",
+		"date":        "DATE",
+		"complex":     "TEXT",
+		"string":      "VARCHAR(255)",
+		"json":        "JSON",
+		"bytes":       "BLOB",
+		"slice":       "JSON",
+		"map":         "JSON",
+		"struct":      "JSON",
+		"json.Number": "BIGINT",
+		"uuid":        "UUID",
+	}
 )
 
 var globalWorkerCount int = 4
 
 // FieldSchema holds the detected schema for a field.
 type FieldSchema struct {
-	FieldName       string  `json:"field_name"`
-	DataType        string  `json:"data_type"`
-	IsNullable      bool    `json:"is_nullable"`
-	IsPrimaryKey    bool    `json:"is_primary_key"`
-	MaxStringLength int     `json:"max_string_length"`
-	MinValue        float64 `json:"min_value,omitempty"`
-	MaxValue        float64 `json:"max_value,omitempty"`
+	FieldName       string   `json:"field_name"`
+	DataType        string   `json:"data_type"`
+	IsNullable      bool     `json:"is_nullable"`
+	IsPrimaryKey    bool     `json:"is_primary_key"`
+	MaxStringLength int      `json:"max_string_length"`
+	MinValue        float64  `json:"min_value,omitempty"`
+	MaxValue        float64  `json:"max_value,omitempty"`
+	IsUnique        bool     `json:"is_unique"`
+	EnumValues      []string `json:"enum_values,omitempty"`
+	Comment         string   `json:"comment,omitempty"`
+	ForeignKey      string   `json:"foreign_key,omitempty"`
 }
 
 // FieldStats aggregates statistics and heuristics for a field.
@@ -121,12 +148,18 @@ func warnf(format string, args ...interface{}) {
 }
 
 func dereference(value any) any {
-	for value != nil && reflect.TypeOf(value).Kind() == reflect.Ptr {
+	if value == nil || reflect.TypeOf(value) == nil {
+		return nil
+	}
+	// Cache type for efficiency.
+	typ := reflect.TypeOf(value)
+	for value != nil && typ != nil && typ.Kind() == reflect.Ptr {
 		v := reflect.ValueOf(value)
 		if v.IsNil() {
 			return nil
 		}
 		value = v.Elem().Interface()
+		typ = reflect.TypeOf(value)
 	}
 	return value
 }
@@ -204,14 +237,10 @@ func isJSONString(s string) bool {
 	return false
 }
 
+var uuidRegex = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
+
 func isStringUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	if s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
-		return false
-	}
-	return true
+	return uuidRegex.MatchString(s)
 }
 
 func updateNumericRange(stats *FieldStats, num float64) {
@@ -499,67 +528,45 @@ func DetectSchema(data []map[string]any, sampleSize int) map[string]FieldSchema 
 	close(rowsCh)
 	wg.Wait()
 
-	// Now decide on the final type for each field.
+	// After workers, decide on final type for each field.
 	for field, stats := range fieldStats {
 		finalType := "unknown"
 		total := stats.countNonNull
 		counts := stats.typeCounts
-		numericCount := counts["int"] + counts["float"] + stats.stringAsIntCount + stats.stringAsFloatCount + counts["json.Number"]
-		if total > 0 && (counts["time"]+stats.stringAsTimeCount == total) {
-			finalType = "time"
-		} else if total > 0 && (stats.stringAsDateCount == total) {
-			finalType = "date"
-		} else if total > 0 && (stats.stringAsUUIDCount == total) {
-			finalType = "uuid"
-		} else if total > 0 && (counts["complex"]+stats.stringAsComplexCount == total) {
-			finalType = "complex"
-		} else if total > 0 && (counts["bool"]+stats.stringAsBoolCount == total) {
-			finalType = "bool"
-		} else if total > 0 && numericCount == total {
-			if stats.numericAllIntegral && stats.stringAsFloatCount == 0 {
-				if stats.numericInitialized {
-					if stats.minNumeric >= 0 && stats.maxNumeric <= float64(math.MaxUint32) {
-						finalType = "uint32"
-					} else if stats.minNumeric >= math.MinInt32 && stats.maxNumeric <= math.MaxInt32 {
-						finalType = "int32"
-					} else {
-						finalType = "int64"
-					}
-				} else {
-					finalType = "int64"
-				}
-			} else {
-				finalType = "float64"
+		var enumValues []string
+		if cnt, ok := counts["string"]; ok && cnt == total && len(stats.uniqueValues) < 50 {
+			for v := range stats.uniqueValues {
+				enumValues = append(enumValues, v)
 			}
-		} else if cnt, ok := counts["slice"]; ok && cnt == total {
-			finalType = "slice"
-		} else if cnt, ok := counts["map"]; ok && cnt == total {
-			finalType = "map"
-		} else if cnt, ok := counts["struct"]; ok && cnt == total {
-			finalType = "struct"
-		} else if cnt, ok := counts["string"]; ok && cnt == total {
-			finalType = "string"
-		} else if cnt, ok := counts["json"]; ok && cnt == total {
-			finalType = "json"
-		} else if cnt, ok := counts["bytes"]; ok && cnt == total {
-			finalType = "bytes"
-		} else {
-			bestType := ""
-			maxCount := 0
-			for t, count := range counts {
-				if count > maxCount {
-					bestType = t
-					maxCount = count
-				}
-			}
-			finalType = bestType
+			sort.Strings(enumValues)
 		}
-		updateSchema(schema, field, finalType, stats)
+		// Set uniqueness flag.
+		unique := false
+		if stats.countNonNull > 0 && !stats.duplicateFound {
+			unique = true
+		}
+		schema[field] = FieldSchema{
+			FieldName:       field,
+			DataType:        finalType,
+			IsNullable:      stats.nullable,
+			IsPrimaryKey:    false,
+			MaxStringLength: stats.maxStringLength,
+			MinValue: func() float64 {
+				if stats.numericInitialized {
+					return stats.minNumeric
+				} else {
+					return 0
+				}
+			}(),
+			MaxValue:   stats.maxNumeric,
+			IsUnique:   unique,
+			EnumValues: enumValues,
+		}
 	}
 	return schema
 }
 
-// SetPrimaryKey marks the given keys as primary keys.
+// SetPrimaryKey marks the given keys as primary keys (supports composite PKs).
 func SetPrimaryKey(schema map[string]FieldSchema, keys ...string) map[string]FieldSchema {
 	if len(keys) == 0 {
 		return schema
@@ -598,24 +605,41 @@ func contains(arr []string, s string) bool {
 	return false
 }
 
-// MapDataTypeToDBType maps the detected type to a database-specific type.
-func MapDataTypeToDBType(field FieldSchema, driver string) string {
+// Helper: convert CamelCase to snake_case.
+func toSnakeCase(s string) string {
+	var result []rune
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			result = append(result, '_')
+		}
+		result = append(result, r)
+	}
+	return strings.ToLower(string(result))
+}
+
+// MapDataTypeToDBType maps the detected type to a database-specific type, with custom overrides.
+// Now supports any RDBMS driver by falling back to genericDataTypes.
+func MapDataTypeToDBType(field FieldSchema, driver string, overrides map[string]string) string {
+	if overrides != nil {
+		if t, ok := overrides[field.FieldName]; ok {
+			return t
+		}
+	}
 	var mapping map[string]string
-	switch driver {
+	switch strings.ToLower(driver) {
 	case "mysql":
 		mapping = mysqlDataTypes
-	case "postgres":
+	case "postgres", "postgresql":
 		mapping = postgresDataTypes
-	case "sqlite":
+	case "sqlite", "sqlite3":
 		mapping = sqliteDataTypes
 	default:
-		return "TEXT"
+		mapping = genericDataTypes
 	}
 	if field.DataType == "string" {
-		if driver == "mysql" && field.MaxStringLength > 255 {
-			return "LONGTEXT"
-		}
-		if driver == "postgres" && field.MaxStringLength > 255 {
+		if (driver == "mysql" && field.MaxStringLength > 255) ||
+			(driver == "postgres" && field.MaxStringLength > 255) ||
+			(driver == "postgresql" && field.MaxStringLength > 255) {
 			return "TEXT"
 		}
 	}
@@ -673,34 +697,146 @@ func generateRandomRow(i int) map[string]any {
 }
 
 func main() {
-	// Command-line flags for configuration.
+	// Added new CLI flags.
 	var (
-		totalRows   = flag.Int("rows", 1000000, "Total number of rows to generate")
-		sampleSize  = flag.Int("sample", 100, "Sample size for schema detection")
-		driver      = flag.String("driver", "postgres", "Database driver (mysql, postgres, sqlite)")
-		outJSON     = flag.Bool("json", false, "Output schema as JSON")
-		flagWorkers = flag.Int("workers", 4, "Number of concurrent workers for schema detection")
-		tableName   = flag.String("table", "my_table", "Name of the table to generate SQL for")
-		createSQL   = flag.Bool("createSQL", true, "Output CREATE TABLE SQL statement")
+		totalRows     = flag.Int("rows", 1000000, "Total number of rows to generate")
+		sampleSize    = flag.Int("sample", 100, "Sample size for schema detection")
+		driver        = flag.String("driver", "postgres", "Database driver (mysql, postgres, sqlite, or any other RDBMS)")
+		outJSON       = flag.Bool("json", false, "Output schema as JSON")
+		flagWorkers   = flag.Int("workers", 4, "Number of concurrent workers for schema detection")
+		tableName     = flag.String("table", "my_table", "Name of the table to generate SQL for")
+		createSQL     = flag.Bool("createSQL", true, "Output CREATE TABLE SQL statement")
+		useStdin      = flag.Bool("stdin", false, "Read input data from standard input (JSONL)")
+		fieldsFlag    = flag.String("fields", "", "Comma separated list of fields to detect")
+		dryRun        = flag.Bool("dry-run", false, "Only show type suggestions without generating SQL")
+		typeOverride  = flag.String("type-override", "", "JSON object for custom type mapping, e.g. '{\"id\":\"UUID\"}'")
+		fieldComments = flag.String("field-comments", "", "JSON object for field comments, e.g. '{\"id\":\"Primary key\"}'")
+		configFile    = flag.String("config", "", "Path to config JSON file")
+		sampleOut     = flag.Bool("sample-out", false, "Output a sample of generated data")
+		foreignKeys   = flag.String("foreign-keys", "", "JSON object for foreign keys, e.g. '{\"user_id\":\"users(id)\"}'")
 	)
 	flag.Parse()
+
 	// Set the global worker count.
 	globalWorkerCount = *flagWorkers
 
 	rand.Seed(time.Now().UnixNano())
-	data := make([]map[string]any, *totalRows)
-	fmt.Printf("Generating %d rows of data...\n", *totalRows)
-	for i := 0; i < *totalRows; i++ {
-		data[i] = generateRandomRow(i)
+
+	// Load config file if provided.
+	typeOverrides := map[string]string{}
+	fieldCommentMap := map[string]string{}
+	foreignKeyMap := map[string]string{}
+	if *configFile != "" {
+		f, err := os.Open(*configFile)
+		if err != nil {
+			log.Fatalf("Failed to open config file: %v", err)
+		}
+		defer f.Close()
+		var cfg struct {
+			TypeOverride  map[string]string `json:"type_override"`
+			FieldComments map[string]string `json:"field_comments"`
+			ForeignKeys   map[string]string `json:"foreign_keys"`
+		}
+		if err := json.NewDecoder(f).Decode(&cfg); err != nil {
+			log.Fatalf("Failed to parse config file: %v", err)
+		}
+		typeOverrides = cfg.TypeOverride
+		fieldCommentMap = cfg.FieldComments
+		foreignKeyMap = cfg.ForeignKeys
 	}
-	// Shuffle the rows to randomize the sample.
-	rand.Shuffle(len(data), func(i, j int) {
-		data[i], data[j] = data[j], data[i]
-	})
-	fmt.Printf("Detecting schema based on a random sample of %d rows...\n", *sampleSize)
-	schema := DetectSchema(data, *sampleSize)
+	if *typeOverride != "" {
+		_ = json.Unmarshal([]byte(*typeOverride), &typeOverrides)
+	}
+	if *fieldComments != "" {
+		_ = json.Unmarshal([]byte(*fieldComments), &fieldCommentMap)
+	}
+	if *foreignKeys != "" {
+		_ = json.Unmarshal([]byte(*foreignKeys), &foreignKeyMap)
+	}
+
+	var sampleData []map[string]any
+	// If --stdin is provided, stream input data as JSONL.
+	if *useStdin {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			var row map[string]any
+			if err := json.Unmarshal(scanner.Bytes(), &row); err == nil {
+				sampleData = append(sampleData, row)
+				if len(sampleData) >= *sampleSize {
+					break
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			log.Fatalf("Error reading stdin: %v", err)
+		}
+	} else {
+		// Reservoir sampling for schema detection.
+		sampleData = make([]map[string]any, 0, *sampleSize)
+		log.Printf("Generating %d rows (reservoir sampling for %d samples)...", *totalRows, *sampleSize)
+		for i := 0; i < *totalRows; i++ {
+			row := generateRandomRow(i)
+			// Filter by --fields if provided.
+			if *fieldsFlag != "" {
+				fields := strings.Split(*fieldsFlag, ",")
+				trimmed := make(map[string]any)
+				for _, f := range fields {
+					f = strings.TrimSpace(f)
+					if v, ok := row[f]; ok {
+						trimmed[f] = v
+					}
+				}
+				row = trimmed
+			}
+			if i < *sampleSize {
+				sampleData = append(sampleData, row)
+			} else {
+				j := rand.Intn(i + 1)
+				if j < *sampleSize {
+					sampleData[j] = row
+				}
+			}
+		}
+	}
+
+	if *sampleOut {
+		out, err := json.MarshalIndent(sampleData, "", "  ")
+		if err != nil {
+			log.Fatalf("Failed to marshal sample data: %v", err)
+		}
+		fmt.Println(string(out))
+		return
+	}
+
+	log.Printf("Detecting schema based on a sample of %d rows...", len(sampleData))
+	schema := DetectSchema(sampleData, len(sampleData))
 	schema = SetPrimaryKey(schema, "id")
 	schema = SetNullable(schema, "rating")
+
+	// Apply field comments and foreign keys
+	for k, v := range fieldCommentMap {
+		if f, ok := schema[k]; ok {
+			f.Comment = v
+			schema[k] = f
+		}
+	}
+	for k, v := range foreignKeyMap {
+		if f, ok := schema[k]; ok {
+			f.ForeignKey = v
+			schema[k] = f
+		}
+	}
+
+	if *dryRun {
+		// Only output type suggestions.
+		for _, field := range schema {
+			fmt.Printf("Field: %s -> Suggested Type: %s\n", field.FieldName, field.DataType)
+			if len(field.EnumValues) > 0 {
+				fmt.Printf("  Enum values: %v\n", field.EnumValues)
+			}
+		}
+		return
+	}
 
 	// Map the Go types to database types.
 	if *outJSON {
@@ -710,34 +846,76 @@ func main() {
 		}
 		fmt.Println(string(out))
 	} else if *createSQL {
-		// Generate CREATE TABLE SQL statement.
+		// Generate deterministic CREATE TABLE SQL statement.
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", *tableName))
+		// Build a sorted slice of field names.
+		var keys []string
+		for k := range schema {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
 		first := true
-		for _, field := range schema {
+		pkFields := []string{}
+		for _, key := range keys {
+			field := schema[key]
+			if field.IsPrimaryKey {
+				pkFields = append(pkFields, toSnakeCase(field.FieldName))
+			}
+		}
+		for _, key := range keys {
+			field := schema[key]
 			if !first {
 				sb.WriteString(",\n")
 			}
 			first = false
-			dbType := MapDataTypeToDBType(field, *driver)
+			dbType := MapDataTypeToDBType(field, *driver, typeOverrides)
 			nullStr := "NOT NULL"
 			if field.IsNullable {
-				nullStr = ""
+				nullStr = "NULL"
 			}
-			pkStr := ""
-			if field.IsPrimaryKey {
-				pkStr = " PRIMARY KEY"
+			colName := toSnakeCase(field.FieldName)
+			commentStr := ""
+			if field.Comment != "" {
+				commentStr = fmt.Sprintf(" -- %s", field.Comment)
 			}
-			sb.WriteString(fmt.Sprintf("    %s %s %s%s", field.FieldName, dbType, nullStr, pkStr))
+			enumStr := ""
+			if len(field.EnumValues) > 0 {
+				enumStr = fmt.Sprintf(" /* enum: %v */", field.EnumValues)
+			}
+			fkStr := ""
+			if field.ForeignKey != "" {
+				fkStr = fmt.Sprintf(" REFERENCES %s", field.ForeignKey)
+			}
+			sb.WriteString(fmt.Sprintf("    %s %s %s%s%s%s", colName, dbType, nullStr, fkStr, enumStr, commentStr))
+		}
+		if len(pkFields) > 0 {
+			sb.WriteString(fmt.Sprintf(",\n    PRIMARY KEY (%s)", strings.Join(pkFields, ", ")))
 		}
 		sb.WriteString("\n);")
 		fmt.Println(sb.String())
+		// Output CREATE INDEX for unique fields
+		for _, key := range keys {
+			field := schema[key]
+			if field.IsUnique && !field.IsPrimaryKey {
+				fmt.Printf("CREATE UNIQUE INDEX idx_%s_%s ON %s(%s);\n", *tableName, toSnakeCase(field.FieldName), *tableName, toSnakeCase(field.FieldName))
+			}
+		}
 	} else {
-		fmt.Printf("Mapping types for driver: %s\n", *driver)
+		log.Printf("Mapping types for driver: %s", *driver)
 		for _, field := range schema {
-			dbType := MapDataTypeToDBType(field, *driver)
+			dbType := MapDataTypeToDBType(field, *driver, typeOverrides)
 			fmt.Printf("Field: %-15s GoType: %-10s Nullable: %-5v PrimaryKey: %-5v MaxStrLen: %-4d -> DB Type: %s\n",
 				field.FieldName, field.DataType, field.IsNullable, field.IsPrimaryKey, field.MaxStringLength, dbType)
+			if len(field.EnumValues) > 0 {
+				fmt.Printf("  Enum values: %v\n", field.EnumValues)
+			}
+			if field.Comment != "" {
+				fmt.Printf("  Comment: %s\n", field.Comment)
+			}
+			if field.ForeignKey != "" {
+				fmt.Printf("  ForeignKey: %s\n", field.ForeignKey)
+			}
 		}
 	}
 }
