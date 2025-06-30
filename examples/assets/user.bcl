@@ -1,0 +1,94 @@
+sources "prod-db" {
+	type: "mysql"
+    key: "prod-db"
+    host: "localhost"
+    port: 3306
+    driver: "mysql"
+    username: "root"
+    password: "root"
+    database: "cleardb"
+    disablelogger: true
+}
+
+destinations "users-csv" {
+	type: "csv"
+	key: "users-csv"
+	file: "users.csv"
+}
+
+destinations "credentials-csv" {
+	type: "csv"
+	key: "credentials-csv"
+	file: "credentials.csv"
+}
+
+destinations "user-settings-csv" {
+	type: "csv"
+	key: "user-settings-csv"
+	file: "user-settings.csv"
+}
+
+deduplication = {
+	enabled = true
+	field = "user_uid"
+}
+
+checkpoint = {
+	file = "checkpoint.txt"
+	field = "user_uid"
+}
+
+tables "users" {
+	old_name: "tbl_user"
+	migrate: true
+	clone_source: false
+	batch_size: 1000
+	truncate_destination: true
+	destination_key: "users-csv"
+	mapping = {
+		user_id = "user_uid"
+		email = "user_email_address"
+		first_name = "user_first_name"
+		last_name = "user_last_name"
+		user_type = "user_type"
+		created_at = "added_utc"
+		created_by = "added_by"
+	}
+}
+
+tables "credentials" {
+	old_name: "tbl_user"
+	migrate: true
+	clone_source: false
+	batch_size: 1000
+	truncate_destination: true
+	destination_key: "credentials-csv"
+	mapping = {
+		user_id = "user_uid"
+        credential = "user_password"
+        credential_type = "eval.{{'PASSWORD'}}"
+        provider_type = "eval.{{'LOCAL'}}"
+        created_by = "added_by"
+        created_at = "eval.{{added_utc ? added_utc : now()}}"
+        updated_at = "eval.{{added_utc ? added_utc : now()}}"
+        is_active = "eval.{{user_active == 1 ? true: false}}"
+	}
+}
+
+tables "user_settings" {
+	old_name: "tbl_user"
+	migrate: true
+	clone_source: false
+	batch_size: 1000
+	key_value_table: true
+	truncate_destination: true
+	destination_key: "user-settings-csv"
+	extra_values = {
+		user_id = "user_uid"
+        company_id = "eval.{{1}}"
+	}
+	key_field: "key"
+	value_field: "value"
+    include_fields = ["user_uid"]
+    exclude_fields = ["added_utc", "added_by", "user_uid", "user_title", "user_first_name", "middle_name", "user_last_name", "user_email_address", "user_password", "user_active"]
+}

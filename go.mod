@@ -4,11 +4,11 @@ go 1.24.2
 
 require (
 	github.com/dgraph-io/ristretto v0.2.0
-	github.com/go-sql-driver/mysql v1.9.2
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gofiber/fiber/v2 v2.52.8
 	github.com/gofrs/flock v0.12.1
 	github.com/lib/pq v1.10.9
-	github.com/oarkflow/bcl v0.0.9
+	github.com/oarkflow/bcl v0.0.10
 	github.com/oarkflow/convert v0.0.5
 	github.com/oarkflow/date v0.0.4
 	github.com/oarkflow/dipper v0.0.6
@@ -21,7 +21,7 @@ require (
 	github.com/oarkflow/squealx v0.0.54
 	github.com/oarkflow/xid v1.2.8
 	github.com/rabbitmq/amqp091-go v1.10.0
-	go.mongodb.org/mongo-driver v1.17.3
+	go.mongodb.org/mongo-driver v1.17.4
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -40,7 +40,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/microsoft/go-mssqldb v1.8.2 // indirect
+	github.com/microsoft/go-mssqldb v1.9.1 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
@@ -55,21 +55,21 @@ require (
 	github.com/xhit/go-simple-mail/v2 v2.16.0 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.39.0 // indirect
-	golang.org/x/exp v0.0.0-20250606033433-dcc06ee1d476 // indirect
+	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sync v0.15.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	modernc.org/libc v1.65.10 // indirect
+	modernc.org/libc v1.66.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.37.1 // indirect
+	modernc.org/sqlite v1.38.0 // indirect
 )
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/PuerkitoBio/goquery v1.10.3
-	github.com/andybalholm/brotli v1.1.1 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

@@ -41,13 +41,12 @@ func (kt *KeyValueTransformer) Transform(ctx context.Context, rec utils.Record) 
 	return nil, fmt.Errorf("no output from KeyValueTransformer")
 }
 
-func (kt *KeyValueTransformer) TransformMany(_ context.Context, rec utils.Record) ([]utils.Record, error) {
+func (kt *KeyValueTransformer) TransformMany(ctx context.Context, rec utils.Record) ([]utils.Record, error) {
 	base := make(map[string]any)
 	for newField, srcFieldRaw := range kt.ExtraValues {
 		srcField := strings.ToLower(fmt.Sprintf("%v", srcFieldRaw))
-		if val, ok := rec[srcField]; ok {
-			base[newField] = val
-		}
+		_, val := utils.GetValue(ctx, srcField, rec)
+		base[newField] = val
 	}
 	ignore := make(map[string]struct{})
 	for _, v := range kt.ExtraValues {
