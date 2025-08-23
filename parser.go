@@ -75,14 +75,15 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 		}
 	}
 	if p.peekToken.Type == UNION || p.peekToken.Type == INTERSECT || p.peekToken.Type == EXCEPT {
-		compOp := p.peekToken.Type
-		if compOp == UNION && p.peekTokenIsOneOf([]TokenType{ALL}) {
-			p.nextToken() // consume UNION
+		// Advance to the compound operator
+		p.nextToken()
+		compOp := p.curToken.Type
+		// Handle UNION ALL
+		if compOp == UNION && p.peekToken.Type == ALL {
 			p.nextToken() // consume ALL
-			compOp = TokenType("UNION ALL")
-		} else {
-			p.nextToken() // consume compound op
+			compOp = UNION_ALL
 		}
+		// Advance to start parsing the right-hand query
 		p.nextToken()
 		rightStmt := p.ParseQueryStatement()
 		if rightStmt == nil || rightStmt.Query == nil {
@@ -178,7 +179,8 @@ func (p *Parser) parseSelectQuery() *SQL {
 	if p.peekToken.Type == ORDER {
 		query.OrderBy = p.parseOrderByClause()
 	}
-	if p.peekToken.Type == LIMIT {
+	// Support LIMIT or OFFSET in either order (Postgres/MySQL variants)
+	if p.peekToken.Type == LIMIT || p.peekToken.Type == OFFSET {
 		query.Limit = p.parseLimitClause()
 	}
 	if p.peekToken.Type == SEMICOLON {
@@ -219,13 +221,14 @@ func (p *Parser) parseSelectExpression() Expression {
 		return &Star{}
 	}
 	expr := p.parseExpression(0)
-	if p.peekToken.Type == AS {
+	switch p.peekToken.Type {
+	case AS:
 		p.nextToken()
 		p.nextToken()
 		if p.curToken.Type == IDENT {
 			expr = &AliasExpression{Expr: expr, Alias: p.curToken.Literal}
 		}
-	} else if p.peekToken.Type == IDENT {
+	case IDENT:
 		alias := p.peekToken.Literal
 		if !isReservedAlias(alias) {
 			p.nextToken()
@@ -253,13 +256,14 @@ func (p *Parser) parseTableReference() *TableReference {
 				if !p.expectPeek(RPAREN) {
 					return nil
 				}
-				if p.peekToken.Type == AS {
+				switch p.peekToken.Type {
+				case AS:
 					p.nextToken()
 					p.nextToken()
 					if p.curToken.Type == IDENT {
 						tr.Alias = p.curToken.Literal
 					}
-				} else if p.peekToken.Type == IDENT {
+				case IDENT:
 					alias := p.peekToken.Literal
 					if !isReservedAlias(alias) {
 						p.nextToken()
@@ -281,13 +285,14 @@ func (p *Parser) parseTableReference() *TableReference {
 				return nil
 			}
 			tr := &TableReference{Subquery: subStmt.Query}
-			if p.peekToken.Type == AS {
+			switch p.peekToken.Type {
+			case AS:
 				p.nextToken()
 				p.nextToken()
 				if p.curToken.Type == IDENT {
 					tr.Alias = p.curToken.Literal
 				}
-			} else if p.peekToken.Type == IDENT {
+			case IDENT:
 				alias := p.peekToken.Literal
 				if !isReservedAlias(alias) {
 					p.nextToken()
@@ -307,14 +312,15 @@ func (p *Parser) parseTableReference() *TableReference {
 func (p *Parser) parseJoinClause() *JoinClause {
 	jc := &JoinClause{}
 	joinType := ""
-	if p.curToken.Type == NATURAL {
+	switch p.curToken.Type {
+	case NATURAL:
 		joinType = "NATURAL"
 		p.nextToken()
 		if p.curToken.Type != JOIN {
 			p.errors = append(p.errors, "expected JOIN after NATURAL")
 			return nil
 		}
-	} else if p.curToken.Type == INNER || p.curToken.Type == LEFT || p.curToken.Type == RIGHT || p.curToken.Type == FULL || p.curToken.Type == CROSS {
+	case INNER, LEFT, RIGHT, FULL, CROSS:
 		joinType = p.curToken.Literal
 		if p.peekToken.Type == OUTER {
 			p.nextToken()
@@ -323,7 +329,7 @@ func (p *Parser) parseJoinClause() *JoinClause {
 		if !p.expectPeek(JOIN) {
 			return nil
 		}
-	} else if p.curToken.Type == JOIN {
+	case JOIN:
 		joinType = "INNER"
 	}
 	jc.JoinType = joinType
@@ -419,20 +425,56 @@ func (p *Parser) parseLimitClause() *LimitClause {
 	lc := &LimitClause{}
 	p.nextToken()
 	if p.curToken.Type == LIMIT {
+		// Parse LIMIT clause
 		p.nextToken()
-		if p.curToken.Type != INT {
-			p.errors = append(p.errors, "LIMIT requires an integer")
+		if p.curToken.Type == ALL {
+			// LIMIT ALL => unlimited; keep Limit=0 and handle in executor as unlimited
+			lc.Limit = 0
+		} else if p.curToken.Type == INT {
+			firstVal, err := strconv.Atoi(p.curToken.Literal)
+			if err != nil {
+				p.errors = append(p.errors, "Invalid LIMIT value")
+				return nil
+			}
+			// MySQL syntax: LIMIT offset, count
+			if p.peekToken.Type == COMMA {
+				p.nextToken() // consume comma
+				p.nextToken() // move to count
+				if p.curToken.Type != INT {
+					p.errors = append(p.errors, "LIMIT requires an integer count after comma")
+					return nil
+				}
+				countVal, err := strconv.Atoi(p.curToken.Literal)
+				if err != nil {
+					p.errors = append(p.errors, "Invalid LIMIT count value")
+					return nil
+				}
+				lc.Offset = firstVal
+				lc.Limit = countVal
+			} else {
+				lc.Limit = firstVal
+			}
+		} else {
+			p.errors = append(p.errors, "LIMIT requires ALL or integer")
 			return nil
 		}
-		limitVal, err := strconv.Atoi(p.curToken.Literal)
-		if err != nil {
-			p.errors = append(p.errors, "Invalid LIMIT value")
-			return nil
+		// Optional OFFSET after LIMIT
+		if p.peekToken.Type == OFFSET {
+			p.nextToken() // move to OFFSET
+			p.nextToken() // move to integer
+			if p.curToken.Type != INT {
+				p.errors = append(p.errors, "OFFSET requires an integer")
+				return nil
+			}
+			offsetVal, err := strconv.Atoi(p.curToken.Literal)
+			if err != nil {
+				p.errors = append(p.errors, "Invalid OFFSET value")
+				return nil
+			}
+			lc.Offset = offsetVal
 		}
-		lc.Limit = limitVal
-	}
-	if p.peekToken.Type == OFFSET {
-		p.nextToken()
+	} else if p.curToken.Type == OFFSET {
+		// Parse OFFSET-first variant (Postgres allows OFFSET before LIMIT)
 		p.nextToken()
 		if p.curToken.Type != INT {
 			p.errors = append(p.errors, "OFFSET requires an integer")
@@ -444,6 +486,25 @@ func (p *Parser) parseLimitClause() *LimitClause {
 			return nil
 		}
 		lc.Offset = offsetVal
+		// Optional LIMIT after OFFSET
+		if p.peekToken.Type == LIMIT {
+			p.nextToken() // move to LIMIT
+			p.nextToken() // move to value
+			if p.curToken.Type == ALL {
+				lc.Limit = 0
+			} else if p.curToken.Type == INT {
+				firstVal, err := strconv.Atoi(p.curToken.Literal)
+				if err != nil {
+					p.errors = append(p.errors, "Invalid LIMIT value")
+					return nil
+				}
+				// MySQL-comma style isn't valid here; treat as simple LIMIT count
+				lc.Limit = firstVal
+			} else {
+				p.errors = append(p.errors, "LIMIT requires ALL or integer")
+				return nil
+			}
+		}
 	}
 	return lc
 }
@@ -522,7 +583,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 		if lower == nil {
 			return nil
 		}
-		if !p.expectPeek("AND") {
+		if !p.expectPeek(AND) {
 			return nil
 		}
 		p.nextToken()
@@ -612,6 +673,10 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 		}
 	default:
 		operator := p.curToken.Literal
+		// Normalize alternate not-equals representation
+		if p.curToken.Type == NOT_EQ {
+			operator = "!="
+		}
 		prec := p.curPrecedence()
 		p.nextToken()
 		right := p.parseExpression(prec)
@@ -656,7 +721,9 @@ func (p *Parser) parseExpression(precedence int) Expression {
 		leftExp = &ExistsExpression{Subquery: &Subquery{Query: subStmt.Query}}
 	case ASTERISK:
 		leftExp = &Star{}
-	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF, DATEDIFF: // <-- added DATEDIFF here
+	case CASE:
+		leftExp = p.parseCaseExpression()
+	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF, DATEDIFF, NOW, CURRENT_TIMESTAMP, CURRENT_DATE:
 		if p.peekToken.Type == LPAREN {
 			leftExp = p.parseFunctionCall()
 		} else {
@@ -671,6 +738,14 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	case BOOL:
 		val := strings.ToUpper(p.curToken.Literal) == "TRUE"
 		leftExp = &Literal{Value: val}
+	case NOT:
+		p.nextToken()
+		right := p.parseExpression(0)
+		leftExp = &PrefixExpression{Operator: "NOT", Right: right}
+	case MINUS:
+		p.nextToken()
+		right := p.parseExpression(0)
+		leftExp = &PrefixExpression{Operator: "-", Right: right}
 	case PARAM:
 		leftExp = &Literal{Value: "?"}
 	default:

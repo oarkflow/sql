@@ -206,6 +206,18 @@ func (be *BinaryExpression) String() string {
 	return fmt.Sprintf("(%s %s %s)", be.Left.String(), be.Operator, be.Right.String())
 }
 
+// PrefixExpression supports unary operators like NOT and unary minus (-expr)
+type PrefixExpression struct {
+	Operator string
+	Right    Expression
+}
+
+func (pe *PrefixExpression) ExpressionNode()      {}
+func (pe *PrefixExpression) TokenLiteral() string { return pe.Operator }
+func (pe *PrefixExpression) String() string {
+	return fmt.Sprintf("(%s %s)", pe.Operator, pe.Right.String())
+}
+
 type InExpression struct {
 	Left Expression
 	Not  bool

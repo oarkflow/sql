@@ -368,7 +368,8 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 	}
 	simpleQuery := (query.GroupBy == nil && query.Having == nil && query.OrderBy == nil && !hasAggregate)
 	targetCount := -1
-	if simpleQuery && query.Limit != nil {
+	if simpleQuery && query.Limit != nil && query.Limit.Limit > 0 {
+		// Only apply early-stop optimization when LIMIT is a positive number.
 		targetCount = query.Limit.Offset + query.Limit.Limit
 		if len(conds) == 0 {
 			var temp []utils.Record
@@ -695,7 +696,11 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 	}
 	if query.Limit != nil {
 		start := query.Limit.Offset
-		end := start + query.Limit.Limit
+		// LIMIT 0 or LIMIT ALL means "no limit", i.e., return all rows after OFFSET.
+		end := len(resultRows)
+		if query.Limit.Limit > 0 {
+			end = start + query.Limit.Limit
+		}
 		if start > len(resultRows) {
 			resultRows = []utils.Record{}
 		} else {
