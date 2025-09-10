@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	
+
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/utils"

@@ -58,7 +58,10 @@ func CreateTableFromRecord(db *squealx.DB, driver, table string, schema map[stri
 		keys = append(keys, k)
 	}
 	for _, k := range keys {
-		sqlType := GetDataType(schema[k], driver)
+		sqlType, err := GetDataType(schema[k], driver)
+		if err != nil {
+			return err
+		}
 		columns = append(columns, fmt.Sprintf("%s %s", k, sqlType))
 	}
 	createStmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s);", table, strings.Join(columns, ", "))
@@ -93,6 +96,7 @@ var (
 	mysql = map[string]string{
 		"bool":        "TINYINT(1)", // MySQL uses 0 or 1 for booleans
 		"int":         "INT",
+		"integer":     "INT",
 		"int8":        "TINYINT",
 		"int16":       "SMALLINT",
 		"int32":       "INT",
@@ -117,6 +121,7 @@ var (
 	postgres = map[string]string{
 		"bool":        "BOOLEAN",
 		"int":         "INTEGER",
+		"integer":     "INTEGER",
 		"int8":        "SMALLINT",
 		"int16":       "SMALLINT",
 		"int32":       "INTEGER",
@@ -141,6 +146,7 @@ var (
 	sqlite = map[string]string{
 		"bool":        "INTEGER", // SQLite uses INTEGER for booleans
 		"int":         "INTEGER",
+		"integer":     "INTEGER",
 		"int8":        "INTEGER",
 		"int16":       "INTEGER",
 		"int32":       "INTEGER",
@@ -164,21 +170,21 @@ var (
 	}
 )
 
-func GetDataType(dataType, driver string) string {
+func GetDataType(dataType, driver string) (string, error) {
 	driver = strings.ToLower(driver)
 	switch driver {
-	case "mysql":
+	case "mysql", "mariadb":
 		if dataTypeSQL, ok := mysql[dataType]; ok {
-			return dataTypeSQL
+			return dataTypeSQL, nil
 		}
 	case "postgres", "postgresql", "pgx4", "pgx5":
 		if dataTypeSQL, ok := postgres[dataType]; ok {
-			return dataTypeSQL
+			return dataTypeSQL, nil
 		}
 	case "sqlite", "sqlite3":
 		if dataTypeSQL, ok := sqlite[dataType]; ok {
-			return dataTypeSQL
+			return dataTypeSQL, nil
 		}
 	}
-	return fmt.Sprintf("Unknown data type: %s for driver: %s", dataType, driver)
+	return "", fmt.Errorf("Unknown data type: %s for driver: %s", dataType, driver)
 }
