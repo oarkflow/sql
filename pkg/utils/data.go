@@ -525,8 +525,8 @@ func addMandatoryFields(fields []Field, td *TypeDetector) []Field {
 		{Name: "created_at", DataType: td.getTimestampType(), IsNullable: "NO", Default: td.getNowDefault()},
 		{Name: "updated_at", DataType: td.getTimestampType(), IsNullable: "NO", Default: td.getNowDefault()},
 		{Name: "deleted_at", DataType: td.getTimestampType(), IsNullable: "YES", Default: nil},
-		{Name: "is_active", DataType: td.getBooleanType(), IsNullable: "NO", Default: false},
-		{Name: "status", DataType: td.getStringType(20), IsNullable: "YES", Default: nil},
+		{Name: "is_active", DataType: td.getBooleanType(), IsNullable: "NO", Default: true},
+		{Name: "status", DataType: td.getStringType(20), IsNullable: "YES", Default: "active"},
 	}
 
 	existing := make(map[string]bool)

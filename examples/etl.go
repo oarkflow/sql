@@ -45,8 +45,6 @@ func main() {
 			OldName:         "sample",
 			NewName:         "sample",
 			CloneSource:     true,
-			BatchSize:       100,
-			EnableBatch:     true,
 			Migrate:         true,
 			AutoCreateTable: true,
 			NormalizeSchema: schema,
