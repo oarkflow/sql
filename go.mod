@@ -18,7 +18,7 @@ require (
 	github.com/oarkflow/log v1.0.83
 	github.com/oarkflow/mail v0.0.0-20250417110231-93db61906e50
 	github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611
-	github.com/oarkflow/squealx v0.0.54
+	github.com/oarkflow/squealx v0.0.56
 	github.com/oarkflow/xid v1.2.8
 	github.com/rabbitmq/amqp091-go v1.10.0
 	go.mongodb.org/mongo-driver v1.17.4
@@ -40,7 +40,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/microsoft/go-mssqldb v1.9.1 // indirect
+	github.com/microsoft/go-mssqldb v1.9.3 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
@@ -60,10 +60,10 @@ require (
 	golang.org/x/sync v0.15.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	modernc.org/libc v1.66.1 // indirect
+	modernc.org/libc v1.66.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.38.0 // indirect
+	modernc.org/sqlite v1.38.2 // indirect
 )
 
 require (
@@ -81,5 +81,5 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.62.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/sys v0.34.0 // indirect
 )
