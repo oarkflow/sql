@@ -6,23 +6,9 @@ import (
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/utils"
-	"github.com/oarkflow/squealx"
-	"github.com/oarkflow/squealx/connection"
 )
 
 func main() {
-	cfg := squealx.Config{
-		Driver:   "postgres",
-		Host:     "localhost",
-		Username: "postgres",
-		Password: "postgres",
-		Port:     5432,
-		Database: "bi",
-	}
-	db, _, err := connection.FromConfig(cfg)
-	if err != nil {
-		panic(err)
-	}
 	_, fields, err := utils.DetectSchema("facilities", "facilities.csv", "postgres", true)
 	if err != nil {
 		panic(err)
@@ -41,7 +27,7 @@ func main() {
 			Password: "postgres",
 			Port:     5432,
 			Database: "bi",
-		}, db, config.TableMapping{
+		}, nil, config.TableMapping{
 			OldName:         "sample",
 			NewName:         "sample",
 			CloneSource:     true,

@@ -31,6 +31,30 @@ type DataConfig struct {
 	Format        string `yaml:"format" json:"format"`
 }
 
+func ToDatabaseConfig(dc squealx.Config) DataConfig {
+	return DataConfig{
+		Key:      dc.Key,
+		Driver:   dc.Driver,
+		Host:     dc.Host,
+		Port:     dc.Port,
+		Username: dc.Username,
+		Password: dc.Password,
+		Database: dc.Database,
+	}
+}
+
+func (dc DataConfig) ToSquealxConfig() squealx.Config {
+	return squealx.Config{
+		Key:      dc.Key,
+		Driver:   dc.Driver,
+		Host:     dc.Host,
+		Port:     dc.Port,
+		Username: dc.Username,
+		Password: dc.Password,
+		Database: dc.Database,
+	}
+}
+
 type TableMapping struct {
 	OldName             string            `yaml:"old_name" json:"old_name"`
 	NewName             string            `yaml:"new_name" json:"new_name"`

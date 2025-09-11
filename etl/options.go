@@ -13,6 +13,7 @@ import (
 	"github.com/oarkflow/sql/pkg/transformers"
 	utils2 "github.com/oarkflow/sql/pkg/utils"
 	"github.com/oarkflow/squealx"
+	"github.com/oarkflow/squealx/connection"
 )
 
 type Option func(*ETL) error
@@ -94,7 +95,12 @@ func WithDestination(dest config.DataConfig, destDB *squealx.DB, cfg config.Tabl
 		var destination contracts.Loader
 		if utils2.IsSQLType(dest.Type) {
 			if destDB == nil {
-				return fmt.Errorf("destination database is nil")
+				dbConfig := dest.ToSquealxConfig()
+				db, _, err := connection.FromConfig(dbConfig)
+				if err != nil {
+					return fmt.Errorf("failed to connect to destination database: %w", err)
+				}
+				destDB = db
 			}
 			destination = sqladapter.NewLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
 		} else if dest.Type == "csv" || dest.Type == "json" {
