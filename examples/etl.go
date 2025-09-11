@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/pkg/config"
@@ -9,6 +10,23 @@ import (
 )
 
 func main() {
+	etlCfg, err := config.Load("config.bcl")
+	if err != nil {
+		log.Fatalf("Config load error: %v", err)
+	}
+	manager := etl.NewManager()
+	ids, err := manager.Prepare(etlCfg)
+	if err != nil {
+		log.Fatalf("Prepare error: %v", err)
+	}
+	for _, id := range ids {
+		if err := manager.Start(context.Background(), id); err != nil {
+			log.Fatalf("ETL run error: %v", err)
+		}
+	}
+}
+
+func mai3n() {
 	_, fields, err := utils.DetectSchema("facilities", "facilities.csv", "postgres", true)
 	if err != nil {
 		panic(err)

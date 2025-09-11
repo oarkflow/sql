@@ -1,0 +1,30 @@
+destinations "prod-db" {
+	type: "postgres"
+    key: "prod-db"
+    host: "localhost"
+    port: 5432
+    driver: "postgres"
+    username: "postgres"
+    password: "postgres"
+    database: "bi"
+    disablelogger: true
+}
+
+sources "sample-csv" {
+	type: "csv"
+	key: "sample-csv"
+	file: "./data/sample.csv"
+}
+
+tables "sample" {
+    new_name: "sample"
+	migrate: true
+	clone_source: true
+    auto_create_table: true
+	destination_key: "prod-db"
+    normalize_schema: {
+        id =          "serial"
+		name =        "string"
+		description = "string"
+    }
+}
