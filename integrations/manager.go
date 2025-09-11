@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	stdJson "encoding/json"
+	sterrors "errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -150,10 +151,12 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 	}
 	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
 	if err != nil {
-		if err.Error() == "credential not found" {
+		if sterrors.Is(err, ErrCredentialNotFound) {
 			if service.RequireAuth {
 				return nil, err
 			}
+		} else {
+			return nil, err
 		}
 	}
 	var reader io.Reader
@@ -168,6 +171,12 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 		}
 		reader = bytes.NewReader(bodyBytes)
 	}
+	if reader == nil && strings.TrimSpace(cfg.RequestBody) != "" {
+		reader = bytes.NewReader([]byte(cfg.RequestBody))
+	}
+	if strings.TrimSpace(cfg.Method) == "" {
+		cfg.Method = "GET"
+	}
 	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, reader)
 	if err != nil {
 		return nil, err
@@ -175,33 +184,91 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 	for k, v := range cfg.Headers {
 		req.Header.Add(k, v)
 	}
+	if reader != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	switch cred.Type {
 	case CredentialTypeAPIKey:
-		data, ok := cred.Data.(map[string]interface{})
-		if !ok {
-			return nil, errors.New("invalid API key credential format")
+		var key string
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			if k, ok := v["key"].(string); ok {
+				key = k
+			}
+		case APIKeyCredential:
+			key = v.Key
+		case *APIKeyCredential:
+			key = v.Key
 		}
-		key, ok := data["key"].(string)
-		if !ok {
+		if key == "" && service.RequireAuth {
 			return nil, errors.New("missing API key value")
 		}
-		headerConf := cfg.AuthHeaders[string(CredentialTypeAPIKey)]
-		req.Header.Add(headerConf.Header, headerConf.Prefix+key)
-	case CredentialTypeBearer:
-		data, ok := cred.Data.(map[string]interface{})
-		if !ok {
-			return nil, errors.New("invalid bearer token credential format")
+		if key != "" {
+			headerConf := cfg.AuthHeaders[string(CredentialTypeAPIKey)]
+			if headerConf.Header == "" {
+				headerConf.Header = "X-API-KEY"
+			}
+			if headerConf.Header != "" {
+				req.Header.Add(headerConf.Header, headerConf.Prefix+key)
+			}
 		}
-		token, ok := data["token"].(string)
-		if !ok {
+	case CredentialTypeBearer:
+		var token string
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			if t, ok := v["token"].(string); ok {
+				token = t
+			}
+		case BearerCredential:
+			token = v.Token
+		case *BearerCredential:
+			token = v.Token
+		}
+		if token == "" && service.RequireAuth {
 			return nil, errors.New("missing bearer token value")
 		}
-		headerConf := cfg.AuthHeaders[string(CredentialTypeBearer)]
-		req.Header.Add(headerConf.Header, headerConf.Prefix+token)
+		if token != "" {
+			headerConf := cfg.AuthHeaders[string(CredentialTypeBearer)]
+			if headerConf.Header == "" {
+				headerConf.Header = "Authorization"
+			}
+			if headerConf.Prefix == "" {
+				headerConf.Prefix = "Bearer "
+			}
+			if headerConf.Header != "" {
+				req.Header.Add(headerConf.Header, headerConf.Prefix+token)
+			}
+		}
+	case CredentialTypeBasicAuth:
+		var user, pass string
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			user, _ = v["username"].(string)
+			pass, _ = v["password"].(string)
+		case BasicAuthCredential:
+			user, pass = v.Username, v.Password
+		case *BasicAuthCredential:
+			user, pass = v.Username, v.Password
+		case SMTPAuthCredential:
+			user, pass = v.Username, v.Password
+		case *SMTPAuthCredential:
+			user, pass = v.Username, v.Password
+		}
+		if user == "" || pass == "" {
+			if service.RequireAuth {
+				return nil, errors.New("missing basic auth credentials")
+			}
+		} else {
+			req.SetBasicAuth(user, pass)
+		}
 	case CredentialTypeOAuth2:
 		auth, ok := cred.Data.(*OAuth2Credential)
 		if !ok {
-			return nil, errors.New("invalid OAuth2 credential")
+			if v, ok2 := cred.Data.(OAuth2Credential); ok2 {
+				auth = &v
+			} else {
+				return nil, errors.New("invalid OAuth2 credential")
+			}
 		}
 		if auth.AccessToken == "" || time.Until(auth.ExpiresAt) < time.Minute {
 			if err := refreshOAuth2Token(auth, is.logger); err != nil {
@@ -209,7 +276,15 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 			}
 		}
 		headerConf := cfg.AuthHeaders[string(CredentialTypeOAuth2)]
-		req.Header.Add(headerConf.Header, headerConf.Prefix+auth.AccessToken)
+		if headerConf.Header == "" {
+			headerConf.Header = "Authorization"
+		}
+		if headerConf.Prefix == "" {
+			headerConf.Prefix = "Bearer "
+		}
+		if headerConf.Header != "" {
+			req.Header.Add(headerConf.Header, headerConf.Prefix+auth.AccessToken)
+		}
 	default:
 		if service.RequireAuth {
 			return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
@@ -568,10 +643,154 @@ type SMSPayload struct {
 	Test    bool   `json:"test"`
 }
 
-type HTTPResponse struct {
+type ServiceResponse struct {
 	StatusCode int                 `json:"status_code"`
 	Body       stdJson.RawMessage  `json:"body"`
 	Headers    map[string][]string `json:"headers"`
+	Service    string              `json:"service"`
+	Type       string              `json:"type"`
+	Success    bool                `json:"success"`
+	Error      string              `json:"error,omitempty"`
+	Duration   time.Duration       `json:"duration,omitempty"`
+}
+
+// ExecuteAsync runs a service execution in a goroutine and returns a channel for the ServiceResponse.
+// Example usage:
+//
+//	ch := manager.ExecuteAsync(ctx, "svc1", payload)
+//	result := <-ch
+func (is *Manager) ExecuteAsync(ctx context.Context, serviceName string, payload any) <-chan *ServiceResponse {
+	ch := make(chan *ServiceResponse, 1)
+	go func() {
+		start := time.Now()
+		res, err := is.Execute(ctx, serviceName, payload)
+		duration := time.Since(start)
+		sr := &ServiceResponse{Service: serviceName, Duration: duration}
+		if err != nil {
+			sr.Success = false
+			sr.Error = err.Error()
+		} else {
+			sr.Success = true
+			if r, ok := res.(*ServiceResponse); ok {
+				*sr = *r
+				sr.Service = serviceName
+				sr.Duration = duration
+			} else {
+				sr.Body, _ = json.Marshal(res)
+			}
+		}
+		ch <- sr
+	}()
+	return ch
+}
+
+// BulkExecute runs multiple services in parallel and returns their results as ServiceResponse.
+// Example usage:
+//
+//	results := manager.BulkExecute(ctx, map[string]any{"svc1": payload1, "svc2": payload2})
+//	for name, resp := range results { ... }
+func (is *Manager) BulkExecute(ctx context.Context, requests map[string]any) map[string]*ServiceResponse {
+	results := make(map[string]*ServiceResponse)
+	var wg sync.WaitGroup
+	mu := sync.Mutex{}
+	for svc, payload := range requests {
+		wg.Add(1)
+		go func(svc string, payload any) {
+			defer wg.Done()
+			start := time.Now()
+			res, err := is.Execute(ctx, svc, payload)
+			duration := time.Since(start)
+			sr := &ServiceResponse{Service: svc, Duration: duration}
+			if err != nil {
+				sr.Success = false
+				sr.Error = err.Error()
+			} else {
+				sr.Success = true
+				if r, ok := res.(*ServiceResponse); ok {
+					*sr = *r
+					sr.Service = svc
+					sr.Duration = duration
+				} else {
+					sr.Body, _ = json.Marshal(res)
+				}
+			}
+			mu.Lock()
+			results[svc] = sr
+			mu.Unlock()
+		}(svc, payload)
+	}
+	wg.Wait()
+	return results
+}
+
+// ListServiceTypes returns all available service types in the manager
+func (is *Manager) ListServiceTypes() []string {
+	svcList, err := is.ServiceList()
+	if err != nil {
+		return nil
+	}
+	types := make(map[string]struct{})
+	for _, svc := range svcList {
+		types[string(svc.Type)] = struct{}{}
+	}
+	out := make([]string, 0, len(types))
+	for t := range types {
+		out = append(out, t)
+	}
+	return out
+}
+
+// Helper to extract credential fields
+func extractCredentialFields(cred Credential, serviceType string) (map[string]string, error) {
+	fields := make(map[string]string)
+	switch cred.Type {
+	case CredentialTypeAPIKey:
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			if k, ok := v["key"].(string); ok {
+				fields["key"] = k
+			}
+		case APIKeyCredential:
+			fields["key"] = v.Key
+		case *APIKeyCredential:
+			fields["key"] = v.Key
+		}
+	case CredentialTypeBearer:
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			if t, ok := v["token"].(string); ok {
+				fields["token"] = t
+			}
+		case BearerCredential:
+			fields["token"] = v.Token
+		case *BearerCredential:
+			fields["token"] = v.Token
+		}
+	case CredentialTypeBasicAuth:
+		switch v := cred.Data.(type) {
+		case map[string]any:
+			if u, ok := v["username"].(string); ok {
+				fields["username"] = u
+			}
+			if p, ok := v["password"].(string); ok {
+				fields["password"] = p
+			}
+		case BasicAuthCredential:
+			fields["username"] = v.Username
+			fields["password"] = v.Password
+		case *BasicAuthCredential:
+			fields["username"] = v.Username
+			fields["password"] = v.Password
+		case SMTPAuthCredential:
+			fields["username"] = v.Username
+			fields["password"] = v.Password
+		case *SMTPAuthCredential:
+			fields["username"] = v.Username
+			fields["password"] = v.Password
+		}
+	}
+	// Add more types as needed
+	return fields, nil
 }
 
 // Execute dispatches an operation based on service type.
@@ -596,6 +815,9 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
+	}
+	if !service.Enabled {
+		return nil, fmt.Errorf("service %s is disabled", serviceName)
 	}
 	threshold := 3
 	if service.Type == ServiceTypeAPI {
@@ -635,9 +857,10 @@ func (is *Manager) Execute(ctx context.Context, serviceName string, payload any)
 				execErr = err
 			} else {
 				if apiCfg.DataKey != "" {
-					body, _, _, err = jsonparser.Get(body, apiCfg.DataKey)
+					keys := strings.Split(apiCfg.DataKey, ".")
+					body, _, _, err = jsonparser.Get(body, keys...)
 				}
-				res = &HTTPResponse{
+				res = &ServiceResponse{
 					StatusCode: resp.StatusCode,
 					Body:       body,
 					Headers:    resp.Header,
@@ -967,10 +1190,10 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 		MaxIdleCons: cfg.MaxIdleConns,
 		MaxOpenCons: cfg.MaxOpenConns,
 	})
-	defer db.Close()
 	if err != nil {
 		return nil, err
 	}
+	defer db.Close()
 	var dest []map[string]any
 	err = db.Select(&dest, query)
 	if err != nil {
@@ -1031,6 +1254,9 @@ func (is *Manager) HealthCheck(ctx context.Context) error {
 		wg.Add(1)
 		go func(s Service) {
 			defer wg.Done()
+			if !s.Enabled {
+				return
+			}
 			switch s.Type {
 			case ServiceTypeAPI:
 				cfg, ok := s.Config.(APIConfig)
@@ -1045,7 +1271,10 @@ func (is *Manager) HealthCheck(ctx context.Context) error {
 				}
 				client := getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
 				resp, err := client.Do(req)
-				if err != nil || resp.StatusCode >= 400 {
+				if resp != nil && resp.Body != nil {
+					resp.Body.Close()
+				}
+				if err != nil || (resp != nil && resp.StatusCode >= 400) {
 					errCh <- fmt.Errorf("health check failed for API service %s", s.Name)
 				}
 			}

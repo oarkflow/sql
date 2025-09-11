@@ -126,7 +126,7 @@ func ReadServiceForUser(ctx context.Context, identifier string) ([]utils.Record,
 		return result, nil
 	case map[string]any:
 		return []map[string]any{result}, nil
-	case integrations.HTTPResponse:
+	case integrations.ServiceResponse:
 		var dest []map[string]any
 		err = json.Unmarshal(result.Body, &dest)
 		if err == nil {
@@ -138,7 +138,7 @@ func ReadServiceForUser(ctx context.Context, identifier string) ([]utils.Record,
 			return []map[string]any{tmp}, nil
 		}
 		return nil, err
-	case *integrations.HTTPResponse:
+	case *integrations.ServiceResponse:
 		var dest []map[string]any
 		err = json.Unmarshal(result.Body, &dest)
 		if err == nil {

@@ -34,7 +34,7 @@ func main() {
 		logger.Info().Str("service", service).Msg("Service executed successfully")
 	}
 	switch resp := resp.(type) {
-	case *integrations.HTTPResponse:
+	case *integrations.ServiceResponse:
 		fmt.Println(string(resp.Body))
 		for header, content := range resp.Headers {
 			fmt.Println(fmt.Sprintf("%s: %v", header, content))

@@ -7,13 +7,19 @@ import (
 )
 
 var (
-	reserved    = []string{"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN", "ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WITH", "TRUE", "FALSE", "OR"}
+	// Add AND to the reserved list so it isn't treated as an alias.
+	reserved = []string{
+		"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN",
+		"ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT",
+		"WITH", "TRUE", "FALSE", "OR", "AND",
+	}
+
 	precedences = map[TokenType]int{
 		PLUS:      10,
 		MINUS:     10,
 		ASTERISK:  20,
 		SLASH:     20,
-		CONCAT_OP: 10, // <-- added precedence for "||"
+		CONCAT_OP: 10, // precedence for "||"
 		ASSIGN:    5,
 		NOT_EQ:    5,
 		LT:        5,
@@ -25,11 +31,12 @@ var (
 		IN:        5,
 		LIKE:      5,
 		NOT:       5,
-		OR:        3, // <-- added precedence for OR with lower priority than AND (assumed AND is 5)
+		AND:       5, // Ensure AND has higher precedence than OR
+		OR:        3, // OR has lower precedence than AND
 		UNION:     1,
 		INTERSECT: 1,
 		EXCEPT:    1,
-		UNION_ALL: 1, // Treat UNION_ALL with the same precedence as UNION
+		UNION_ALL: 1, // Treat UNION ALL same precedence as UNION
 	}
 )
 
@@ -79,7 +86,7 @@ const (
 	MIN      = "MIN"
 	MAX      = "MAX"
 	DIFF     = "DIFF"
-	DATEDIFF = "DATEDIFF" // <-- new constant for DATEDIFF function
+	DATEDIFF = "DATEDIFF" // new constant for DATEDIFF function
 	AS       = "AS"
 	JOIN     = "JOIN"
 	INNER    = "INNER"
@@ -96,6 +103,7 @@ const (
 	THEN     = "THEN"
 	ELSE     = "ELSE"
 	END      = "END"
+	AND      = "AND"
 
 	DISTINCT  = "DISTINCT"
 	ORDER     = "ORDER"
@@ -170,7 +178,7 @@ func lookupKeyword(ident string) TokenType {
 		return MAX
 	case "DIFF":
 		return DIFF
-	case "DATEDIFF": // <-- new lookup for DATEDIFF
+	case "DATEDIFF":
 		return DATEDIFF
 	case "AS":
 		return AS
@@ -260,6 +268,8 @@ func lookupKeyword(ident string) TokenType {
 		return BOOL
 	case "OR":
 		return OR
+	case "AND":
+		return AND
 	default:
 		return IDENT
 	}

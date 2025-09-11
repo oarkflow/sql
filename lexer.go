@@ -24,6 +24,10 @@ func (l *Lexer) NextToken() Token {
 			ch := l.ch
 			l.readChar()
 			tok = Token{Type: LTE, Literal: string(ch) + string(l.ch)}
+		} else if l.peekChar() == '>' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: NOT_EQ, Literal: string(ch) + string(l.ch)}
 		} else {
 			tok = newToken(LT, l.ch, l.line, l.column)
 		}
@@ -41,6 +45,14 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(MINUS, l.ch, l.line, l.column)
 	case '*':
 		tok = newToken(ASTERISK, l.ch, l.line, l.column)
+	case '|':
+		if l.peekChar() == '|' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: CONCAT_OP, Literal: string(ch) + string(l.ch)}
+		} else {
+			tok = newToken(ILLEGAL, l.ch, l.line, l.column)
+		}
 	case '/':
 		tok = newToken(SLASH, l.ch, l.line, l.column)
 	case ',':
@@ -59,6 +71,12 @@ func (l *Lexer) NextToken() Token {
 	case '"':
 		tok.Type = IDENT
 		tok.Literal = l.readQuotedIdentifier()
+	case '`':
+		tok.Type = IDENT
+		tok.Literal = l.readBacktickIdentifier()
+	case '[':
+		tok.Type = IDENT
+		tok.Literal = l.readBracketIdentifier()
 	case 0:
 		tok.Literal = ""
 		tok.Type = EOF
@@ -66,7 +84,12 @@ func (l *Lexer) NextToken() Token {
 		if unicode.IsLetter(rune(l.ch)) || l.ch == '_' {
 			literal := l.readIdentifier()
 			tok.Type = lookupKeyword(literal)
-			tok.Literal = literal
+			// Uppercase literals for keywords so downstream comparisons work reliably.
+			if tok.Type == IDENT {
+				tok.Literal = literal
+			} else {
+				tok.Literal = strings.ToUpper(literal)
+			}
 			return tok
 		} else if isDigit(l.ch) {
 			num := l.readNumber()
@@ -173,6 +196,28 @@ func (l *Lexer) readQuotedIdentifier() string {
 	l.readChar()
 	start := l.position
 	for l.ch != '"' && l.ch != 0 {
+		l.readChar()
+	}
+	literal := l.input[start:l.position]
+	l.readChar()
+	return literal
+}
+
+func (l *Lexer) readBacktickIdentifier() string {
+	l.readChar()
+	start := l.position
+	for l.ch != '`' && l.ch != 0 {
+		l.readChar()
+	}
+	literal := l.input[start:l.position]
+	l.readChar()
+	return literal
+}
+
+func (l *Lexer) readBracketIdentifier() string {
+	l.readChar()
+	start := l.position
+	for l.ch != ']' && l.ch != 0 {
 		l.readChar()
 	}
 	literal := l.input[start:l.position]

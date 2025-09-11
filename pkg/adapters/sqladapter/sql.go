@@ -17,19 +17,21 @@ import (
 )
 
 type Adapter struct {
-	Db              *squealx.DB
-	mode            string
-	Table           string
-	truncate        bool
-	updateSequence  bool
-	destType        string
-	update          bool
-	delete          bool
-	query           string
-	AutoCreate      bool
-	Created         bool
-	Driver          string
-	NormalizeSchema map[string]string
+	Db                  *squealx.DB
+	mode                string
+	Table               string
+	truncate            bool
+	updateSequence      bool
+	destType            string
+	update              bool
+	delete              bool
+	query               string
+	AutoCreate          bool
+	Created             bool
+	Driver              string
+	NormalizeSchema     map[string]string
+	disabledForeignKeys bool
+	disabledIndexes     bool
 }
 
 // NewLoader creates a new adapter loader using squealx.
@@ -85,6 +87,73 @@ func (l *Adapter) Setup(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("truncate error for table %s: %v", l.Table, err)
 		}
+	}
+	// Disable foreign keys and indexes for performance during ETL
+	if err := l.disableConstraints(ctx); err != nil {
+		return fmt.Errorf("failed to disable constraints: %v", err)
+	}
+	return nil
+}
+
+func (l *Adapter) disableConstraints(ctx context.Context) error {
+	if l.mode != "loader" {
+		return nil
+	}
+	// Disable foreign keys
+	var fkSQL string
+	switch l.Driver {
+	case "mysql":
+		fkSQL = "SET FOREIGN_KEY_CHECKS = 0"
+	case "postgres":
+		fkSQL = "SET session_replication_role = 'replica'"
+	case "sqlite", "sqlite3":
+		fkSQL = "PRAGMA foreign_keys = OFF"
+	default:
+		return nil // Skip if unsupported
+	}
+	if _, err := l.Db.ExecContext(ctx, fkSQL); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %v", err)
+	}
+	l.disabledForeignKeys = true
+
+	// Disable indexes for MySQL
+	if l.Driver == "mysql" {
+		idxSQL := fmt.Sprintf("ALTER TABLE %s DISABLE KEYS", l.Table)
+		if _, err := l.Db.ExecContext(ctx, idxSQL); err != nil {
+			return fmt.Errorf("failed to disable indexes: %v", err)
+		}
+		l.disabledIndexes = true
+	}
+	return nil
+}
+
+func (l *Adapter) enableConstraints(ctx context.Context) error {
+	// Enable indexes first for MySQL
+	if l.disabledIndexes && l.Driver == "mysql" {
+		idxSQL := fmt.Sprintf("ALTER TABLE %s ENABLE KEYS", l.Table)
+		if _, err := l.Db.ExecContext(ctx, idxSQL); err != nil {
+			return fmt.Errorf("failed to enable indexes: %v", err)
+		}
+		l.disabledIndexes = false
+	}
+
+	// Enable foreign keys
+	if l.disabledForeignKeys {
+		var fkSQL string
+		switch l.Driver {
+		case "mysql":
+			fkSQL = "SET FOREIGN_KEY_CHECKS = 1"
+		case "postgres":
+			fkSQL = "SET session_replication_role = 'origin'"
+		case "sqlite", "sqlite3":
+			fkSQL = "PRAGMA foreign_keys = ON"
+		default:
+			return nil
+		}
+		if _, err := l.Db.ExecContext(ctx, fkSQL); err != nil {
+			return fmt.Errorf("failed to enable foreign keys: %v", err)
+		}
+		l.disabledForeignKeys = false
 	}
 	return nil
 }
@@ -305,6 +374,11 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 func (l *Adapter) Close() error {
 	if l.mode != "loader" {
 		return l.Db.Close()
+	}
+	// Enable constraints before closing
+	if err := l.enableConstraints(context.Background()); err != nil {
+		// Log error but don't fail close
+		log.Printf("failed to enable constraints: %v", err)
 	}
 	if l.destType == "postgresql" && l.updateSequence {
 		return sqlutil.UpdateSequence(l.Db, l.Table)

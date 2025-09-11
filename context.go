@@ -53,13 +53,15 @@ func (ctx *EvalContext) evalExpression(c context.Context, expr Expression, row u
 		return ctx.evalSubquery(c, e, row)
 	case *ExistsExpression:
 		return ctx.evalExistsExpression(c, e, row)
+	case *PrefixExpression:
+		return ctx.evalPrefixExpression(c, e, row)
 	default:
 		ctx.logError(fmt.Sprintf("Unsupported expression type: %T", expr))
 		return nil
 	}
 }
 
-func (ctx *EvalContext) evalIdentifier(c context.Context, id *Identifier, row utils.Record) any {
+func (ctx *EvalContext) evalIdentifier(_ context.Context, id *Identifier, row utils.Record) any {
 	// Support for alias fields: check full key first then fallback.
 	if strings.Contains(id.Value, ".") {
 		// Try full key (e.g. "t1.work_item_id")
@@ -126,6 +128,23 @@ func (ctx *EvalContext) evalLikeExpression(c context.Context, e *LikeExpression,
 		return match
 	}
 	return false
+}
+
+func (ctx *EvalContext) evalPrefixExpression(c context.Context, e *PrefixExpression, row utils.Record) any {
+	val := ctx.evalExpression(c, e.Right, row)
+	switch strings.ToUpper(e.Operator) {
+	case "NOT":
+		b, _ := convert.ToBool(val)
+		return !b
+	case "-":
+		if num, ok := convert.ToFloat64(val); ok {
+			return -num
+		}
+		return nil
+	default:
+		ctx.logError("Unsupported prefix operator: " + e.Operator)
+		return nil
+	}
 }
 
 func (ctx *EvalContext) evalFunctionCall(c context.Context, fc *FunctionCall, row utils.Record) any {
@@ -209,7 +228,7 @@ func (ctx *EvalContext) evalSubquery(c context.Context, e *Subquery, row utils.R
 	return nil
 }
 
-func (ctx *EvalContext) evalExistsExpression(c context.Context, e *ExistsExpression, row utils.Record) any {
+func (ctx *EvalContext) evalExistsExpression(c context.Context, e *ExistsExpression, _ utils.Record) any {
 	subRows, err := e.Subquery.Query.executeQuery(c, nil)
 	if err != nil || len(subRows) == 0 {
 		return false

@@ -243,10 +243,9 @@ func loadConfig(path string, logger *log.Logger) (*Config, error) {
 		return nil, err
 	}
 	// Validate and convert service configurations.
-	for _, svc := range cfg.Services {
-		err := UnmarshalService(&svc)
-		if err != nil {
-			logger.Error().Err(err).Msg("failed to unmarshal service config")
+	for i := range cfg.Services {
+		if err := UnmarshalService(&cfg.Services[i]); err != nil {
+			logger.Error().Err(err).Str("service", cfg.Services[i].Name).Msg("failed to unmarshal service config")
 			return nil, err
 		}
 	}

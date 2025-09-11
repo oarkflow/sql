@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
 )
 
@@ -17,6 +18,8 @@ type Credential struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
+
+var ErrCredentialNotFound = errors.New("credential not found")
 
 // UnmarshalJSON for Credential decodes the data field based on the credential type.
 func (c *Credential) UnmarshalJSON(data []byte) error {
@@ -107,14 +110,14 @@ func (c *InMemoryCredentialStore) AddCredential(cred Credential) error {
 }
 
 func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool) (Credential, error) {
-	hasCredential := false
+	required := false
 	if len(requireAuth) > 0 && requireAuth[0] {
-		hasCredential = true
+		required = true
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		if hasCredential {
-			return Credential{}, fmt.Errorf("credential key cannot be empty")
+		if required {
+			return Credential{}, fmt.Errorf("%w: empty key", ErrCredentialNotFound)
 		}
 		return Credential{}, nil
 	}
@@ -122,8 +125,8 @@ func (c *InMemoryCredentialStore) GetCredential(key string, requireAuth ...bool)
 	defer c.mu.RUnlock()
 	cred, exists := c.credentials[key]
 	if !exists {
-		if hasCredential {
-			return Credential{}, fmt.Errorf("credential not found: %s", key)
+		if required {
+			return Credential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, key)
 		}
 		return Credential{}, nil
 	}
@@ -141,7 +144,7 @@ func (c *InMemoryCredentialStore) DeleteCredential(key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.credentials[key]; !exists {
-		return fmt.Errorf("credential not found: %s", key)
+		return fmt.Errorf("%w: %s", ErrCredentialNotFound, key)
 	}
 	delete(c.credentials, key)
 	return nil

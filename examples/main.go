@@ -12,8 +12,9 @@ import (
 
 func main() {
 	dbService := integrations.Service{
-		Name: "test_db",
-		Type: integrations.ServiceTypeDB,
+		Name:    "test_db",
+		Enabled: true,
+		Type:    integrations.ServiceTypeDB,
 		Config: integrations.DatabaseConfig{
 			Driver:   "postgres",
 			Host:     "127.0.0.1",
@@ -29,24 +30,27 @@ func main() {
 		},
 	}
 	postService := integrations.Service{
-		Name: "posts",
-		Type: integrations.ServiceTypeAPI,
+		Enabled: true,
+		Name:    "posts",
+		Type:    integrations.ServiceTypeAPI,
 		Config: integrations.APIConfig{
 			URL:    "https://jsonplaceholder.typicode.com/posts",
 			Method: "GET",
 		},
 	}
 	commentService := integrations.Service{
-		Name: "comments",
-		Type: integrations.ServiceTypeAPI,
+		Enabled: true,
+		Name:    "comments",
+		Type:    integrations.ServiceTypeAPI,
 		Config: integrations.APIConfig{
 			URL:    "https://jsonplaceholder.typicode.com/comments",
 			Method: "GET",
 		},
 	}
 	articleService := integrations.Service{
-		Name: "articles",
-		Type: integrations.ServiceTypeWebCrawler,
+		Enabled: true,
+		Name:    "articles",
+		Type:    integrations.ServiceTypeWebCrawler,
 		Config: integrations.WebCrawlerConfig{
 			Endpoint:     "http://metalsucks.net",
 			Rules:        "article",
