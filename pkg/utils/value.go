@@ -29,6 +29,12 @@ func normalizeValue(val any, targetType string) (any, error) {
 	if val == nil {
 		return nil, nil
 	}
+	if idx := strings.Index(targetType, "("); idx != -1 {
+		targetType = strings.TrimSpace(targetType[:idx])
+	} else {
+		targetType = strings.TrimSpace(targetType)
+	}
+
 	switch strings.ToLower(targetType) {
 	// Integer types
 	case "int", "integer":
