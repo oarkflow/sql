@@ -29,21 +29,131 @@ func normalizeValue(val any, targetType string) (any, error) {
 	if val == nil {
 		return nil, nil
 	}
-	switch targetType {
-	case "int":
+	switch strings.ToLower(targetType) {
+	// Integer types
+	case "int", "integer":
 		return convert.ToInt(val)
+	case "int8":
+		return convert.ToInt8(val)
+	case "int16":
+		return convert.ToInt16(val)
+	case "int32":
+		return convert.ToInt32(val)
+	case "int64":
+		return convert.ToInt64(val)
+	case "uint":
+		return convert.ToUint(val)
+	case "uint8", "byte":
+		return convert.ToUint8(val)
+	case "uint16":
+		return convert.ToUint16(val)
+	case "uint32":
+		return convert.ToUint32(val)
+	case "uint64":
+		return convert.ToUint64(val)
+	case "rune":
+		return convert.ToInt32(val) // rune is int32
+
+	// Boolean types
 	case "bool", "boolean":
 		return convert.ToBool(val)
+
+	// Float types
 	case "float":
 		return convert.ToFloat32(val)
 	case "float32":
 		return convert.ToFloat32(val)
 	case "float64":
 		return convert.ToFloat64(val)
-	case "string":
+
+	// String types
+	case "string", "text", "varchar", "char":
 		return convert.ToString(val)
-	case "datetime", "date", "date-time", "timestamp":
+
+	// Time types
+	case "datetime", "date", "date-time", "timestamp", "time", "timestamp with time zone", "time with time zone":
 		return convert.ToTime(val)
+
+	// SQL-specific types (map to appropriate Go types)
+	case "smallint":
+		return convert.ToInt16(val)
+	case "mediumint":
+		return convert.ToInt32(val)
+	case "bigint":
+		return convert.ToInt64(val)
+	case "tinyint":
+		return convert.ToInt8(val)
+	case "decimal", "numeric":
+		return convert.ToFloat64(val)
+	case "real":
+		return convert.ToFloat32(val)
+	case "double", "double precision":
+		return convert.ToFloat64(val)
+	case "json", "jsonb":
+		return convert.ToString(val) // JSON as string
+	case "uuid":
+		return convert.ToString(val)
+	case "blob", "bytea", "tinyblob", "mediumblob", "longblob":
+		return val, nil // Keep as is for binary data
+	case "year":
+		return convert.ToInt(val)
+	case "serial":
+		return convert.ToInt(val)
+	case "bigserial":
+		return convert.ToInt64(val)
+	case "smallserial":
+		return convert.ToInt16(val)
+	case "enum":
+		return convert.ToString(val)
+	case "set":
+		return convert.ToString(val) // SET as comma-separated string
+	case "interval":
+		return convert.ToString(val) // Interval as string
+	case "bit":
+		return convert.ToString(val) // Bit as string
+	case "varbit":
+		return convert.ToString(val) // Variable bit as string
+	case "macaddr":
+		return convert.ToString(val)
+	case "inet":
+		return convert.ToString(val)
+	case "cidr":
+		return convert.ToString(val)
+	case "point":
+		return convert.ToString(val)
+	case "line":
+		return convert.ToString(val)
+	case "lseg":
+		return convert.ToString(val)
+	case "box":
+		return convert.ToString(val)
+	case "path":
+		return convert.ToString(val)
+	case "polygon":
+		return convert.ToString(val)
+	case "circle":
+		return convert.ToString(val)
+	case "tsvector":
+		return convert.ToString(val)
+	case "tsquery":
+		return convert.ToString(val)
+	case "int4range":
+		return convert.ToString(val)
+	case "int8range":
+		return convert.ToString(val)
+	case "numrange":
+		return convert.ToString(val)
+	case "tsrange":
+		return convert.ToString(val)
+	case "tstzrange":
+		return convert.ToString(val)
+	case "daterange":
+		return convert.ToString(val)
+	case "geometry":
+		return convert.ToString(val)
+	case "geography":
+		return convert.ToString(val)
+
 	default:
 		return nil, fmt.Errorf("unknown target type: %s", targetType)
 	}
