@@ -5,6 +5,7 @@ import (
 
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/utils"
 	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/squealx/connection"
 )
@@ -21,6 +22,14 @@ func main() {
 	db, _, err := connection.FromConfig(cfg)
 	if err != nil {
 		panic(err)
+	}
+	_, fields, err := utils.DetectSchema("facilities", "facilities.csv", "postgres", true)
+	if err != nil {
+		panic(err)
+	}
+	schema := make(map[string]string)
+	for _, v := range fields {
+		schema[v.Name] = v.DataType
 	}
 	opts := []etl.Option{
 		etl.WithSource("csv", nil, "facilities.csv", "", "", "csv"),
@@ -40,12 +49,7 @@ func main() {
 			EnableBatch:     true,
 			Migrate:         true,
 			AutoCreateTable: true,
-			NormalizeSchema: map[string]string{
-				"id":            "integer",
-				"facility_name": "string",
-				"logo":          "string",
-				"contact_email": "string",
-			},
+			NormalizeSchema: schema,
 			Mapping: map[string]string{
 				"id":            "id",
 				"facility_name": "facility_name",

@@ -94,7 +94,8 @@ func CreateKeyValueTable(db *squealx.DB, tableName string, keyField, valueField 
 
 var (
 	mysql = map[string]string{
-		"bool":        "TINYINT(1)", // MySQL uses 0 or 1 for booleans
+		// Go types
+		"bool":        "TINYINT(1)",
 		"int":         "INT",
 		"integer":     "INT",
 		"int8":        "TINYINT",
@@ -110,15 +111,58 @@ var (
 		"float32":     "FLOAT",
 		"float64":     "DOUBLE",
 		"string":      "VARCHAR(255)",
-		"time.Time":   "DATETIME", // For time.Time, use DATETIME or TIMESTAMP
-		"[]byte":      "BLOB",     // Use BLOB for slices or binary data
-		"map":         "JSON",     // JSON objects
-		"interface{}": "TEXT",     // Handle dynamic types as TEXT
-		"any":         "TEXT",     // Handle dynamic types as TEXT
-		"text":        "TEXT",     // Handle dynamic types as TEXT
-		"pointer":     "TEXT",     // Pointers are treated like TEXT or BLOB
+		"time.Time":   "DATETIME",
+		"[]byte":      "BLOB",
+		"map":         "JSON",
+		"interface{}": "TEXT",
+		"any":         "TEXT",
+		"text":        "TEXT",
+		"pointer":     "TEXT",
+		// SQL types
+		"SMALLINT":   "SMALLINT",
+		"MEDIUMINT":  "MEDIUMINT",
+		"BIGINT":     "BIGINT",
+		"TINYINT":    "TINYINT",
+		"VARCHAR":    "VARCHAR",
+		"CHAR":       "CHAR",
+		"TEXT":       "TEXT",
+		"TINYTEXT":   "TINYTEXT",
+		"MEDIUMTEXT": "MEDIUMTEXT",
+		"LONGTEXT":   "LONGTEXT",
+		"DECIMAL":    "DECIMAL",
+		"NUMERIC":    "DECIMAL",
+		"FLOAT":      "FLOAT",
+		"DOUBLE":     "DOUBLE",
+		"REAL":       "DOUBLE",
+		"BOOLEAN":    "TINYINT(1)",
+		"BOOL":       "TINYINT(1)",
+		"TIMESTAMP":  "TIMESTAMP",
+		"DATETIME":   "DATETIME",
+		"DATE":       "DATE",
+		"TIME":       "TIME",
+		"YEAR":       "YEAR",
+		"BLOB":       "BLOB",
+		"TINYBLOB":   "TINYBLOB",
+		"MEDIUMBLOB": "MEDIUMBLOB",
+		"LONGBLOB":   "LONGBLOB",
+		"JSON":       "JSON",
+		"UUID":       "CHAR(36)",
+		"ENUM":       "ENUM",
+		"SET":        "SET",
+		// Cross-driver types (PostgreSQL/SQLite to MySQL)
+		"INTEGER":                  "INT",
+		"DOUBLE PRECISION":         "DOUBLE",
+		"TIMESTAMP WITH TIME ZONE": "TIMESTAMP",
+		"TIME WITH TIME ZONE":      "TIME",
+		"INTERVAL":                 "VARCHAR(255)",
+		"BYTEA":                    "BLOB",
+		"JSONB":                    "JSON",
+		"SERIAL":                   "INT AUTO_INCREMENT",
+		"BIGSERIAL":                "BIGINT AUTO_INCREMENT",
+		"SMALLSERIAL":              "SMALLINT AUTO_INCREMENT",
 	}
 	postgres = map[string]string{
+		// Go types
 		"bool":        "BOOLEAN",
 		"int":         "INTEGER",
 		"integer":     "INTEGER",
@@ -135,16 +179,60 @@ var (
 		"float32":     "REAL",
 		"float64":     "DOUBLE PRECISION",
 		"string":      "VARCHAR(255)",
-		"time.Time":   "TIMESTAMP", // PostgreSQL uses TIMESTAMP for time.Time
-		"[]byte":      "BYTEA",     // Use BYTEA for binary data
-		"map":         "JSONB",     // JSONB for JSON objects
-		"interface{}": "TEXT",      // Handle dynamic types as TEXT
-		"any":         "TEXT",      // Handle dynamic types as TEXT
-		"text":        "TEXT",      // Handle dynamic types as TEXT
-		"pointer":     "TEXT",      // Pointers are treated like TEXT or BYTEA
+		"time.Time":   "TIMESTAMP",
+		"[]byte":      "BYTEA",
+		"map":         "JSONB",
+		"interface{}": "TEXT",
+		"any":         "TEXT",
+		"text":        "TEXT",
+		"pointer":     "TEXT",
+		// SQL types
+		"SMALLINT":                 "SMALLINT",
+		"INTEGER":                  "INTEGER",
+		"BIGINT":                   "BIGINT",
+		"VARCHAR":                  "VARCHAR",
+		"CHAR":                     "CHAR",
+		"TEXT":                     "TEXT",
+		"DECIMAL":                  "DECIMAL",
+		"NUMERIC":                  "NUMERIC",
+		"REAL":                     "REAL",
+		"DOUBLE PRECISION":         "DOUBLE PRECISION",
+		"BOOLEAN":                  "BOOLEAN",
+		"BOOL":                     "BOOLEAN",
+		"TIMESTAMP":                "TIMESTAMP",
+		"TIMESTAMP WITH TIME ZONE": "TIMESTAMP WITH TIME ZONE",
+		"TIME":                     "TIME",
+		"TIME WITH TIME ZONE":      "TIME WITH TIME ZONE",
+		"DATE":                     "DATE",
+		"INTERVAL":                 "INTERVAL",
+		"BYTEA":                    "BYTEA",
+		"JSON":                     "JSON",
+		"JSONB":                    "JSONB",
+		"UUID":                     "UUID",
+		"SERIAL":                   "SERIAL",
+		"BIGSERIAL":                "BIGSERIAL",
+		"SMALLSERIAL":              "SMALLSERIAL",
+		// Cross-driver types (MySQL/SQLite to PostgreSQL)
+		"INT":        "INTEGER",
+		"TINYINT":    "SMALLINT",
+		"MEDIUMINT":  "INTEGER",
+		"DOUBLE":     "DOUBLE PRECISION",
+		"FLOAT":      "REAL",
+		"DATETIME":   "TIMESTAMP",
+		"YEAR":       "SMALLINT",
+		"TINYTEXT":   "TEXT",
+		"MEDIUMTEXT": "TEXT",
+		"LONGTEXT":   "TEXT",
+		"TINYBLOB":   "BYTEA",
+		"MEDIUMBLOB": "BYTEA",
+		"LONGBLOB":   "BYTEA",
+		"BLOB":       "BYTEA",
+		"ENUM":       "VARCHAR(255)",
+		"SET":        "TEXT",
 	}
 	sqlite = map[string]string{
-		"bool":        "INTEGER", // SQLite uses INTEGER for booleans
+		// Go types
+		"bool":        "INTEGER",
 		"int":         "INTEGER",
 		"integer":     "INTEGER",
 		"int8":        "INTEGER",
@@ -160,31 +248,69 @@ var (
 		"float32":     "REAL",
 		"float64":     "REAL",
 		"string":      "TEXT",
-		"time.Time":   "DATETIME", // Use DATETIME for time.Time
-		"[]byte":      "BLOB",     // Use BLOB for binary data
-		"map":         "TEXT",     // SQLite can store JSON as TEXT
-		"interface{}": "TEXT",     // Interface as TEXT
-		"any":         "TEXT",     // Handle dynamic types as TEXT
-		"text":        "TEXT",     // Handle dynamic types as TEXT
-		"pointer":     "TEXT",     // Pointers as TEXT
+		"time.Time":   "DATETIME",
+		"[]byte":      "BLOB",
+		"map":         "TEXT",
+		"interface{}": "TEXT",
+		"any":         "TEXT",
+		"text":        "TEXT",
+		"pointer":     "TEXT",
+		// SQL types
+		"SMALLINT":         "INTEGER",
+		"INTEGER":          "INTEGER",
+		"BIGINT":           "INTEGER",
+		"VARCHAR":          "TEXT",
+		"CHAR":             "TEXT",
+		"TEXT":             "TEXT",
+		"DECIMAL":          "REAL",
+		"NUMERIC":          "REAL",
+		"REAL":             "REAL",
+		"DOUBLE PRECISION": "REAL",
+		"BOOLEAN":          "INTEGER",
+		"BOOL":             "INTEGER",
+		"TIMESTAMP":        "DATETIME",
+		"DATETIME":         "DATETIME",
+		"DATE":             "DATE",
+		"TIME":             "TIME",
+		"BLOB":             "BLOB",
+		"JSON":             "TEXT",
+		"UUID":             "TEXT",
 	}
 )
 
 func GetDataType(dataType, driver string) (string, error) {
 	driver = strings.ToLower(driver)
+	dataType = strings.ToUpper(dataType) // Normalize to uppercase for matching
+
+	var baseType string
+	var params string
+
+	if idx := strings.Index(dataType, "("); idx != -1 {
+		baseType = strings.TrimSpace(dataType[:idx])
+		params = dataType[idx:]
+	} else {
+		baseType = strings.TrimSpace(dataType)
+	}
+
+	var typeMap map[string]string
 	switch driver {
 	case "mysql", "mariadb":
-		if dataTypeSQL, ok := mysql[dataType]; ok {
-			return dataTypeSQL, nil
-		}
+		typeMap = mysql
 	case "postgres", "postgresql", "pgx4", "pgx5":
-		if dataTypeSQL, ok := postgres[dataType]; ok {
-			return dataTypeSQL, nil
-		}
+		typeMap = postgres
 	case "sqlite", "sqlite3":
-		if dataTypeSQL, ok := sqlite[dataType]; ok {
-			return dataTypeSQL, nil
-		}
+		typeMap = sqlite
+	default:
+		return "", fmt.Errorf("unsupported driver: %s", driver)
 	}
-	return "", fmt.Errorf("Unknown data type: %s for driver: %s", dataType, driver)
+
+	if sqlType, ok := typeMap[baseType]; ok {
+		if params != "" {
+			return sqlType + params, nil
+		}
+		return sqlType, nil
+	}
+
+	// If not found in map, assume it's already a valid SQL type
+	return strings.ToLower(dataType), nil
 }
