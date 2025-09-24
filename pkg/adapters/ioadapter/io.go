@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -18,10 +19,11 @@ import (
 )
 
 type Adapter struct {
-	mode   string
-	reader io.Reader
-	writer io.Writer
-	format string
+	mode    string
+	reader  io.Reader
+	writer  io.Writer
+	format  string
+	pattern string
 }
 
 func NewSource(reader io.Reader, format string) *Adapter {
@@ -38,6 +40,10 @@ func NewLoader(writer io.Writer, format string) *Adapter {
 		writer: writer,
 		format: strings.ToLower(format),
 	}
+}
+
+func (ioa *Adapter) SetPattern(pattern string) {
+	ioa.pattern = pattern
 }
 
 func (ioa *Adapter) Setup(_ context.Context) error {
@@ -132,6 +138,58 @@ func (ioa *Adapter) Extract(_ context.Context, _ ...contracts.Option) (<-chan ut
 					out <- record
 				}
 			}
+		case "regex":
+			if ioa.pattern == "" {
+				log.Printf("Pattern not set for regex format")
+				break
+			}
+			re := patternToRegex(ioa.pattern)
+			scanner := bufio.NewScanner(ioa.reader)
+			const maxCapacity = 1024 * 1024
+			buf := make([]byte, 0, 64*1024)
+			scanner.Buffer(buf, maxCapacity)
+			for scanner.Scan() {
+				line := scanner.Text()
+				matches := re.FindStringSubmatch(line)
+				if matches != nil {
+					rec := make(utils.Record)
+					for i, name := range re.SubexpNames() {
+						if i > 0 && name != "" {
+							rec[name] = matches[i]
+						}
+					}
+					out <- rec
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				log.Printf("Scanner error: %v", err)
+			}
+		case "hl7":
+			// HL7 parsing
+			data, err := io.ReadAll(ioa.reader)
+			if err != nil {
+				log.Printf("Error reading HL7 input: %v", err)
+				break
+			}
+			segments := strings.Split(string(data), "\r\n")
+			if len(segments) == 1 {
+				segments = strings.Split(string(data), "\n")
+			}
+			for _, segment := range segments {
+				if strings.TrimSpace(segment) == "" {
+					continue
+				}
+				fields := strings.Split(segment, "|")
+				if len(fields) > 0 {
+					rec := make(utils.Record)
+					rec["segment"] = fields[0]
+					for i, field := range fields[1:] {
+						key := fmt.Sprintf("field%d", i+1)
+						rec[key] = field
+					}
+					out <- rec
+				}
+			}
 		default:
 
 			scanner := bufio.NewScanner(ioa.reader)
@@ -192,6 +250,9 @@ func (ioa *Adapter) StoreBatch(_ context.Context, records []utils.Record) error 
 				return err
 			}
 		}
+	case "regex", "hl7":
+		// For regex and hl7, use default output
+		fallthrough
 	default:
 		for _, rec := range records {
 			line := fmt.Sprintf("%v", rec)
@@ -234,6 +295,9 @@ func (ioa *Adapter) StoreSingle(_ context.Context, rec utils.Record) error {
 		}
 		_, err = ioa.writer.Write([]byte("\n"))
 		return err
+	case "regex", "hl7":
+		// Use default
+		fallthrough
 	default:
 		line := fmt.Sprintf("%v", rec)
 		_, err := ioa.writer.Write([]byte(line + "\n"))
@@ -304,4 +368,16 @@ func readUntilDoubleEnter(r io.Reader) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func patternToRegex(pattern string) *regexp.Regexp {
+	// Replace <name> with (?P<name>.*?)
+	re := regexp.MustCompile(`<([^>]+)>`)
+	regexStr := re.ReplaceAllStringFunc(pattern, func(match string) string {
+		name := strings.Trim(match, "<>")
+		return fmt.Sprintf(`(?P<%s>.*?)`, name)
+	})
+	// Escape | to \| for literal |
+	regexStr = strings.ReplaceAll(regexStr, "|", `\|`)
+	return regexp.MustCompile(regexStr)
 }
