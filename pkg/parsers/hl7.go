@@ -42,8 +42,18 @@ func (p *HL7Parser) Detect(data []byte) bool {
 	return strings.HasPrefix(mshLine, "MSH")
 }
 
-// Parse parses an HL7 message into a generic map structure
-func (p *HL7Parser) Parse(message string) (map[string]interface{}, error) {
+// Name returns the name of the parser
+func (p *HL7Parser) Name() string {
+	return "hl7"
+}
+
+// Parse parses an HL7 message into a generic map structure (implements Parser interface)
+func (p *HL7Parser) Parse(data []byte) (interface{}, error) {
+	return p.ParseString(string(data))
+}
+
+// ParseString parses an HL7 message from string into a generic map structure
+func (p *HL7Parser) ParseString(message string) (map[string]interface{}, error) {
 	// Try splitting on \r first, then \n if that doesn't work
 	lines := strings.Split(strings.TrimSpace(message), "\r")
 	if len(lines) == 1 {
@@ -97,7 +107,7 @@ func (p *HL7Parser) Parse(message string) (map[string]interface{}, error) {
 // ParseTyped parses an HL7 message into a typed struct based on message type
 func (p *HL7Parser) ParseTyped(message string) (HL7MessageInterface, error) {
 	// First parse as generic to get message type
-	generic, err := p.Parse(message)
+	generic, err := p.ParseString(message)
 	if err != nil {
 		return nil, err
 	}

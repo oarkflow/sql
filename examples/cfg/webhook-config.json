@@ -1,0 +1,10 @@
+{
+    "port": "8080",
+    "max_workers": 10,
+    "secret": "",
+    "data_types": [ "hl7", "json", "xml", "plain", "smpp" ],
+    "parsers": [ "hl7", "json", "xml", "plain", "smpp" ],
+    "etl_config": "examples/assets/db-db.yaml",
+    "integrations": "examples/cfg/integration.json",
+    "etl_pipelines": { }
+}

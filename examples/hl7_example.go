@@ -72,7 +72,7 @@ PV1|1|O|CLINIC||||DRSMITH|||CARDIO|||||AMB||SELF||||||20230924160000`
 
 func testMessage(parser *parsers.HL7Parser, message, expectedType string) {
 	// Parse as generic
-	generic, err := parser.Parse(message)
+	generic, err := parser.ParseString(message)
 	if err != nil {
 		log.Fatalf("Error parsing message: %v", err)
 	}
