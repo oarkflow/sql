@@ -48,7 +48,7 @@ func (a *Adapter) Setup(ctx context.Context) error {
 }
 
 func (a *Adapter) StoreBatch(ctx context.Context, records []utils.Record) error {
-	var docs []interface{}
+	var docs []any
 	for _, rec := range records {
 		docs = append(docs, rec)
 	}

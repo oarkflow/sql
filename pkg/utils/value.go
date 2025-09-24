@@ -165,7 +165,7 @@ func normalizeValue(val any, targetType string) (any, error) {
 	}
 }
 
-func IsEmpty(s interface{}) bool {
+func IsEmpty(s any) bool {
 	v := reflect.ValueOf(s)
 	if v.Kind() != reflect.Struct {
 		return false

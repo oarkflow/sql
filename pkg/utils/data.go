@@ -172,7 +172,7 @@ func (td *TypeDetector) detectType(values []string, columnName string) Field {
 
 		// JSON detection
 		if isJSON {
-			var js interface{}
+			var js any
 			if err := json.Unmarshal([]byte(v), &js); err != nil {
 				isJSON = false
 			}
@@ -467,7 +467,7 @@ func parseJSON(filePath, dbType string) ([]Field, error) {
 	}
 	defer file.Close()
 
-	var data []map[string]interface{}
+	var data []map[string]any
 	decoder := json.NewDecoder(file)
 
 	// Read opening bracket
@@ -480,7 +480,7 @@ func parseJSON(filePath, dbType string) ([]Field, error) {
 	objectCount := 0
 
 	for decoder.More() && objectCount < maxSampleObjects {
-		var item map[string]interface{}
+		var item map[string]any
 		if err := decoder.Decode(&item); err != nil {
 			return nil, fmt.Errorf("failed to decode JSON object %d: %w", objectCount+1, err)
 		}

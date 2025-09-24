@@ -6,11 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/squealx"
+	"github.com/oarkflow/squealx/connection"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +28,7 @@ type DataConfig struct {
 	Table         string `yaml:"table" json:"table"`
 	Source        string `yaml:"source" json:"source"`
 	Format        string `yaml:"format" json:"format"`
+	DataPath      string `yaml:"data_path,omitempty" json:"data_path,omitempty"`
 }
 
 func ToDatabaseConfig(dc squealx.Config) DataConfig {
@@ -162,16 +162,8 @@ func LoadBCL(path string) (*Config, error) {
 }
 
 func OpenDB(cfg DataConfig) (*squealx.DB, error) {
-	var dsn string
-	if cfg.Driver == "mysql" {
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
-	} else if cfg.Driver == "postgres" {
-		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database)
-	} else {
-		return nil, fmt.Errorf("unsupported driver: %s", cfg.Driver)
-	}
-	db, err := squealx.Open(cfg.Driver, dsn, cfg.Key)
+	squealxCfg := cfg.ToSquealxConfig()
+	db, _, err := connection.FromConfig(squealxCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

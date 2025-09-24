@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/oarkflow/dipper"
 	"github.com/oarkflow/json"
 	"github.com/oarkflow/log"
 
@@ -89,11 +90,43 @@ func (a *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 			log.Printf("Error reading REST response: %v", err)
 			return
 		}
-		// Expecting a JSON array of objects
-		var recs []utils.Record
-		if err := json.Unmarshal(data, &recs); err != nil {
+		// Expecting a JSON array of objects or an object with data field
+		var rawData any
+		if err := json.Unmarshal(data, &rawData); err != nil {
 			log.Printf("JSON unmarshal error: %v", err)
 			return
+		}
+		var recs []utils.Record
+		if a.config.DataPath != "" {
+			// Get data from the specified path
+			dataVal, err := dipper.Get(rawData, a.config.DataPath)
+			if err != nil {
+				log.Printf("Error getting data from path %s: %v", a.config.DataPath, err)
+				return
+			}
+			// Assume it's an array
+			if dataSlice, ok := dataVal.([]any); ok {
+				for _, item := range dataSlice {
+					if rec, ok := item.(map[string]any); ok {
+						recs = append(recs, utils.Record(rec))
+					}
+				}
+			} else {
+				log.Printf("Data at path %s is not an array", a.config.DataPath)
+				return
+			}
+		} else {
+			// Assume root is the array
+			if dataSlice, ok := rawData.([]any); ok {
+				for _, item := range dataSlice {
+					if rec, ok := item.(map[string]any); ok {
+						recs = append(recs, utils.Record(rec))
+					}
+				}
+			} else {
+				log.Printf("Root data is not an array")
+				return
+			}
 		}
 		for _, rec := range recs {
 			out <- rec

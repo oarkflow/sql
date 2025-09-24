@@ -147,7 +147,7 @@ func (at *AggregatorTransformer) Flush(_ context.Context) ([]utils.Record, error
 	return results, nil
 }
 
-func toFloat(val interface{}) (float64, error) {
+func toFloat(val any) (float64, error) {
 	switch v := val.(type) {
 	case int:
 		return float64(v), nil
