@@ -6,5 +6,45 @@
     "parsers": [ "hl7", "json", "xml", "plain", "smpp" ],
     "etl_config": "examples/assets/db-db.yaml",
     "integrations": "examples/cfg/integration.json",
-    "etl_pipelines": { }
+    "etl_pipelines": {
+        "hl7_patient_data": {
+            "name": "HL7 Patient Data Pipeline",
+            "description": "Process HL7 patient data and store in database",
+            "data_type": "hl7",
+            "source": {
+                "type": "json",
+                "driver": "memory"
+            },
+            "destination": {
+                "type": "sqlite",
+                "driver": "sqlite3",
+                "database": ":memory:"
+            },
+            "mapping": {
+                "old_name": "hl7_patient_data",
+                "new_name": "patient_records",
+                "migrate": true,
+                "auto_create_table": true,
+                "normalize_schema": {
+                    "message_control_id": "string",
+                    "patient_id": "string",
+                    "patient_name": "string",
+                    "date_of_birth": "string",
+                    "gender": "string",
+                    "address": "string",
+                    "message_type": "string"
+                },
+                "mapping": {
+                    "MSH.10": "message_control_id",
+                    "PID.3": "patient_id",
+                    "PID.5": "patient_name",
+                    "PID.7": "date_of_birth",
+                    "PID.8": "gender",
+                    "PID.11": "address",
+                    "MSH.9": "message_type"
+                }
+            },
+            "enabled": true
+        }
+    }
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/parsers"
+	"github.com/oarkflow/squealx"
 )
 
 // WebhookServer represents the webhook server
@@ -282,13 +283,14 @@ func (ws *WebhookServer) processWithETL(dataType string, parsedData interface{},
 
 	log.Printf("Processing %s data through ETL pipeline: %s", dataType, pipeline.Name)
 
-	// For HL7 data, extract relevant fields for ETL processing
+	// Use the parsed data directly - the parser already provides structured data
 	var processedData map[string]interface{}
 
 	switch dataType {
 	case "hl7":
+		// Flatten HL7 structured data for ETL mapping
 		if hl7Data, ok := parsedData.(map[string]interface{}); ok {
-			processedData = ws.extractHL7Fields(hl7Data)
+			processedData = ws.flattenHL7Data(hl7Data)
 		}
 	case "json":
 		if jsonData, ok := parsedData.(map[string]interface{}); ok {
@@ -307,70 +309,183 @@ func (ws *WebhookServer) processWithETL(dataType string, parsedData interface{},
 		return fmt.Errorf("failed to process data for ETL pipeline")
 	}
 
-	// Create a temporary ETL instance for this webhook data
-	// In a production system, you might want to use the ETL manager
-	_ = etl.NewETL(
-		fmt.Sprintf("%s-%d", pipeline.Name, time.Now().Unix()),
-		pipeline.Description,
-		etl.WithSource("json", nil, "", "", "", "json"), // Use json source type
-		etl.WithDestination(pipeline.Destination, nil, pipeline.Mapping),
-	)
-
-	// Add the processed data to the ETL context
-	// This is a simplified approach - in production, you'd store data in a temporary table/file
-	_ = context.Background()
-
-	// For demonstration, we'll log the processed data
-	// In a real implementation, you'd pass this data to the ETL process
-	log.Printf("ETL Pipeline %s would process data: %+v", pipeline.Name, processedData)
-
-	// TODO: Implement actual ETL execution with the processed data
-	// This would involve creating a temporary data source and running the ETL pipeline
+	// Apply ETL field mapping and insert into destination database
+	if err := ws.executeETLMapping(pipeline, processedData); err != nil {
+		log.Printf("ETL mapping execution failed: %v", err)
+		return err
+	}
 
 	log.Printf("Successfully processed %s data through ETL pipeline: %s", dataType, pipeline.Name)
 
 	return nil
 }
 
-// extractHL7Fields extracts relevant fields from HL7 parsed data for ETL processing
-func (ws *WebhookServer) extractHL7Fields(hl7Data map[string]interface{}) map[string]interface{} {
+// executeETLMapping applies field mapping and inserts data into destination database
+func (ws *WebhookServer) executeETLMapping(pipeline *ETLPipeline, data map[string]interface{}) error {
+	// Apply field mapping from ETL configuration
+	mappedData := make(map[string]interface{})
+
+	for sourceField, destField := range pipeline.Mapping.Mapping {
+		if value, exists := data[sourceField]; exists {
+			// Convert complex types to strings for database insertion
+			mappedData[destField] = ws.convertForDatabase(value)
+		}
+	}
+
+	// Add any extra values from configuration
+	for key, value := range pipeline.Mapping.ExtraValues {
+		mappedData[key] = ws.convertForDatabase(value)
+	}
+
+	// Add timestamp if not present
+	if _, exists := mappedData["created_at"]; !exists {
+		mappedData["created_at"] = time.Now()
+	}
+	if _, exists := mappedData["updated_at"]; !exists {
+		mappedData["updated_at"] = time.Now()
+	}
+
+	log.Printf("Mapped data for insertion: %+v", mappedData)
+
+	// Insert into destination database
+	return ws.insertIntoDatabase(pipeline.Destination, pipeline.Mapping.NewName, mappedData, pipeline.Mapping)
+}
+
+// insertIntoDatabase inserts mapped data into the destination database
+func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName string, data map[string]interface{}, mapping config.TableMapping) error {
+	// Open database connection
+	db, err := config.OpenDB(dest)
+	if err != nil {
+		return fmt.Errorf("failed to connect to destination database: %w", err)
+	}
+	defer db.Close()
+
+	// Auto-create table if configured
+	if mapping.AutoCreateTable {
+		if err := ws.createTableIfNotExists(db, tableName, data, mapping); err != nil {
+			log.Printf("Warning: failed to create table %s: %v", tableName, err)
+		}
+	}
+
+	// Build INSERT query
+	columns := make([]string, 0, len(data))
+	placeholders := make([]string, 0, len(data))
+	values := make([]interface{}, 0, len(data))
+
+	for col, val := range data {
+		columns = append(columns, fmt.Sprintf(`"%s"`, col))
+		placeholders = append(placeholders, "?")
+		values = append(values, val)
+	}
+
+	query := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES (%s)`,
+		tableName,
+		strings.Join(columns, ", "),
+		strings.Join(placeholders, ", "))
+
+	log.Printf("Executing query: %s with values: %v", query, values)
+
+	_, err = db.Exec(query, values...)
+	if err != nil {
+		return fmt.Errorf("failed to insert data: %w", err)
+	}
+
+	log.Printf("Successfully inserted data into table %s", tableName)
+	return nil
+}
+
+// createTableIfNotExists creates the destination table if it doesn't exist
+func (ws *WebhookServer) createTableIfNotExists(db *squealx.DB, tableName string, data map[string]interface{}, mapping config.TableMapping) error {
+	// Build CREATE TABLE query based on data types
+	columns := make([]string, 0, len(data))
+
+	for col, val := range data {
+		sqlType := ws.inferSQLType(val, mapping.NormalizeSchema[col])
+		// Use proper column quoting for the database type
+		columns = append(columns, fmt.Sprintf(`"%s" %s`, col, sqlType))
+	}
+
+	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s)`,
+		tableName,
+		strings.Join(columns, ", "))
+
+	log.Printf("Creating table with query: %s", query)
+
+	_, err := db.Exec(query)
+	return err
+}
+
+// convertForDatabase converts complex data types to database-compatible types
+func (ws *WebhookServer) convertForDatabase(value interface{}) interface{} {
+	switch v := value.(type) {
+	case []interface{}:
+		// Convert array to comma-separated string
+		var parts []string
+		for _, item := range v {
+			if item != nil {
+				parts = append(parts, fmt.Sprintf("%v", item))
+			}
+		}
+		return strings.Join(parts, " ")
+	case map[string]interface{}:
+		// Convert map to JSON-like string
+		return fmt.Sprintf("%v", v)
+	case nil:
+		return nil
+	default:
+		return v
+	}
+}
+
+// inferSQLType infers SQL data type from Go value and optional schema hint
+func (ws *WebhookServer) inferSQLType(value interface{}, schemaHint string) string {
+	if schemaHint != "" {
+		switch strings.ToLower(schemaHint) {
+		case "string", "text":
+			return "TEXT"
+		case "int", "integer":
+			return "INTEGER"
+		case "bool", "boolean":
+			return "BOOLEAN"
+		case "date", "datetime":
+			return "TIMESTAMP"
+		case "float", "decimal":
+			return "REAL"
+		}
+	}
+
+	switch value.(type) {
+	case int, int32, int64:
+		return "INTEGER"
+	case float32, float64:
+		return "REAL"
+	case bool:
+		return "BOOLEAN"
+	case string:
+		return "TEXT"
+	case time.Time:
+		return "TIMESTAMP"
+	default:
+		return "TEXT"
+	}
+}
+
+// flattenHL7Data flattens HL7 structured data for ETL mapping compatibility
+func (ws *WebhookServer) flattenHL7Data(hl7Data map[string]interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
 
-	// Extract PID (Patient Identification) segment data
-	if pidSegments, ok := hl7Data["PID"].([]map[string]interface{}); ok && len(pidSegments) > 0 {
-		pid := pidSegments[0]
+	for segmentName, segmentData := range hl7Data {
+		if segmentArray, ok := segmentData.([]map[string]interface{}); ok && len(segmentArray) > 0 {
+			// Use the first segment instance (most common case)
+			segment := segmentArray[0]
 
-		// Extract common patient fields
-		if patientID, ok := pid["3"].(string); ok {
-			result["patient_id"] = patientID
-		}
-		if patientName, ok := pid["5"].(string); ok {
-			result["patient_name"] = patientName
-		}
-		if dob, ok := pid["7"].(string); ok {
-			result["date_of_birth"] = dob
-		}
-		if gender, ok := pid["8"].(string); ok {
-			result["gender"] = gender
-		}
-		if address, ok := pid["11"].(string); ok {
-			result["address"] = address
+			// Create flattened keys like "MSH.1", "MSH.2", "PID.3", etc.
+			for fieldKey, fieldValue := range segment {
+				flattenedKey := fmt.Sprintf("%s.%s", segmentName, fieldKey)
+				result[flattenedKey] = fieldValue
+			}
 		}
 	}
-
-	// Extract MSH (Message Header) data
-	if mshSegments, ok := hl7Data["MSH"].([]map[string]interface{}); ok && len(mshSegments) > 0 {
-		msh := mshSegments[0]
-		if messageType, ok := msh["9"].(string); ok {
-			result["message_type"] = messageType
-		}
-		if controlID, ok := msh["10"].(string); ok {
-			result["control_id"] = controlID
-		}
-	}
-
-	// Add timestamp
-	result["processed_at"] = time.Now().Format(time.RFC3339)
 
 	return result
 }
