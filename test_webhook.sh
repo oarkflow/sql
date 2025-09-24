@@ -38,8 +38,42 @@ curl -X POST http://localhost:8080/webhook \
      -w "\nHTTP Status: %{http_code}\n"
 echo ""
 
-# Test 3: Health check
-echo "Test 3: Health check"
+# Test 3: SMPP PDU
+echo "Test 3: Sending SMPP bind_transceiver PDU"
+# Create a binary SMPP PDU file
+python3 -c "
+import struct
+# SMPP bind_transceiver PDU
+# Body: system_id, password, system_type, interface_version, addr_ton, addr_npi, address_range
+system_id = b'test\x00'          # 5 bytes
+password = b'password\x00'       # 9 bytes
+system_type = b'sms\x00'         # 4 bytes
+interface_version = 0x34         # 1 byte
+addr_ton = 0                     # 1 byte
+addr_npi = 0                     # 1 byte
+address_range = b'\x00'          # 1 byte
+
+body = system_id + password + system_type + bytes([interface_version, addr_ton, addr_npi]) + address_range
+command_length = 16 + len(body)  # Header (16) + body length
+command_id = 0x00000009          # bind_transceiver
+command_status = 0
+sequence_number = 1
+
+pdu = struct.pack('>LLLL', command_length, command_id, command_status, sequence_number) + body
+with open('/tmp/smpp_pdu.bin', 'wb') as f:
+    f.write(pdu)
+"
+
+echo "curl -X POST http://localhost:8080/webhook -H 'Content-Type: application/octet-stream' -H 'X-Data-Type: smpp' --data-binary @/tmp/smpp_pdu.bin"
+curl -X POST http://localhost:8080/webhook \
+     -H 'Content-Type: application/octet-stream' \
+     -H 'X-Data-Type: smpp' \
+     --data-binary @/tmp/smpp_pdu.bin \
+     -w "\nHTTP Status: %{http_code}\n"
+echo ""
+
+# Test 4: Health check
+echo "Test 4: Health check"
 echo "curl http://localhost:8080/health"
 curl http://localhost:8080/health
 echo ""

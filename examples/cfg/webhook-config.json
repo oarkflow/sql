@@ -3,7 +3,7 @@
     "max_workers": 10,
     "secret": "",
     "data_types": [ "hl7", "json", "xml", "plain", "smpp" ],
-    "parsers": [ "hl7", "json", "xml", "plain", "smpp" ],
+    "parsers": [ "hl7", "json", "xml", "smpp", "plain" ],
     "etl_config": "examples/assets/db-db.yaml",
     "integrations": "examples/cfg/integration.json",
     "etl_pipelines": {
@@ -42,6 +42,43 @@
                     "PID.8": "gender",
                     "PID.11": "address",
                     "MSH.9": "message_type"
+                }
+            },
+            "enabled": true
+        },
+        "smpp_message_data": {
+            "name": "SMPP Message Data Pipeline",
+            "description": "Process SMPP message data and store in database",
+            "data_type": "smpp",
+            "source": {
+                "type": "json",
+                "driver": "memory"
+            },
+            "destination": {
+                "type": "sqlite",
+                "driver": "sqlite3",
+                "database": ":memory:"
+            },
+            "mapping": {
+                "old_name": "smpp_message_data",
+                "new_name": "sms_messages",
+                "migrate": true,
+                "auto_create_table": true,
+                "normalize_schema": {
+                    "message_id": "string",
+                    "source_addr": "string",
+                    "destination_addr": "string",
+                    "short_message": "string",
+                    "command_name": "string",
+                    "sequence_number": "integer"
+                },
+                "mapping": {
+                    "message_id": "message_id",
+                    "source_addr": "source_addr",
+                    "destination_addr": "destination_addr",
+                    "short_message": "short_message",
+                    "command_name": "command_name",
+                    "sequence_number": "sequence_number"
                 }
             },
             "enabled": true

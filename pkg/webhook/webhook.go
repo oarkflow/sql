@@ -362,7 +362,7 @@ func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName st
 
 	// Auto-create table if configured
 	if mapping.AutoCreateTable {
-		if err := ws.createTableIfNotExists(db, tableName, data, mapping); err != nil {
+		if err := ws.createTableIfNotExists(db, tableName, data, mapping, dest.Driver); err != nil {
 			log.Printf("Warning: failed to create table %s: %v", tableName, err)
 		}
 	}
@@ -372,14 +372,20 @@ func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName st
 	placeholders := make([]string, 0, len(data))
 	values := make([]interface{}, 0, len(data))
 
+	// Use proper quoting for the database type
+	quoteChar := `"`
+	if ws.isMySQLDriver(dest.Driver) {
+		quoteChar = "`"
+	}
+
 	for col, val := range data {
-		columns = append(columns, fmt.Sprintf(`"%s"`, col))
+		columns = append(columns, fmt.Sprintf(`%s%s%s`, quoteChar, col, quoteChar))
 		placeholders = append(placeholders, "?")
 		values = append(values, val)
 	}
 
-	query := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES (%s)`,
-		tableName,
+	query := fmt.Sprintf(`INSERT INTO %s%s%s (%s) VALUES (%s)`,
+		quoteChar, tableName, quoteChar,
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "))
 
@@ -395,24 +401,35 @@ func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName st
 }
 
 // createTableIfNotExists creates the destination table if it doesn't exist
-func (ws *WebhookServer) createTableIfNotExists(db *squealx.DB, tableName string, data map[string]interface{}, mapping config.TableMapping) error {
+func (ws *WebhookServer) createTableIfNotExists(db *squealx.DB, tableName string, data map[string]interface{}, mapping config.TableMapping, driver string) error {
 	// Build CREATE TABLE query based on data types
 	columns := make([]string, 0, len(data))
+
+	// Use proper quoting for the database type
+	quoteChar := `"`
+	if ws.isMySQLDriver(driver) {
+		quoteChar = "`"
+	}
 
 	for col, val := range data {
 		sqlType := ws.inferSQLType(val, mapping.NormalizeSchema[col])
 		// Use proper column quoting for the database type
-		columns = append(columns, fmt.Sprintf(`"%s" %s`, col, sqlType))
+		columns = append(columns, fmt.Sprintf(`%s%s%s %s`, quoteChar, col, quoteChar, sqlType))
 	}
 
-	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s)`,
-		tableName,
+	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s%s%s (%s)`,
+		quoteChar, tableName, quoteChar,
 		strings.Join(columns, ", "))
 
 	log.Printf("Creating table with query: %s", query)
 
 	_, err := db.Exec(query)
 	return err
+}
+
+// isMySQLDriver checks if the driver is MySQL
+func (ws *WebhookServer) isMySQLDriver(driver string) bool {
+	return strings.Contains(strings.ToLower(driver), "mysql")
 }
 
 // convertForDatabase converts complex data types to database-compatible types
