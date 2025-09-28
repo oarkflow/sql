@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
+	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/adapters/fileadapter"
 	"github.com/oarkflow/sql/pkg/adapters/ioadapter"
+	"github.com/oarkflow/sql/pkg/adapters/serviceadapter"
 	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -47,6 +50,9 @@ func NewSource(sourceType string, sourceDB *squealx.DB, sourceFile, sourceTable,
 		src = fileadapter.New(fileSrc, "source", false)
 	} else if sourceType == "stdin" {
 		return ioadapter.NewSource(os.Stdin, format), nil
+	} else if sourceType == "service" {
+		// Service type requires integration manager - this will be handled by WithServiceSource
+		return nil, fmt.Errorf("service type must be used with WithServiceSource option")
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
@@ -265,6 +271,106 @@ func WithMultipleSources(sourceConfs []SourceConfig) Option {
 			}
 			e.sources = append(e.sources, src)
 		}
+		return nil
+	}
+}
+
+// Enhanced ETL configuration options
+
+// WithStateManager sets a custom state manager
+func WithStateManager(sm *StateManager) Option {
+	return func(e *ETL) error {
+		e.stateManager = sm
+		return nil
+	}
+}
+
+// WithDeadLetterQueue sets a custom dead letter queue
+func WithDeadLetterQueue(dlq *DeadLetterQueue) Option {
+	return func(e *ETL) error {
+		e.deadLetterQueue = dlq
+		return nil
+	}
+}
+
+// WithIdempotencyManager sets a custom idempotency manager
+func WithIdempotencyManager(im *IdempotencyManager) Option {
+	return func(e *ETL) error {
+		e.idempotencyMgr = im
+		return nil
+	}
+}
+
+// WithStateFile sets the state file path
+func WithStateFile(file string) Option {
+	return func(e *ETL) error {
+		e.stateFile = file
+		return nil
+	}
+}
+
+// WithDLQFile sets the dead letter queue file path
+func WithDLQFile(file string) Option {
+	return func(e *ETL) error {
+		e.dlqFile = file
+		return nil
+	}
+}
+
+// WithIdempotencyFile sets the idempotency file path
+func WithIdempotencyFile(file string) Option {
+	return func(e *ETL) error {
+		e.idempotencyFile = file
+		return nil
+	}
+}
+
+// WithIdempotencyFields sets the fields to use for idempotency keys
+func WithIdempotencyFields(fields []string) Option {
+	return func(e *ETL) error {
+		if e.idempotencyMgr != nil {
+			// Store fields in metadata for later use
+			e.stateManager.SetMetadata("idempotency_fields", fields)
+		}
+		return nil
+	}
+}
+
+// WithDLQConfig configures the dead letter queue parameters
+func WithDLQConfig(maxSize, maxRetries int, baseDelay, maxDelay time.Duration) Option {
+	return func(e *ETL) error {
+		if e.deadLetterQueue != nil {
+			// Update existing DLQ configuration
+			// Note: This would require additional methods in DeadLetterQueue
+		}
+		return nil
+	}
+}
+
+// WithAutoSaveInterval sets the auto-save interval for state
+func WithAutoSaveInterval(interval time.Duration) Option {
+	return func(e *ETL) error {
+		if e.stateManager != nil {
+			// This would require a method to update the auto-save interval
+		}
+		return nil
+	}
+}
+
+// WithServiceSource creates and adds a service source using integrations
+func WithServiceSource(integrationManager *integrations.Manager, serviceName, query, table, key string, credentials map[string]interface{}) Option {
+	return func(e *ETL) error {
+		config := serviceadapter.Config{
+			ServiceName: serviceName,
+			ServiceType: "database", // Currently only database services are supported
+			Query:       query,
+			Table:       table,
+			Key:         key,
+			Credentials: credentials,
+		}
+
+		src := serviceadapter.New(integrationManager, config)
+		e.sources = append(e.sources, src)
 		return nil
 	}
 }

@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
+	
 	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/transaction"
-
+	
 	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -52,7 +52,7 @@ type LoaderNode struct {
 	deadLetterQueueCap int
 }
 
-func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, cfg config.TableMapping) (<-chan utils.Record, error) {
+func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, cfg config.TableMapping, args ...any) (<-chan utils.Record, error) {
 	done := make(chan utils.Record)
 	ln.inChan = in
 	ln.batchChan = make(chan []utils.Record, ln.workerCount)
@@ -61,7 +61,7 @@ func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, cfg c
 	go ln.batchRecords(ctx)
 	for i := 0; i < ln.workerCount; i++ {
 		ln.wg.Add(1)
-		go ln.loaderWorker(ctx, i, cfg)
+		go ln.loaderWorker(ctx, i, cfg, args...)
 	}
 	go func() {
 		ln.wg.Wait()
@@ -108,7 +108,7 @@ func (ln *LoaderNode) saveCheckpoint(cp string) {
 	ln.lastCheckpoint.Store(cp)
 }
 
-func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.TableMapping) {
+func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.TableMapping, args ...any) {
 	defer ln.wg.Done()
 	var localLoaded int64 = 0
 	var localFailed int64 = 0

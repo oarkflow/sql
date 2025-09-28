@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
+	
 	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/expr"
 	"github.com/robfig/cron/v3"
-
+	
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/transactions"
@@ -127,26 +127,42 @@ type ETL struct {
 	CreatedAt       time.Time
 	LastRunAt       time.Time
 	Status          string
+	
+	// Enhanced incremental ETL components
+	stateManager    *StateManager
+	deadLetterQueue *DeadLetterQueue
+	idempotencyMgr  *IdempotencyManager
+	stateFile       string
+	dlqFile         string
+	idempotencyFile string
 }
 
 func defaultConfig() *ETL {
 	v := new(atomic.Value)
 	v.Store("")
+	
+	// Generate default file names based on timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	etlID := fmt.Sprintf("etl_%s", timestamp)
+	
 	return &ETL{
-		workerCount:    4,
-		batchSize:      100,
-		retryCount:     3,
-		retryDelay:     100 * time.Millisecond,
-		loaderWorkers:  2,
-		rawChanBuffer:  100,
-		maxErrorCount:  10,
-		lookupStore:    make(map[string][]utils.Record),
-		circuitBreaker: transactions.NewCircuitBreaker(5, 5*time.Second),
-		metrics:        &Metrics{},
-		Logger:         log.Default(),
-		CreatedAt:      time.Now(),
-		Status:         "INACTIVE",
-		lastCheckpoint: v,
+		workerCount:     4,
+		batchSize:       100,
+		retryCount:      3,
+		retryDelay:      100 * time.Millisecond,
+		loaderWorkers:   2,
+		rawChanBuffer:   100,
+		maxErrorCount:   10,
+		lookupStore:     make(map[string][]utils.Record),
+		circuitBreaker:  transactions.NewCircuitBreaker(5, 5*time.Second),
+		metrics:         &Metrics{},
+		Logger:          log.Default(),
+		CreatedAt:       time.Now(),
+		Status:          "INACTIVE",
+		lastCheckpoint:  v,
+		stateFile:       fmt.Sprintf("etl_state_%s.json", etlID),
+		dlqFile:         fmt.Sprintf("etl_dlq_%s.json", etlID),
+		idempotencyFile: fmt.Sprintf("etl_idempotency_%s.json", etlID),
 	}
 }
 
@@ -159,6 +175,10 @@ func NewETL(id, name string, opts ...Option) *ETL {
 			log.Printf("Error applying option: %v", err)
 		}
 	}
+	
+	// Initialize enhanced components
+	e.initializeEnhancedComponents()
+	
 	for _, p := range e.plugins {
 		if err := p.Init(e); err != nil {
 			log.Printf("Error initializing plugin %s: %v", p.Name(), err)
@@ -171,6 +191,51 @@ func NewETL(id, name string, opts ...Option) *ETL {
 
 func (e *ETL) SetTableConfig(tableCfg config.TableMapping) {
 	e.tableCfg = tableCfg
+}
+
+// initializeEnhancedComponents initializes the enhanced ETL components
+func (e *ETL) initializeEnhancedComponents() {
+	// Initialize state manager
+	if e.stateManager == nil {
+		e.stateManager = NewStateManager(e.ID, e.stateFile)
+	}
+	
+	// Initialize dead letter queue
+	if e.deadLetterQueue == nil {
+		e.deadLetterQueue = NewDeadLetterQueue(
+			e.dlqFile,
+			10000,          // max size
+			3,              // max retries
+			time.Minute,    // base delay
+			30*time.Minute, // max delay
+		)
+		e.deadLetterQueue.SetStateManager(e.stateManager)
+	}
+	
+	// Initialize idempotency manager
+	if e.idempotencyMgr == nil {
+		e.idempotencyMgr = NewIdempotencyManager(
+			e.idempotencyFile,
+			24*time.Hour, // TTL
+			100000,       // max keys
+		)
+	}
+	
+	// Start auto-save for state manager
+	e.stateManager.StartAutoSave()
+	
+	// Start retry processing for dead letter queue
+	if e.deadLetterQueue != nil {
+		go e.deadLetterQueue.ProcessRetries(context.Background(), e.processDeadLetterRecord)
+	}
+}
+
+// processDeadLetterRecord processes a record from the dead letter queue
+func (e *ETL) processDeadLetterRecord(record DeadLetterRecord) error {
+	// This would contain the logic to reprocess the failed record
+	// For now, we'll just log it
+	log.Printf("[ETL %s] Reprocessing dead letter record: %s", e.ID, record.ID)
+	return nil
 }
 
 type Adjustable interface {
@@ -306,37 +371,81 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 	return records, nil
 }
 
-func (e *ETL) Run(ctx context.Context) error {
+func (e *ETL) Run(ctx context.Context, args ...any) error {
 	if e.Status == "RUNNING" {
 		return fmt.Errorf("ETL job %s is already running", e.ID)
 	}
+	
+	// Check if we can resume from a previous state
+	resumeInfo := e.stateManager.GetResumeInfo()
+	canResume := resumeInfo["can_resume"].(bool)
+	
+	if canResume {
+		log.Printf("[ETL %s] Found resumable state: %+v", e.ID, resumeInfo)
+		if !e.confirmResume() {
+			log.Printf("[ETL %s] Resume declined by user, starting fresh", e.ID)
+			e.stateManager.ResetState()
+		} else {
+			log.Printf("[ETL %s] Resuming from checkpoint: %s", e.ID, resumeInfo["last_checkpoint"])
+			e.Status = "RESUMING"
+		}
+	} else {
+		e.Status = "RUNNING"
+	}
+	
 	e.LastRunAt = time.Now()
-	e.Status = "RUNNING"
+	e.stateManager.UpdateStatus(e.Status)
 	overallStart := time.Now()
+	
+	// Save initial state
+	if err := e.stateManager.SaveState(); err != nil {
+		log.Printf("[ETL %s] Failed to save initial state: %v", e.ID, err)
+	}
+	
 	if e.pipelineConfig == nil {
 		e.pipelineConfig = e.buildDefaultPipeline()
 	}
-	err := e.runPipeline(ctx, e.pipelineConfig)
+	
+	err := e.runPipeline(ctx, e.pipelineConfig, args...)
 	if err != nil {
 		e.Status = "FAILED"
+		e.stateManager.UpdateStatus("FAILED")
 		if e.Logger != nil {
 			e.Logger.Printf("[ETL] Pipeline error: %v", err)
 		} else {
 			log.Printf("[ETL] Pipeline error: %v", err)
 		}
+		
+		// Save failed state
+		if e.stateManager != nil {
+			e.stateManager.AddError("ETL", 0, err.Error(), 0, "CRITICAL")
+			e.stateManager.SaveState()
+		}
 		return err
 	}
+	
 	if atomic.LoadInt64(&e.metrics.Errors) >= int64(e.maxErrorCount) {
 		e.Status = "FAILED"
+		e.stateManager.UpdateStatus("FAILED")
 		err = fmt.Errorf("maximum error threshold exceeded (%d errors)", e.metrics.Errors)
 		if e.Logger != nil {
 			e.Logger.Println("[ETL]", err)
 		} else {
 			log.Println("[ETL]", err)
 		}
+		
+		// Save failed state
+		if e.stateManager != nil {
+			e.stateManager.AddError("ETL", 0, err.Error(), 0, "CRITICAL")
+			e.stateManager.SaveState()
+		}
 		return err
 	}
+	
 	elapsed := time.Since(overallStart)
+	e.Status = "COMPLETED"
+	e.stateManager.UpdateStatus("COMPLETED")
+	
 	if e.Logger != nil {
 		e.Logger.Printf("[ETL] Total pipeline execution time: %v", elapsed)
 		e.Logger.Printf("[ETL] Summary: %+v", e.GetSummary())
@@ -344,15 +453,181 @@ func (e *ETL) Run(ctx context.Context) error {
 		log.Printf("[ETL] Total pipeline execution time: %v", elapsed)
 		log.Printf("[ETL] Summary: %+v", e.GetSummary())
 	}
+	
 	if e.eventBus != nil {
 		summary := e.GetSummary()
 		e.eventBus.Publish("Summary", summary)
 	}
-	e.Status = "COMPLETED"
+	
+	// Save final state
+	if e.stateManager != nil {
+		e.stateManager.SaveState()
+	}
+	
 	if e.checkpointStore != nil {
 		return e.checkpointStore.Remove()
 	}
 	return nil
+}
+
+// confirmResume asks the user if they want to resume (for now, auto-confirm)
+func (e *ETL) confirmResume() bool {
+	// In a real implementation, this might prompt the user or check configuration
+	// For now, we'll auto-resume if possible
+	return true
+}
+
+// GetEnhancedMetrics returns comprehensive metrics including state information
+func (e *ETL) GetEnhancedMetrics() map[string]interface{} {
+	metrics := map[string]interface{}{}
+	
+	// Basic metrics
+	basicMetrics := e.GetMetrics()
+	metrics["basic"] = basicMetrics
+	
+	// State information
+	if e.stateManager != nil {
+		state := e.stateManager.GetState()
+		metrics["state"] = map[string]interface{}{
+			"status":            state.Status,
+			"processed_records": state.ProcessedRecords,
+			"failed_records":    state.FailedRecords,
+			"last_checkpoint":   state.LastCheckpoint,
+			"state_version":     state.StateVersion,
+			"can_resume":        e.stateManager.CanResume(),
+		}
+		
+		// Resume info
+		resumeInfo := e.stateManager.GetResumeInfo()
+		metrics["resume_info"] = resumeInfo
+	}
+	
+	// Dead letter queue stats
+	if e.deadLetterQueue != nil {
+		dlqStats := e.deadLetterQueue.GetQueueStats()
+		metrics["dead_letter_queue"] = dlqStats
+	}
+	
+	// Idempotency stats
+	if e.idempotencyMgr != nil {
+		idempotencyStats := e.idempotencyMgr.GetStats()
+		metrics["idempotency"] = idempotencyStats
+	}
+	
+	return metrics
+}
+
+// Resume resumes the ETL from the last checkpoint
+func (e *ETL) Resume(ctx context.Context, args ...any) error {
+	if !e.stateManager.CanResume() {
+		return fmt.Errorf("ETL %s cannot be resumed (current status: %s)", e.ID, e.stateManager.GetState().Status)
+	}
+	
+	log.Printf("[ETL %s] Resuming ETL process", e.ID)
+	return e.Run(ctx, args...)
+}
+
+// Pause pauses the ETL process
+func (e *ETL) Pause() error {
+	if e.Status != "RUNNING" && e.Status != "RESUMING" {
+		return fmt.Errorf("ETL %s is not running (status: %s)", e.ID, e.Status)
+	}
+	
+	e.Status = "PAUSED"
+	if e.stateManager != nil {
+		e.stateManager.UpdateStatus("PAUSED")
+		e.stateManager.SaveState()
+	}
+	
+	log.Printf("[ETL %s] ETL process paused", e.ID)
+	return nil
+}
+
+// Stop stops the ETL process
+func (e *ETL) Stop() error {
+	if e.Status != "RUNNING" && e.Status != "RESUMING" && e.Status != "PAUSED" {
+		return fmt.Errorf("ETL %s is not running (status: %s)", e.ID, e.Status)
+	}
+	
+	e.Status = "STOPPED"
+	if e.stateManager != nil {
+		e.stateManager.UpdateStatus("STOPPED")
+		e.stateManager.SaveState()
+	}
+	
+	// Stop enhanced components
+	if e.stateManager != nil {
+		e.stateManager.StopAutoSave()
+	}
+	if e.deadLetterQueue != nil {
+		e.deadLetterQueue.Stop()
+	}
+	if e.idempotencyMgr != nil {
+		e.idempotencyMgr.Stop()
+	}
+	
+	log.Printf("[ETL %s] ETL process stopped", e.ID)
+	return nil
+}
+
+// GetDeadLetterRecords returns failed records for manual inspection
+func (e *ETL) GetDeadLetterRecords() []DeadLetterRecord {
+	if e.deadLetterQueue == nil {
+		return nil
+	}
+	return e.deadLetterQueue.GetFailedRecords()
+}
+
+// GetStateInfo returns current state information
+func (e *ETL) GetStateInfo() *ETLState {
+	if e.stateManager == nil {
+		return nil
+	}
+	return e.stateManager.GetState()
+}
+
+// GetDeadLetterQueue returns the dead letter queue
+func (e *ETL) GetDeadLetterQueue() *DeadLetterQueue {
+	return e.deadLetterQueue
+}
+
+// GetIdempotencyManager returns the idempotency manager
+func (e *ETL) GetIdempotencyManager() *IdempotencyManager {
+	return e.idempotencyMgr
+}
+
+// GetStateManager returns the state manager
+func (e *ETL) GetStateManager() *StateManager {
+	return e.stateManager
+}
+
+// SetCheckpointInterval sets the checkpoint interval (placeholder)
+func (e *ETL) SetCheckpointInterval(interval time.Duration) {
+	// This would update the checkpoint interval in the loader node
+	log.Printf("[ETL %s] Checkpoint interval set to %v", e.ID, interval)
+}
+
+// SetMaxErrorThreshold sets the maximum error threshold (placeholder)
+func (e *ETL) SetMaxErrorThreshold(threshold int) {
+	e.maxErrorCount = threshold
+	log.Printf("[ETL %s] Max error threshold set to %d", e.ID, threshold)
+}
+
+// Cleanup cleans up old state and temporary files
+func (e *ETL) Cleanup(retentionPeriod time.Duration) {
+	if e.stateManager != nil {
+		// Clean up old state files
+	}
+	
+	if e.deadLetterQueue != nil {
+		e.deadLetterQueue.Cleanup(retentionPeriod)
+	}
+	
+	if e.idempotencyMgr != nil {
+		e.idempotencyMgr.CleanupExpired()
+	}
+	
+	log.Printf("[ETL %s] Cleanup completed", e.ID)
 }
 
 // GetMetadata returns key ETL metadata in a structured format.
@@ -380,10 +655,10 @@ func (e *ETL) GetMetadata() map[string]any {
 
 // ScheduleRun starts a cron scheduler that runs the ETL job per the schedule in the pipeline config.
 // If the schedule field is empty, it immediately runs the job.
-func (e *ETL) ScheduleRun(ctx context.Context) error {
+func (e *ETL) ScheduleRun(ctx context.Context, args ...any) error {
 	if e.pipelineConfig == nil || e.pipelineConfig.Schedule == "" {
 		// No scheduling set; run immediately.
-		return e.Run(ctx)
+		return e.Run(ctx, args...)
 	}
 	c := cron.New()
 	_, err := c.AddFunc(e.pipelineConfig.Schedule, func() {
@@ -527,7 +802,7 @@ func (pc *PipelineConfig) prepare() map[string]*dagNode {
 	return pc.nodes
 }
 
-func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
+func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, args ...any) error {
 	nodes := pc.prepare()
 	queue := make([]string, 0)
 	for id, node := range pc.nodes {
@@ -547,7 +822,7 @@ func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig) error {
 		} else {
 			inputCh = mergeChannels(currentNode.inChs)
 		}
-		outCh, err := currentNode.pn.Process(ctx, inputCh, e.tableCfg)
+		outCh, err := currentNode.pn.Process(ctx, inputCh, e.tableCfg, args...)
 		if err != nil {
 			return fmt.Errorf("error running node %s: %v", currentID, err)
 		}

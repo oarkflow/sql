@@ -28,7 +28,7 @@ type MapNode struct {
 	ctx                context.Context
 }
 
-func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+func (mn *MapNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping, args ...any) (<-chan utils.Record, error) {
 	mn.ctx = ctx
 	mn.inChan = in
 	mn.outChan = make(chan utils.Record, mn.workerCount*2)

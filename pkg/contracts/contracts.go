@@ -2,7 +2,7 @@ package contracts
 
 import (
 	"context"
-
+	
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/utils"
 )
@@ -10,6 +10,7 @@ import (
 type SourceOption struct {
 	Table string
 	Query string
+	Args  []any
 }
 
 // Option defines a function type for configuring a SQLAdapter.
@@ -26,6 +27,12 @@ func WithTable(table string) Option {
 func WithQuery(query string) Option {
 	return func(a *SourceOption) {
 		a.Query = query
+	}
+}
+
+func WithArguments(args ...any) Option {
+	return func(a *SourceOption) {
+		a.Args = args
 	}
 }
 
@@ -79,7 +86,7 @@ type LookupLoader interface {
 }
 
 type Node interface {
-	Process(ctx context.Context, in <-chan utils.Record, tableCfg config.TableMapping) (<-chan utils.Record, error)
+	Process(ctx context.Context, in <-chan utils.Record, tableCfg config.TableMapping, args ...any) (<-chan utils.Record, error)
 }
 
 type Flushable interface {

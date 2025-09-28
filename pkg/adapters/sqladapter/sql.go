@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
+	
 	"github.com/oarkflow/log"
 	"github.com/oarkflow/squealx"
-
+	
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/utils"
@@ -115,7 +115,7 @@ func (l *Adapter) disableConstraints(ctx context.Context) error {
 		return fmt.Errorf("failed to disable foreign keys: %v", err)
 	}
 	l.disabledForeignKeys = true
-
+	
 	// Disable indexes for MySQL
 	if l.Driver == "mysql" {
 		idxSQL := fmt.Sprintf("ALTER TABLE %s DISABLE KEYS", l.Table)
@@ -136,7 +136,7 @@ func (l *Adapter) enableConstraints(ctx context.Context) error {
 		}
 		l.disabledIndexes = false
 	}
-
+	
 	// Enable foreign keys
 	if l.disabledForeignKeys {
 		var fkSQL string
@@ -234,7 +234,7 @@ func (l *Adapter) StoreBatch(ctx context.Context, batch []utils.Record) error {
 
 // Refactored StoreSingle using ExecWithReturning
 func (l *Adapter) StoreSingle(ctx context.Context, rec utils.Record) error {
-
+	
 	if l.AutoCreate && !l.Created {
 		if err := sqlutil.CreateTableFromRecord(l.Db, l.Driver, l.Table, l.NormalizeSchema); err != nil {
 			return err
@@ -294,7 +294,13 @@ func (l *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 	out := make(chan utils.Record, 100)
 	go func(query string) {
 		defer close(out)
-		rows, err := l.Db.QueryContext(ctx, q)
+		var rows squealx.SQLRows
+		var err error
+		if len(opt.Args) > 0 {
+			rows, err = l.Db.QueryContext(ctx, q, opt.Args...)
+		} else {
+			rows, err = l.Db.QueryContext(ctx, q)
+		}
 		if err != nil {
 			log.Printf("SQL query error: %v", err)
 			return

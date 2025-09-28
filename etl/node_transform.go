@@ -29,7 +29,7 @@ type TransformNode struct {
 	ctx                context.Context
 }
 
-func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping, args ...any) (<-chan utils.Record, error) {
 	tn.ctx = ctx
 	tn.inChan = in
 	tn.outChan = make(chan utils.Record, tn.workerCount*2)

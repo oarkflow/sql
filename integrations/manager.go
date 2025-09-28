@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
+	
 	"github.com/PuerkitoBio/goquery"
 	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
@@ -1078,7 +1078,7 @@ func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, messa
 	if err != nil {
 		return nil, err
 	}
-
+	
 	cfg, ok := service.Config.(SMPPConfig)
 	if !ok {
 		return nil, fmt.Errorf("not a valid SMPP configuration for service: %s", serviceName)
@@ -1147,7 +1147,7 @@ func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, messa
 	return resp, nil
 }
 
-func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string) (any, error) {
+func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string, args ...any) (any, error) {
 	service, err := is.GetService(serviceName)
 	if err != nil {
 		return nil, err
@@ -1156,7 +1156,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if !ok {
 		return nil, errors.New("invalid Database configuration")
 	}
-
+	
 	if service.CredentialKey == "" {
 		return nil, errors.New("credentials not found")
 	}
@@ -1195,7 +1195,11 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	}
 	defer db.Close()
 	var dest []map[string]any
-	err = db.Select(&dest, query)
+	if len(args) > 0 {
+		err = db.Select(&dest, query, args...)
+	} else {
+		err = db.Select(&dest, query)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-
+	
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/utils"
@@ -22,7 +22,7 @@ type SourceNode struct {
 	Logger        *log.Logger
 }
 
-func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping) (<-chan utils.Record, error) {
+func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping, args ...any) (<-chan utils.Record, error) {
 	out := make(chan utils.Record, sn.rawChanBuffer)
 	var wg sync.WaitGroup
 	for _, src := range sn.sources {
@@ -52,6 +52,9 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 				opts = append(opts, contracts.WithTable(tableCfg.OldName))
 			} else if tableCfg.Query != "" {
 				opts = append(opts, contracts.WithQuery(tableCfg.Query))
+			}
+			if len(args) > 0 {
+				opts = append(opts, contracts.WithArguments(args...))
 			}
 			ch, err := source.Extract(ctx, opts...)
 			if err != nil {

@@ -26,7 +26,7 @@ type NormalizeNode struct {
 	ctx                context.Context
 }
 
-func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping) (<-chan utils.Record, error) {
+func (nn *NormalizeNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping, args ...any) (<-chan utils.Record, error) {
 	nn.ctx = ctx
 	nn.inChan = in
 	nn.outChan = make(chan utils.Record, nn.workerCount*2)
