@@ -358,7 +358,7 @@ func WithAutoSaveInterval(interval time.Duration) Option {
 }
 
 // WithServiceSource creates and adds a service source using integrations
-func WithServiceSource(integrationManager *integrations.Manager, serviceName, query, table, key string, credentials map[string]interface{}) Option {
+func WithServiceSource(integrationManager *integrations.Manager, serviceName, query, table, key string, credentials map[string]any) Option {
 	return func(e *ETL) error {
 		config := serviceadapter.Config{
 			ServiceName: serviceName,

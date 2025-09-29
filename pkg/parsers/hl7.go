@@ -48,12 +48,12 @@ func (p *HL7Parser) Name() string {
 }
 
 // Parse parses an HL7 message into a generic map structure (implements Parser interface)
-func (p *HL7Parser) Parse(data []byte) (interface{}, error) {
+func (p *HL7Parser) Parse(data []byte) (any, error) {
 	return p.ParseString(string(data))
 }
 
 // ParseString parses an HL7 message from string into a generic map structure
-func (p *HL7Parser) ParseString(message string) (map[string]interface{}, error) {
+func (p *HL7Parser) ParseString(message string) (map[string]any, error) {
 	// Try splitting on \r first, then \n if that doesn't work
 	lines := strings.Split(strings.TrimSpace(message), "\r")
 	if len(lines) == 1 {
@@ -81,7 +81,7 @@ func (p *HL7Parser) ParseString(message string) (map[string]interface{}, error) 
 	p.escapeCharacter = string(mshLine[6])
 	p.subcomponentSeparator = string(mshLine[7])
 
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -94,11 +94,11 @@ func (p *HL7Parser) ParseString(message string) (map[string]interface{}, error) 
 		}
 
 		if _, exists := result[segmentName]; !exists {
-			result[segmentName] = []map[string]interface{}{}
+			result[segmentName] = []map[string]any{}
 		}
 
 		segmentData := p.parseFields(fields)
-		result[segmentName] = append(result[segmentName].([]map[string]interface{}), segmentData)
+		result[segmentName] = append(result[segmentName].([]map[string]any), segmentData)
 	}
 
 	return result, nil
@@ -118,7 +118,7 @@ func (p *HL7Parser) ParseTyped(message string) (HL7MessageInterface, error) {
 		return nil, fmt.Errorf("no MSH segment found")
 	}
 
-	mshSegments, ok := mshSegmentsInterface.([]map[string]interface{})
+	mshSegments, ok := mshSegmentsInterface.([]map[string]any)
 	if !ok || len(mshSegments) == 0 {
 		return nil, fmt.Errorf("invalid MSH segment format")
 	}
@@ -183,8 +183,8 @@ func (p *HL7Parser) parseSegment(line string) (string, []string) {
 }
 
 // parseFields parses the fields of a segment
-func (p *HL7Parser) parseFields(fields []string) map[string]interface{} {
-	result := make(map[string]interface{})
+func (p *HL7Parser) parseFields(fields []string) map[string]any {
+	result := make(map[string]any)
 
 	for i, field := range fields {
 		fieldName := fmt.Sprintf("%d", i+1)
@@ -195,7 +195,7 @@ func (p *HL7Parser) parseFields(fields []string) map[string]interface{} {
 }
 
 // parseField parses a single field, handling components and repetitions
-func (p *HL7Parser) parseField(field string) interface{} {
+func (p *HL7Parser) parseField(field string) any {
 	if field == "" {
 		return field
 	}
@@ -203,7 +203,7 @@ func (p *HL7Parser) parseField(field string) interface{} {
 	// Check for repetitions
 	if strings.Contains(field, p.repetitionSeparator) {
 		repetitions := strings.Split(field, p.repetitionSeparator)
-		result := make([]interface{}, len(repetitions))
+		result := make([]any, len(repetitions))
 		for i, rep := range repetitions {
 			result[i] = p.parseComponents(rep)
 		}
@@ -214,7 +214,7 @@ func (p *HL7Parser) parseField(field string) interface{} {
 }
 
 // parseComponents parses components within a field
-func (p *HL7Parser) parseComponents(field string) interface{} {
+func (p *HL7Parser) parseComponents(field string) any {
 	if !strings.Contains(field, p.componentSeparator) {
 		return field
 	}
@@ -224,7 +224,7 @@ func (p *HL7Parser) parseComponents(field string) interface{} {
 		return field
 	}
 
-	result := make([]interface{}, len(components))
+	result := make([]any, len(components))
 	for i, comp := range components {
 		result[i] = p.parseSubcomponents(comp)
 	}
@@ -233,7 +233,7 @@ func (p *HL7Parser) parseComponents(field string) interface{} {
 }
 
 // parseSubcomponents parses subcomponents within a component
-func (p *HL7Parser) parseSubcomponents(component string) interface{} {
+func (p *HL7Parser) parseSubcomponents(component string) any {
 	if !strings.Contains(component, p.subcomponentSeparator) {
 		return component
 	}
@@ -243,7 +243,7 @@ func (p *HL7Parser) parseSubcomponents(component string) interface{} {
 		return component
 	}
 
-	result := make([]interface{}, len(subcomponents))
+	result := make([]any, len(subcomponents))
 	for i, subcomp := range subcomponents {
 		result[i] = subcomp
 	}
@@ -252,7 +252,7 @@ func (p *HL7Parser) parseSubcomponents(component string) interface{} {
 }
 
 // getMessageType extracts message type from MSH data
-func (p *HL7Parser) getMessageType(mshData map[string]interface{}) string {
+func (p *HL7Parser) getMessageType(mshData map[string]any) string {
 	messageTypeField, ok := mshData["8"]
 	if !ok {
 		return ""
@@ -267,7 +267,7 @@ func (p *HL7Parser) getMessageType(mshData map[string]interface{}) string {
 			return parts[0] + "^" + parts[1]
 		}
 		return mt
-	case []interface{}:
+	case []any:
 		if len(mt) >= 2 {
 			if code, ok := mt[0].(string); ok {
 				if event, ok := mt[1].(string); ok {
@@ -862,14 +862,14 @@ func (p *HL7Parser) parseDFT_P03(message string) (*DFT_P03, error) {
 }
 
 // parseSegments is a helper function to parse all segments
-func (p *HL7Parser) parseSegments(message string) (map[string][]map[string]interface{}, error) {
+func (p *HL7Parser) parseSegments(message string) (map[string][]map[string]any, error) {
 	// Use the same line splitting logic as Parse
 	lines := strings.Split(strings.TrimSpace(message), "\r")
 	if len(lines) == 1 {
 		// If no \r found, try \n
 		lines = strings.Split(strings.TrimSpace(message), "\n")
 	}
-	result := make(map[string][]map[string]interface{})
+	result := make(map[string][]map[string]any)
 
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -882,7 +882,7 @@ func (p *HL7Parser) parseSegments(message string) (map[string][]map[string]inter
 		}
 
 		if _, exists := result[segmentName]; !exists {
-			result[segmentName] = []map[string]interface{}{}
+			result[segmentName] = []map[string]any{}
 		}
 
 		segmentData := p.parseFields(fields)
@@ -896,7 +896,7 @@ func (p *HL7Parser) parseSegments(message string) (map[string][]map[string]inter
 // These would need to be implemented for each segment type
 // For brevity, I'll implement a few key ones
 
-func (p *HL7Parser) parseMSH(data map[string]interface{}) *MSH {
+func (p *HL7Parser) parseMSH(data map[string]any) *MSH {
 	msh := &MSH{}
 
 	// MSH.1 (FieldSeparator) is not transmitted in HL7 messages
@@ -977,7 +977,7 @@ func (p *HL7Parser) parseMSH(data map[string]interface{}) *MSH {
 	return msh
 }
 
-func (p *HL7Parser) parseEVN(data map[string]interface{}) *EVN {
+func (p *HL7Parser) parseEVN(data map[string]any) *EVN {
 	evn := &EVN{}
 
 	if val, ok := data["1"]; ok {
@@ -1005,7 +1005,7 @@ func (p *HL7Parser) parseEVN(data map[string]interface{}) *EVN {
 	return evn
 }
 
-func (p *HL7Parser) parsePID(data map[string]interface{}) *PID {
+func (p *HL7Parser) parsePID(data map[string]any) *PID {
 	pid := &PID{}
 
 	if val, ok := data["1"]; ok {
@@ -1130,25 +1130,25 @@ func (p *HL7Parser) parsePID(data map[string]interface{}) *PID {
 }
 
 // Helper functions for parsing individual data types
-func (p *HL7Parser) reconstructEncodingCharacters(val interface{}) string {
+func (p *HL7Parser) reconstructEncodingCharacters(val any) string {
 	// EncodingCharacters is typically "^~\&"
 	// The parsed value is complex due to component/subcomponent parsing
 	// For now, return the standard value
 	return "^~\\&"
 }
 
-func (p *HL7Parser) getString(val interface{}) string {
+func (p *HL7Parser) getString(val any) string {
 	if str, ok := val.(string); ok {
 		return str
 	}
 	return ""
 }
 
-func (p *HL7Parser) getStringSlice(val interface{}) []string {
+func (p *HL7Parser) getStringSlice(val any) []string {
 	switch v := val.(type) {
 	case string:
 		return []string{v}
-	case []interface{}:
+	case []any:
 		result := make([]string, len(v))
 		for i, item := range v {
 			result[i] = p.getString(item)
@@ -1158,7 +1158,7 @@ func (p *HL7Parser) getStringSlice(val interface{}) []string {
 	return nil
 }
 
-func (p *HL7Parser) parseTime(val interface{}) time.Time {
+func (p *HL7Parser) parseTime(val any) time.Time {
 	str := p.getString(val)
 	if str == "" {
 		return time.Time{}
@@ -1181,7 +1181,7 @@ func (p *HL7Parser) parseTime(val interface{}) time.Time {
 	return time.Time{}
 }
 
-func (p *HL7Parser) parseHD(val interface{}) *HD {
+func (p *HL7Parser) parseHD(val any) *HD {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1201,7 +1201,7 @@ func (p *HL7Parser) parseHD(val interface{}) *HD {
 	return hd
 }
 
-func (p *HL7Parser) parseMSG(val interface{}) *MSG {
+func (p *HL7Parser) parseMSG(val any) *MSG {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1221,7 +1221,7 @@ func (p *HL7Parser) parseMSG(val interface{}) *MSG {
 	return msg
 }
 
-func (p *HL7Parser) parsePT(val interface{}) *PT {
+func (p *HL7Parser) parsePT(val any) *PT {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1238,7 +1238,7 @@ func (p *HL7Parser) parsePT(val interface{}) *PT {
 	return pt
 }
 
-func (p *HL7Parser) parseVID(val interface{}) *VID {
+func (p *HL7Parser) parseVID(val any) *VID {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1258,7 +1258,7 @@ func (p *HL7Parser) parseVID(val interface{}) *VID {
 	return vid
 }
 
-func (p *HL7Parser) parseCE(val interface{}) *CE {
+func (p *HL7Parser) parseCE(val any) *CE {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1305,7 +1305,7 @@ func (p *HL7Parser) parseCEFromComponents(componentStr string) *CE {
 	return ce
 }
 
-func (p *HL7Parser) getComponents(val interface{}) []string {
+func (p *HL7Parser) getComponents(val any) []string {
 	str := p.getString(val)
 	if str == "" {
 		return nil
@@ -1316,7 +1316,7 @@ func (p *HL7Parser) getComponents(val interface{}) []string {
 // Placeholder implementations for other parsing functions
 // These would need full implementation for a complete parser
 
-func (p *HL7Parser) parseCX(val interface{}) *CX {
+func (p *HL7Parser) parseCX(val any) *CX {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1356,13 +1356,13 @@ func (p *HL7Parser) parseCX(val interface{}) *CX {
 
 	return cx
 }
-func (p *HL7Parser) parseCXList(val interface{}) []*CX {
+func (p *HL7Parser) parseCXList(val any) []*CX {
 	switch v := val.(type) {
 	case string:
 		if cx := p.parseCX(v); cx != nil {
 			return []*CX{cx}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*CX, 0, len(v))
 		for _, item := range v {
 			if cx := p.parseCX(item); cx != nil {
@@ -1373,13 +1373,13 @@ func (p *HL7Parser) parseCXList(val interface{}) []*CX {
 	}
 	return nil
 }
-func (p *HL7Parser) parseXPNList(val interface{}) []*XPN {
+func (p *HL7Parser) parseXPNList(val any) []*XPN {
 	switch v := val.(type) {
 	case string:
 		if xpn := p.parseXPN(v); xpn != nil {
 			return []*XPN{xpn}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XPN, 0, len(v))
 		for _, item := range v {
 			if xpn := p.parseXPN(item); xpn != nil {
@@ -1391,7 +1391,7 @@ func (p *HL7Parser) parseXPNList(val interface{}) []*XPN {
 	return nil
 }
 
-func (p *HL7Parser) parseXPN(val interface{}) *XPN {
+func (p *HL7Parser) parseXPN(val any) *XPN {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1443,13 +1443,13 @@ func (p *HL7Parser) parseXPN(val interface{}) *XPN {
 
 	return xpn
 }
-func (p *HL7Parser) parseCESlice(val interface{}) []*CE {
+func (p *HL7Parser) parseCESlice(val any) []*CE {
 	switch v := val.(type) {
 	case string:
 		if ce := p.parseCE(v); ce != nil {
 			return []*CE{ce}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*CE, 0, len(v))
 		for _, item := range v {
 			if ce := p.parseCE(item); ce != nil {
@@ -1460,7 +1460,7 @@ func (p *HL7Parser) parseCESlice(val interface{}) []*CE {
 	}
 	return nil
 }
-func (p *HL7Parser) parseXAD(val interface{}) *XAD {
+func (p *HL7Parser) parseXAD(val any) *XAD {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1513,13 +1513,13 @@ func (p *HL7Parser) parseXAD(val interface{}) *XAD {
 	return xad
 }
 
-func (p *HL7Parser) parseXADList(val interface{}) []*XAD {
+func (p *HL7Parser) parseXADList(val any) []*XAD {
 	switch v := val.(type) {
 	case string:
 		if xad := p.parseXAD(v); xad != nil {
 			return []*XAD{xad}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XAD, 0, len(v))
 		for _, item := range v {
 			if xad := p.parseXAD(item); xad != nil {
@@ -1530,7 +1530,7 @@ func (p *HL7Parser) parseXADList(val interface{}) []*XAD {
 	}
 	return nil
 }
-func (p *HL7Parser) parseXTN(val interface{}) *XTN {
+func (p *HL7Parser) parseXTN(val any) *XTN {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1577,13 +1577,13 @@ func (p *HL7Parser) parseXTN(val interface{}) *XTN {
 	return xtn
 }
 
-func (p *HL7Parser) parseXTNList(val interface{}) []*XTN {
+func (p *HL7Parser) parseXTNList(val any) []*XTN {
 	switch v := val.(type) {
 	case string:
 		if xtn := p.parseXTN(v); xtn != nil {
 			return []*XTN{xtn}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XTN, 0, len(v))
 		for _, item := range v {
 			if xtn := p.parseXTN(item); xtn != nil {
@@ -1594,7 +1594,7 @@ func (p *HL7Parser) parseXTNList(val interface{}) []*XTN {
 	}
 	return nil
 }
-func (p *HL7Parser) parseDLN(val interface{}) *DLN {
+func (p *HL7Parser) parseDLN(val any) *DLN {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1613,7 +1613,7 @@ func (p *HL7Parser) parseDLN(val interface{}) *DLN {
 
 	return dln
 }
-func (p *HL7Parser) parseCWE(val interface{}) *CWE {
+func (p *HL7Parser) parseCWE(val any) *CWE {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1651,13 +1651,13 @@ func (p *HL7Parser) parseCWE(val interface{}) *CWE {
 	return cwe
 }
 
-func (p *HL7Parser) parseCWESlice(val interface{}) []*CWE {
+func (p *HL7Parser) parseCWESlice(val any) []*CWE {
 	switch v := val.(type) {
 	case string:
 		if cwe := p.parseCWE(v); cwe != nil {
 			return []*CWE{cwe}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*CWE, 0, len(v))
 		for _, item := range v {
 			if cwe := p.parseCWE(item); cwe != nil {
@@ -1668,7 +1668,7 @@ func (p *HL7Parser) parseCWESlice(val interface{}) []*CWE {
 	}
 	return nil
 }
-func (p *HL7Parser) parseEI(val interface{}) *EI {
+func (p *HL7Parser) parseEI(val any) *EI {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1691,13 +1691,13 @@ func (p *HL7Parser) parseEI(val interface{}) *EI {
 	return ei
 }
 
-func (p *HL7Parser) parseEISlice(val interface{}) []*EI {
+func (p *HL7Parser) parseEISlice(val any) []*EI {
 	switch v := val.(type) {
 	case string:
 		if ei := p.parseEI(v); ei != nil {
 			return []*EI{ei}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*EI, 0, len(v))
 		for _, item := range v {
 			if ei := p.parseEI(item); ei != nil {
@@ -1708,7 +1708,7 @@ func (p *HL7Parser) parseEISlice(val interface{}) []*EI {
 	}
 	return nil
 }
-func (p *HL7Parser) parseXON(val interface{}) *XON {
+func (p *HL7Parser) parseXON(val any) *XON {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1749,13 +1749,13 @@ func (p *HL7Parser) parseXON(val interface{}) *XON {
 	return xon
 }
 
-func (p *HL7Parser) parseXONList(val interface{}) []*XON {
+func (p *HL7Parser) parseXONList(val any) []*XON {
 	switch v := val.(type) {
 	case string:
 		if xon := p.parseXON(v); xon != nil {
 			return []*XON{xon}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XON, 0, len(v))
 		for _, item := range v {
 			if xon := p.parseXON(item); xon != nil {
@@ -1767,7 +1767,7 @@ func (p *HL7Parser) parseXONList(val interface{}) []*XON {
 	return nil
 }
 
-func (p *HL7Parser) parseFC(val interface{}) *FC {
+func (p *HL7Parser) parseFC(val any) *FC {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1784,7 +1784,7 @@ func (p *HL7Parser) parseFC(val interface{}) *FC {
 	return fc
 }
 
-func (p *HL7Parser) parseDLD(val interface{}) *DLD {
+func (p *HL7Parser) parseDLD(val any) *DLD {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1801,7 +1801,7 @@ func (p *HL7Parser) parseDLD(val interface{}) *DLD {
 	return dld
 }
 
-func (p *HL7Parser) parseEIP(val interface{}) *EIP {
+func (p *HL7Parser) parseEIP(val any) *EIP {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1818,7 +1818,7 @@ func (p *HL7Parser) parseEIP(val interface{}) *EIP {
 	return eip
 }
 
-func (p *HL7Parser) parseCQ(val interface{}) *CQ {
+func (p *HL7Parser) parseCQ(val any) *CQ {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1835,7 +1835,7 @@ func (p *HL7Parser) parseCQ(val interface{}) *CQ {
 	return cq
 }
 
-func (p *HL7Parser) parseSPS(val interface{}) *SPS {
+func (p *HL7Parser) parseSPS(val any) *SPS {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1867,7 +1867,7 @@ func (p *HL7Parser) parseSPS(val interface{}) *SPS {
 	return sps
 }
 
-func (p *HL7Parser) parseMOC(val interface{}) *MOC {
+func (p *HL7Parser) parseMOC(val any) *MOC {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1884,7 +1884,7 @@ func (p *HL7Parser) parseMOC(val interface{}) *MOC {
 	return moc
 }
 
-func (p *HL7Parser) parsePRL(val interface{}) *PRL {
+func (p *HL7Parser) parsePRL(val any) *PRL {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1904,7 +1904,7 @@ func (p *HL7Parser) parsePRL(val interface{}) *PRL {
 	return prl
 }
 
-func (p *HL7Parser) parseNDL(val interface{}) *NDL {
+func (p *HL7Parser) parseNDL(val any) *NDL {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1948,13 +1948,13 @@ func (p *HL7Parser) parseNDL(val interface{}) *NDL {
 	return ndl
 }
 
-func (p *HL7Parser) parseNDLSice(val interface{}) []*NDL {
+func (p *HL7Parser) parseNDLSice(val any) []*NDL {
 	switch v := val.(type) {
 	case string:
 		if ndl := p.parseNDL(v); ndl != nil {
 			return []*NDL{ndl}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*NDL, 0, len(v))
 		for _, item := range v {
 			if ndl := p.parseNDL(item); ndl != nil {
@@ -1966,7 +1966,7 @@ func (p *HL7Parser) parseNDLSice(val interface{}) []*NDL {
 	return nil
 }
 
-func (p *HL7Parser) parseELD(val interface{}) *ELD {
+func (p *HL7Parser) parseELD(val any) *ELD {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -1989,7 +1989,7 @@ func (p *HL7Parser) parseELD(val interface{}) *ELD {
 	return eld
 }
 
-func (p *HL7Parser) parseERL(val interface{}) *ERL {
+func (p *HL7Parser) parseERL(val any) *ERL {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -2018,13 +2018,13 @@ func (p *HL7Parser) parseERL(val interface{}) *ERL {
 	return erl
 }
 
-func (p *HL7Parser) parseELDSlice(val interface{}) []*ELD {
+func (p *HL7Parser) parseELDSlice(val any) []*ELD {
 	switch v := val.(type) {
 	case string:
 		if eld := p.parseELD(v); eld != nil {
 			return []*ELD{eld}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*ELD, 0, len(v))
 		for _, item := range v {
 			if eld := p.parseELD(item); eld != nil {
@@ -2036,13 +2036,13 @@ func (p *HL7Parser) parseELDSlice(val interface{}) []*ELD {
 	return nil
 }
 
-func (p *HL7Parser) parseERLSlice(val interface{}) []*ERL {
+func (p *HL7Parser) parseERLSlice(val any) []*ERL {
 	switch v := val.(type) {
 	case string:
 		if erl := p.parseERL(v); erl != nil {
 			return []*ERL{erl}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*ERL, 0, len(v))
 		for _, item := range v {
 			if erl := p.parseERL(item); erl != nil {
@@ -2054,13 +2054,13 @@ func (p *HL7Parser) parseERLSlice(val interface{}) []*ERL {
 	return nil
 }
 
-func (p *HL7Parser) parseXADSlice(val interface{}) []*XAD {
+func (p *HL7Parser) parseXADSlice(val any) []*XAD {
 	switch v := val.(type) {
 	case string:
 		if xad := p.parseXAD(v); xad != nil {
 			return []*XAD{xad}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XAD, 0, len(v))
 		for _, item := range v {
 			if xad := p.parseXAD(item); xad != nil {
@@ -2072,13 +2072,13 @@ func (p *HL7Parser) parseXADSlice(val interface{}) []*XAD {
 	return nil
 }
 
-func (p *HL7Parser) parsePLSlice(val interface{}) []*PL {
+func (p *HL7Parser) parsePLSlice(val any) []*PL {
 	switch v := val.(type) {
 	case string:
 		if pl := p.parsePL(v); pl != nil {
 			return []*PL{pl}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*PL, 0, len(v))
 		for _, item := range v {
 			if pl := p.parsePL(item); pl != nil {
@@ -2090,13 +2090,13 @@ func (p *HL7Parser) parsePLSlice(val interface{}) []*PL {
 	return nil
 }
 
-func (p *HL7Parser) parseFCSlice(val interface{}) []*FC {
+func (p *HL7Parser) parseFCSlice(val any) []*FC {
 	switch v := val.(type) {
 	case string:
 		if fc := p.parseFC(v); fc != nil {
 			return []*FC{fc}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*FC, 0, len(v))
 		for _, item := range v {
 			if fc := p.parseFC(item); fc != nil {
@@ -2108,13 +2108,13 @@ func (p *HL7Parser) parseFCSlice(val interface{}) []*FC {
 	return nil
 }
 
-func (p *HL7Parser) parseTimeSlice(val interface{}) []time.Time {
+func (p *HL7Parser) parseTimeSlice(val any) []time.Time {
 	switch v := val.(type) {
 	case string:
 		if t := p.parseTime(v); !t.IsZero() {
 			return []time.Time{t}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]time.Time, 0, len(v))
 		for _, item := range v {
 			if t := p.parseTime(item); !t.IsZero() {
@@ -2126,7 +2126,7 @@ func (p *HL7Parser) parseTimeSlice(val interface{}) []time.Time {
 	return nil
 }
 
-func (p *HL7Parser) parseNK1(data map[string]interface{}) *NK1 {
+func (p *HL7Parser) parseNK1(data map[string]any) *NK1 {
 	nk1 := &NK1{}
 
 	if val, ok := data["1"]; ok {
@@ -2163,7 +2163,7 @@ func (p *HL7Parser) parseNK1(data map[string]interface{}) *NK1 {
 
 	return nk1
 }
-func (p *HL7Parser) parsePL(val interface{}) *PL {
+func (p *HL7Parser) parsePL(val any) *PL {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -2206,7 +2206,7 @@ func (p *HL7Parser) parsePL(val interface{}) *PL {
 
 	return pl
 }
-func (p *HL7Parser) parsePV1(data map[string]interface{}) *PV1 {
+func (p *HL7Parser) parsePV1(data map[string]any) *PV1 {
 	pv1 := &PV1{}
 
 	if val, ok := data["1"]; ok {
@@ -2270,7 +2270,7 @@ func (p *HL7Parser) parsePV1(data map[string]interface{}) *PV1 {
 
 	return pv1
 }
-func (p *HL7Parser) parsePV2(data map[string]interface{}) *PV2 {
+func (p *HL7Parser) parsePV2(data map[string]any) *PV2 {
 	pv2 := &PV2{}
 
 	if val, ok := data["1"]; ok {
@@ -2480,7 +2480,7 @@ func (p *HL7Parser) parsePV2(data map[string]interface{}) *PV2 {
 
 	return pv2
 }
-func (p *HL7Parser) parseAL1(data map[string]interface{}) *AL1 {
+func (p *HL7Parser) parseAL1(data map[string]any) *AL1 {
 	al1 := &AL1{}
 
 	if val, ok := data["1"]; ok {
@@ -2504,7 +2504,7 @@ func (p *HL7Parser) parseAL1(data map[string]interface{}) *AL1 {
 
 	return al1
 }
-func (p *HL7Parser) parseDG1(data map[string]interface{}) *DG1 {
+func (p *HL7Parser) parseDG1(data map[string]any) *DG1 {
 	dg1 := &DG1{}
 
 	if val, ok := data["1"]; ok {
@@ -2525,7 +2525,7 @@ func (p *HL7Parser) parseDG1(data map[string]interface{}) *DG1 {
 
 	return dg1
 }
-func (p *HL7Parser) parsePR1(data map[string]interface{}) *PR1 {
+func (p *HL7Parser) parsePR1(data map[string]any) *PR1 {
 	pr1 := &PR1{}
 
 	if val, ok := data["1"]; ok {
@@ -2585,7 +2585,7 @@ func (p *HL7Parser) parsePR1(data map[string]interface{}) *PR1 {
 
 	return pr1
 }
-func (p *HL7Parser) parseROL(data map[string]interface{}) *ROL {
+func (p *HL7Parser) parseROL(data map[string]any) *ROL {
 	rol := &ROL{}
 
 	if val, ok := data["1"]; ok {
@@ -2627,7 +2627,7 @@ func (p *HL7Parser) parseROL(data map[string]interface{}) *ROL {
 
 	return rol
 }
-func (p *HL7Parser) parseORC(data map[string]interface{}) *ORC {
+func (p *HL7Parser) parseORC(data map[string]any) *ORC {
 	orc := &ORC{}
 
 	if val, ok := data["1"]; ok {
@@ -2723,7 +2723,7 @@ func (p *HL7Parser) parseORC(data map[string]interface{}) *ORC {
 
 	return orc
 }
-func (p *HL7Parser) parseOBR(data map[string]interface{}) *OBR {
+func (p *HL7Parser) parseOBR(data map[string]any) *OBR {
 	obr := &OBR{}
 
 	if val, ok := data["1"]; ok {
@@ -2879,7 +2879,7 @@ func (p *HL7Parser) parseOBR(data map[string]interface{}) *OBR {
 
 	return obr
 }
-func (p *HL7Parser) parseOBX(data map[string]interface{}) *OBX {
+func (p *HL7Parser) parseOBX(data map[string]any) *OBX {
 	obx := &OBX{}
 
 	if val, ok := data["1"]; ok {
@@ -2969,7 +2969,7 @@ func (p *HL7Parser) parseOBX(data map[string]interface{}) *OBX {
 
 	return obx
 }
-func (p *HL7Parser) parseNTE(data map[string]interface{}) *NTE {
+func (p *HL7Parser) parseNTE(data map[string]any) *NTE {
 	nte := &NTE{}
 
 	if val, ok := data["1"]; ok {
@@ -2987,7 +2987,7 @@ func (p *HL7Parser) parseNTE(data map[string]interface{}) *NTE {
 
 	return nte
 }
-func (p *HL7Parser) parseRXE(data map[string]interface{}) *RXE {
+func (p *HL7Parser) parseRXE(data map[string]any) *RXE {
 	rxe := &RXE{}
 
 	if val, ok := data["1"]; ok {
@@ -3116,7 +3116,7 @@ func (p *HL7Parser) parseRXE(data map[string]interface{}) *RXE {
 
 	return rxe
 }
-func (p *HL7Parser) parseRXR(data map[string]interface{}) *RXR {
+func (p *HL7Parser) parseRXR(data map[string]any) *RXR {
 	rxr := &RXR{}
 
 	if val, ok := data["1"]; ok {
@@ -3140,7 +3140,7 @@ func (p *HL7Parser) parseRXR(data map[string]interface{}) *RXR {
 
 	return rxr
 }
-func (p *HL7Parser) parseRXC(data map[string]interface{}) *RXC {
+func (p *HL7Parser) parseRXC(data map[string]any) *RXC {
 	rxc := &RXC{}
 
 	if val, ok := data["1"]; ok {
@@ -3173,7 +3173,7 @@ func (p *HL7Parser) parseRXC(data map[string]interface{}) *RXC {
 
 	return rxc
 }
-func (p *HL7Parser) parseRXA(data map[string]interface{}) *RXA {
+func (p *HL7Parser) parseRXA(data map[string]any) *RXA {
 	rxa := &RXA{}
 
 	if val, ok := data["1"]; ok {
@@ -3257,7 +3257,7 @@ func (p *HL7Parser) parseRXA(data map[string]interface{}) *RXA {
 
 	return rxa
 }
-func (p *HL7Parser) parseMSA(data map[string]interface{}) *MSA {
+func (p *HL7Parser) parseMSA(data map[string]any) *MSA {
 	msa := &MSA{}
 
 	if val, ok := data["1"]; ok {
@@ -3281,7 +3281,7 @@ func (p *HL7Parser) parseMSA(data map[string]interface{}) *MSA {
 
 	return msa
 }
-func (p *HL7Parser) parseERR(data map[string]interface{}) *ERR {
+func (p *HL7Parser) parseERR(data map[string]any) *ERR {
 	err := &ERR{}
 
 	if val, ok := data["1"]; ok {
@@ -3323,7 +3323,7 @@ func (p *HL7Parser) parseERR(data map[string]interface{}) *ERR {
 
 	return err
 }
-func (p *HL7Parser) parseSCH(data map[string]interface{}) *SCH {
+func (p *HL7Parser) parseSCH(data map[string]any) *SCH {
 	sch := &SCH{}
 
 	if val, ok := data["1"]; ok {
@@ -3419,7 +3419,7 @@ func (p *HL7Parser) parseSCH(data map[string]interface{}) *SCH {
 
 	return sch
 }
-func (p *HL7Parser) parseRGS(data map[string]interface{}) *RGS {
+func (p *HL7Parser) parseRGS(data map[string]any) *RGS {
 	rgs := &RGS{}
 
 	if val, ok := data["1"]; ok {
@@ -3440,7 +3440,7 @@ func (p *HL7Parser) parseRGS(data map[string]interface{}) *RGS {
 
 	return rgs
 }
-func (p *HL7Parser) parseAIG(data map[string]interface{}) *AIG {
+func (p *HL7Parser) parseAIG(data map[string]any) *AIG {
 	aig := &AIG{}
 
 	if val, ok := data["1"]; ok {
@@ -3488,7 +3488,7 @@ func (p *HL7Parser) parseAIG(data map[string]interface{}) *AIG {
 
 	return aig
 }
-func (p *HL7Parser) parseAIL(data map[string]interface{}) *AIL {
+func (p *HL7Parser) parseAIL(data map[string]any) *AIL {
 	ail := &AIL{}
 
 	if val, ok := data["1"]; ok {
@@ -3530,7 +3530,7 @@ func (p *HL7Parser) parseAIL(data map[string]interface{}) *AIL {
 
 	return ail
 }
-func (p *HL7Parser) parseAIS(data map[string]interface{}) *AIS {
+func (p *HL7Parser) parseAIS(data map[string]any) *AIS {
 	ais := &AIS{}
 
 	if val, ok := data["1"]; ok {
@@ -3566,7 +3566,7 @@ func (p *HL7Parser) parseAIS(data map[string]interface{}) *AIS {
 
 	return ais
 }
-func (p *HL7Parser) parseFT1(data map[string]interface{}) *FT1 {
+func (p *HL7Parser) parseFT1(data map[string]any) *FT1 {
 	ft1 := &FT1{}
 
 	if val, ok := data["1"]; ok {
@@ -3650,7 +3650,7 @@ func (p *HL7Parser) parseFT1(data map[string]interface{}) *FT1 {
 
 	return ft1
 }
-func (p *HL7Parser) parseXCN(val interface{}) *XCN {
+func (p *HL7Parser) parseXCN(val any) *XCN {
 	components := p.getComponents(val)
 	if len(components) == 0 {
 		return nil
@@ -3730,13 +3730,13 @@ func (p *HL7Parser) parseXCN(val interface{}) *XCN {
 	return xcn
 }
 
-func (p *HL7Parser) parseXCNList(val interface{}) []*XCN {
+func (p *HL7Parser) parseXCNList(val any) []*XCN {
 	switch v := val.(type) {
 	case string:
 		if xcn := p.parseXCN(v); xcn != nil {
 			return []*XCN{xcn}
 		}
-	case []interface{}:
+	case []any:
 		result := make([]*XCN, 0, len(v))
 		for _, item := range v {
 			if xcn := p.parseXCN(item); xcn != nil {

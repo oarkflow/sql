@@ -169,7 +169,7 @@ func demonstrateMonitoring(etlInstance *etl.ETL) {
 	}
 
 	fmt.Printf("\n=== State Information ===\n")
-	if state, ok := metrics["state"].(map[string]interface{}); ok {
+	if state, ok := metrics["state"].(map[string]any); ok {
 		fmt.Printf("Status: %v\n", state["status"])
 		fmt.Printf("Processed: %v\n", state["processed_records"])
 		fmt.Printf("Failed: %v\n", state["failed_records"])
@@ -177,14 +177,14 @@ func demonstrateMonitoring(etlInstance *etl.ETL) {
 	}
 
 	fmt.Printf("\n=== Dead Letter Queue ===\n")
-	if dlq, ok := metrics["dead_letter_queue"].(map[string]interface{}); ok {
+	if dlq, ok := metrics["dead_letter_queue"].(map[string]any); ok {
 		fmt.Printf("Total Records: %v\n", dlq["total_records"])
 		fmt.Printf("Retryable: %v\n", dlq["retryable_records"])
 		fmt.Printf("Permanent Failures: %v\n", dlq["permanent_failures"])
 	}
 
 	fmt.Printf("\n=== Idempotency ===\n")
-	if idempotency, ok := metrics["idempotency"].(map[string]interface{}); ok {
+	if idempotency, ok := metrics["idempotency"].(map[string]any); ok {
 		fmt.Printf("Total Keys: %v\n", idempotency["total_keys"])
 		fmt.Printf("Processing: %v\n", idempotency["processing"])
 		fmt.Printf("Completed: %v\n", idempotency["completed"])

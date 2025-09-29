@@ -264,7 +264,7 @@ func (ws *WebhookServer) processWebhook(body []byte, headers http.Header) {
 }
 
 // processWithETL processes parsed data through configured ETL pipelines
-func (ws *WebhookServer) processWithETL(dataType string, parsedData interface{}, rawData []byte) error {
+func (ws *WebhookServer) processWithETL(dataType string, parsedData any, rawData []byte) error {
 	// Case-insensitive pipeline lookup
 	dataTypeLower := strings.ToLower(dataType)
 	var pipeline *ETLPipeline
@@ -284,24 +284,24 @@ func (ws *WebhookServer) processWithETL(dataType string, parsedData interface{},
 	log.Printf("Processing %s data through ETL pipeline: %s", dataType, pipeline.Name)
 
 	// Use the parsed data directly - the parser already provides structured data
-	var processedData map[string]interface{}
+	var processedData map[string]any
 
 	switch dataType {
 	case "hl7":
 		// Flatten HL7 structured data for ETL mapping
-		if hl7Data, ok := parsedData.(map[string]interface{}); ok {
+		if hl7Data, ok := parsedData.(map[string]any); ok {
 			processedData = ws.flattenHL7Data(hl7Data)
 		}
 	case "json":
-		if jsonData, ok := parsedData.(map[string]interface{}); ok {
+		if jsonData, ok := parsedData.(map[string]any); ok {
 			processedData = jsonData
 		}
 	default:
 		// For other data types, use the parsed data as-is
-		if dataMap, ok := parsedData.(map[string]interface{}); ok {
+		if dataMap, ok := parsedData.(map[string]any); ok {
 			processedData = dataMap
 		} else {
-			processedData = map[string]interface{}{"raw_data": string(rawData)}
+			processedData = map[string]any{"raw_data": string(rawData)}
 		}
 	}
 
@@ -321,9 +321,9 @@ func (ws *WebhookServer) processWithETL(dataType string, parsedData interface{},
 }
 
 // executeETLMapping applies field mapping and inserts data into destination database
-func (ws *WebhookServer) executeETLMapping(pipeline *ETLPipeline, data map[string]interface{}) error {
+func (ws *WebhookServer) executeETLMapping(pipeline *ETLPipeline, data map[string]any) error {
 	// Apply field mapping from ETL configuration
-	mappedData := make(map[string]interface{})
+	mappedData := make(map[string]any)
 
 	for sourceField, destField := range pipeline.Mapping.Mapping {
 		if value, exists := data[sourceField]; exists {
@@ -352,7 +352,7 @@ func (ws *WebhookServer) executeETLMapping(pipeline *ETLPipeline, data map[strin
 }
 
 // insertIntoDatabase inserts mapped data into the destination database
-func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName string, data map[string]interface{}, mapping config.TableMapping) error {
+func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName string, data map[string]any, mapping config.TableMapping) error {
 	// Open database connection
 	db, err := config.OpenDB(dest)
 	if err != nil {
@@ -370,7 +370,7 @@ func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName st
 	// Build INSERT query
 	columns := make([]string, 0, len(data))
 	placeholders := make([]string, 0, len(data))
-	values := make([]interface{}, 0, len(data))
+	values := make([]any, 0, len(data))
 
 	// Use proper quoting for the database type
 	quoteChar := `"`
@@ -401,7 +401,7 @@ func (ws *WebhookServer) insertIntoDatabase(dest config.DataConfig, tableName st
 }
 
 // createTableIfNotExists creates the destination table if it doesn't exist
-func (ws *WebhookServer) createTableIfNotExists(db *squealx.DB, tableName string, data map[string]interface{}, mapping config.TableMapping, driver string) error {
+func (ws *WebhookServer) createTableIfNotExists(db *squealx.DB, tableName string, data map[string]any, mapping config.TableMapping, driver string) error {
 	// Build CREATE TABLE query based on data types
 	columns := make([]string, 0, len(data))
 
@@ -433,9 +433,9 @@ func (ws *WebhookServer) isMySQLDriver(driver string) bool {
 }
 
 // convertForDatabase converts complex data types to database-compatible types
-func (ws *WebhookServer) convertForDatabase(value interface{}) interface{} {
+func (ws *WebhookServer) convertForDatabase(value any) any {
 	switch v := value.(type) {
-	case []interface{}:
+	case []any:
 		// Convert array to comma-separated string
 		var parts []string
 		for _, item := range v {
@@ -444,7 +444,7 @@ func (ws *WebhookServer) convertForDatabase(value interface{}) interface{} {
 			}
 		}
 		return strings.Join(parts, " ")
-	case map[string]interface{}:
+	case map[string]any:
 		// Convert map to JSON-like string
 		return fmt.Sprintf("%v", v)
 	case nil:
@@ -455,7 +455,7 @@ func (ws *WebhookServer) convertForDatabase(value interface{}) interface{} {
 }
 
 // inferSQLType infers SQL data type from Go value and optional schema hint
-func (ws *WebhookServer) inferSQLType(value interface{}, schemaHint string) string {
+func (ws *WebhookServer) inferSQLType(value any, schemaHint string) string {
 	if schemaHint != "" {
 		switch strings.ToLower(schemaHint) {
 		case "string", "text":
@@ -488,11 +488,11 @@ func (ws *WebhookServer) inferSQLType(value interface{}, schemaHint string) stri
 }
 
 // flattenHL7Data flattens HL7 structured data for ETL mapping compatibility
-func (ws *WebhookServer) flattenHL7Data(hl7Data map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
+func (ws *WebhookServer) flattenHL7Data(hl7Data map[string]any) map[string]any {
+	result := make(map[string]any)
 
 	for segmentName, segmentData := range hl7Data {
-		if segmentArray, ok := segmentData.([]map[string]interface{}); ok && len(segmentArray) > 0 {
+		if segmentArray, ok := segmentData.([]map[string]any); ok && len(segmentArray) > 0 {
 			// Use the first segment instance (most common case)
 			segment := segmentArray[0]
 

@@ -26,7 +26,7 @@ type ETLState struct {
 	PendingRecords   []utils.Record         `json:"pending_records"`
 	ErrorDetails     []ErrorDetail          `json:"error_details"`
 	StateVersion     int64                  `json:"state_version"`
-	Metadata         map[string]interface{} `json:"metadata"`
+	Metadata         map[string]any         `json:"metadata"`
 }
 
 // WorkerState represents the state of a specific worker
@@ -89,7 +89,7 @@ func NewStateManager(etlID, stateFile string) *StateManager {
 			PendingRecords:   make([]utils.Record, 0),
 			ErrorDetails:     make([]ErrorDetail, 0),
 			StateVersion:     0,
-			Metadata:         make(map[string]interface{}),
+			Metadata:         make(map[string]any),
 		},
 		autoSave:         true,
 		autoSaveInterval: 30 * time.Second, // Auto-save every 30 seconds
@@ -340,11 +340,11 @@ func (sm *StateManager) CanResume() bool {
 }
 
 // GetResumeInfo returns information about what can be resumed
-func (sm *StateManager) GetResumeInfo() map[string]interface{} {
+func (sm *StateManager) GetResumeInfo() map[string]any {
 	sm.mutex.RLock()
 	defer sm.mutex.RUnlock()
 
-	info := map[string]interface{}{
+	info := map[string]any{
 		"can_resume":      sm.CanResume(),
 		"last_checkpoint": sm.state.LastCheckpoint,
 		"processed":       sm.state.ProcessedRecords,
@@ -375,12 +375,12 @@ func (sm *StateManager) ResetState() {
 		PendingRecords:   make([]utils.Record, 0),
 		ErrorDetails:     make([]ErrorDetail, 0),
 		StateVersion:     0,
-		Metadata:         make(map[string]interface{}),
+		Metadata:         make(map[string]any),
 	}
 }
 
 // SetMetadata sets metadata for the ETL state
-func (sm *StateManager) SetMetadata(key string, value interface{}) {
+func (sm *StateManager) SetMetadata(key string, value any) {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
 
@@ -389,7 +389,7 @@ func (sm *StateManager) SetMetadata(key string, value interface{}) {
 }
 
 // GetMetadata gets metadata from the ETL state
-func (sm *StateManager) GetMetadata(key string) (interface{}, bool) {
+func (sm *StateManager) GetMetadata(key string) (any, bool) {
 	sm.mutex.RLock()
 	defer sm.mutex.RUnlock()
 

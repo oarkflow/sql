@@ -19,19 +19,19 @@ type Adapter struct {
 	query       string
 	table       string
 	key         string
-	credentials map[string]interface{}
+	credentials map[string]any
 	mu          sync.RWMutex
 	initialized bool
 }
 
 // Config represents the configuration for the service adapter
 type Config struct {
-	ServiceName string                 `json:"service_name"`
-	ServiceType string                 `json:"service_type"`
-	Query       string                 `json:"query"`
-	Table       string                 `json:"table"`
-	Key         string                 `json:"key"`
-	Credentials map[string]interface{} `json:"credentials"`
+	ServiceName string         `json:"service_name"`
+	ServiceType string         `json:"service_type"`
+	Query       string         `json:"query"`
+	Table       string         `json:"table"`
+	Key         string         `json:"key"`
+	Credentials map[string]any `json:"credentials"`
 }
 
 // New creates a new service adapter
@@ -129,8 +129,8 @@ func (a *Adapter) Extract(ctx context.Context, opts ...contracts.Option) (<-chan
 }
 
 // convertToRecords converts the integration result to ETL records
-func (a *Adapter) convertToRecords(result interface{}) []utils.Record {
-	rows, ok := result.([]map[string]interface{})
+func (a *Adapter) convertToRecords(result any) []utils.Record {
+	rows, ok := result.([]map[string]any)
 	if !ok {
 		log.Printf("[ServiceAdapter] Unexpected result type: %T", result)
 		return nil
@@ -176,7 +176,7 @@ func (a *Adapter) IsInitialized() bool {
 }
 
 // UpdateCredentials updates the credentials for the service
-func (a *Adapter) UpdateCredentials(credentials map[string]interface{}) {
+func (a *Adapter) UpdateCredentials(credentials map[string]any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.credentials = credentials

@@ -14,16 +14,16 @@ import (
 
 // DeadLetterRecord represents a record that failed processing
 type DeadLetterRecord struct {
-	ID            string                 `json:"id"`
-	Record        utils.Record           `json:"record"`
-	FailureReason string                 `json:"failure_reason"`
-	FailureTime   time.Time              `json:"failure_time"`
-	RetryCount    int                    `json:"retry_count"`
-	MaxRetries    int                    `json:"max_retries"`
-	NodeName      string                 `json:"node_name"`
-	WorkerID      int                    `json:"worker_id"`
-	Metadata      map[string]interface{} `json:"metadata"`
-	NextRetry     time.Time              `json:"next_retry"`
+	ID            string         `json:"id"`
+	Record        utils.Record   `json:"record"`
+	FailureReason string         `json:"failure_reason"`
+	FailureTime   time.Time      `json:"failure_time"`
+	RetryCount    int            `json:"retry_count"`
+	MaxRetries    int            `json:"max_retries"`
+	NodeName      string         `json:"node_name"`
+	WorkerID      int            `json:"worker_id"`
+	Metadata      map[string]any `json:"metadata"`
+	NextRetry     time.Time      `json:"next_retry"`
 }
 
 // DeadLetterQueue manages failed records with retry capabilities
@@ -64,7 +64,7 @@ func (dlq *DeadLetterQueue) SetStateManager(sm *StateManager) {
 }
 
 // AddRecord adds a failed record to the dead letter queue
-func (dlq *DeadLetterQueue) AddRecord(record utils.Record, reason, nodeName string, workerID int, metadata map[string]interface{}) error {
+func (dlq *DeadLetterQueue) AddRecord(record utils.Record, reason, nodeName string, workerID int, metadata map[string]any) error {
 	dlq.mutex.Lock()
 	defer dlq.mutex.Unlock()
 
@@ -223,7 +223,7 @@ func (dlq *DeadLetterQueue) removeRecord(id string) {
 }
 
 // GetQueueStats returns statistics about the dead letter queue
-func (dlq *DeadLetterQueue) GetQueueStats() map[string]interface{} {
+func (dlq *DeadLetterQueue) GetQueueStats() map[string]any {
 	dlq.mutex.RLock()
 	defer dlq.mutex.RUnlock()
 
@@ -241,7 +241,7 @@ func (dlq *DeadLetterQueue) GetQueueStats() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"total_records":       len(dlq.queue),
 		"retryable_records":   retryable,
 		"permanent_failures":  permanentFailures,

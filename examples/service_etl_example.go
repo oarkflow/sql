@@ -106,7 +106,7 @@ func createServiceETL(integrationManager *integrations.Manager) *etl.ETL {
 			"SELECT id, name, email, created_at FROM users WHERE created_at >= :created_at", // Custom query
 			"",   // Table (not used when query is provided)
 			"id", // Key field for checkpointing
-			map[string]interface{}{ // Credentials (can be empty if using service's credentials)
+			map[string]any{ // Credentials (can be empty if using service's credentials)
 				"username": "readonly_user",
 				"password": "readonly_pass",
 			},

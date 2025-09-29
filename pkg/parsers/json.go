@@ -19,13 +19,13 @@ func (p *JSONParser) Name() string {
 
 // Detect checks if the data is valid JSON
 func (p *JSONParser) Detect(data []byte) bool {
-	var temp interface{}
+	var temp any
 	return json.Unmarshal(data, &temp) == nil
 }
 
 // Parse parses the JSON data
-func (p *JSONParser) Parse(data []byte) (interface{}, error) {
-	var result interface{}
+func (p *JSONParser) Parse(data []byte) (any, error) {
+	var result any
 	err := json.Unmarshal(data, &result)
 	return result, err
 }

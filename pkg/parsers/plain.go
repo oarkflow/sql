@@ -19,6 +19,6 @@ func (p *PlainTextParser) Detect(data []byte) bool {
 }
 
 // Parse returns the data as a string
-func (p *PlainTextParser) Parse(data []byte) (interface{}, error) {
+func (p *PlainTextParser) Parse(data []byte) (any, error) {
 	return string(data), nil
 }

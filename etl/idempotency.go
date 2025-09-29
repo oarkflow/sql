@@ -225,7 +225,7 @@ func (im *IdempotencyManager) GetKeyInfo(key string) (*IdempotencyKey, bool) {
 }
 
 // GetStats returns statistics about the idempotency manager
-func (im *IdempotencyManager) GetStats() map[string]interface{} {
+func (im *IdempotencyManager) GetStats() map[string]any {
 	im.mutex.RLock()
 	defer im.mutex.RUnlock()
 
@@ -244,7 +244,7 @@ func (im *IdempotencyManager) GetStats() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"total_keys":  len(im.keys),
 		"processing":  processing,
 		"completed":   completed,

@@ -8,10 +8,10 @@ import (
 	"github.com/oarkflow/squealx"
 )
 
-func BuildUpdateStatement(table string, rec map[string]interface{}) (string, []interface{}) {
+func BuildUpdateStatement(table string, rec map[string]any) (string, []any) {
 	var setParts []string
-	var args []interface{}
-	var id interface{}
+	var args []any
+	var id any
 	for k, v := range rec {
 		if strings.ToLower(k) == "id" {
 			id = v
@@ -28,13 +28,13 @@ func BuildUpdateStatement(table string, rec map[string]interface{}) (string, []i
 	return q, args
 }
 
-func BuildDeleteStatement(table string, rec map[string]interface{}) (string, []interface{}) {
+func BuildDeleteStatement(table string, rec map[string]any) (string, []any) {
 	id, ok := rec["id"]
 	if !ok {
 		return "", nil
 	}
 	q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", table)
-	return q, []interface{}{id}
+	return q, []any{id}
 }
 
 func UpdateSequence(db *squealx.DB, table string) error {
@@ -114,8 +114,8 @@ var (
 		"time.Time":   "DATETIME",
 		"[]byte":      "BLOB",
 		"map":         "JSON",
-		"interface{}": "TEXT",
 		"any":         "TEXT",
+		"interface{}": "TEXT",
 		"text":        "TEXT",
 		"pointer":     "TEXT",
 		// SQL types (lowercase) - excluding duplicates with Go types
@@ -177,8 +177,8 @@ var (
 		"time.Time":   "TIMESTAMP",
 		"[]byte":      "BYTEA",
 		"map":         "JSONB",
-		"interface{}": "TEXT",
 		"any":         "TEXT",
+		"interface{}": "TEXT",
 		"text":        "TEXT",
 		"pointer":     "TEXT",
 		// SQL types (lowercase) - excluding duplicates with Go types
@@ -240,8 +240,8 @@ var (
 		"time.Time":   "DATETIME",
 		"[]byte":      "BLOB",
 		"map":         "TEXT",
-		"interface{}": "TEXT",
 		"any":         "TEXT",
+		"interface{}": "TEXT",
 		"text":        "TEXT",
 		"pointer":     "TEXT",
 		// SQL types (lowercase) - excluding duplicates with Go types

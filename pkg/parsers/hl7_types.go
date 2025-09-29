@@ -628,34 +628,34 @@ type NDL struct {
 
 // OBX - Observation/Result
 type OBX struct {
-	SetID                                 string      `json:"set_id"`                                   // OBX.1
-	ValueType                             string      `json:"value_type"`                               // OBX.2
-	ObservationIdentifier                 *CE         `json:"observation_identifier"`                   // OBX.3
-	ObservationSubID                      string      `json:"observation_sub_id"`                       // OBX.4
-	ObservationValue                      interface{} `json:"observation_value"`                        // OBX.5
-	Units                                 *CE         `json:"units"`                                    // OBX.6
-	ReferencesRange                       string      `json:"references_range"`                         // OBX.7
-	AbnormalFlags                         []string    `json:"abnormal_flags"`                           // OBX.8
-	Probability                           string      `json:"probability"`                              // OBX.9
-	NatureOfAbnormalTest                  []string    `json:"nature_of_abnormal_test"`                  // OBX.10
-	ObservationResultStatus               string      `json:"observation_result_status"`                // OBX.11
-	EffectiveDateOfReferenceRange         time.Time   `json:"effective_date_of_reference_range"`        // OBX.12
-	UserDefinedAccessChecks               string      `json:"user_defined_access_checks"`               // OBX.13
-	DateTimeOfTheObservation              time.Time   `json:"date_time_of_the_observation"`             // OBX.14
-	ProducersID                           *CE         `json:"producers_id"`                             // OBX.15
-	ResponsibleObserver                   []*XCN      `json:"responsible_observer"`                     // OBX.16
-	ObservationMethod                     []*CE       `json:"observation_method"`                       // OBX.17
-	EquipmentInstanceIdentifier           *EI         `json:"equipment_instance_identifier"`            // OBX.18
-	DateTimeOfTheAnalysis                 time.Time   `json:"date_time_of_the_analysis"`                // OBX.19
-	ObservationSite                       []*CE       `json:"observation_site"`                         // OBX.20
-	ObservationInstanceIdentifier         *EI         `json:"observation_instance_identifier"`          // OBX.21
-	MoodCode                              string      `json:"mood_code"`                                // OBX.22
-	PerformingOrganizationName            *XON        `json:"performing_organization_name"`             // OBX.23
-	PerformingOrganizationAddress         *XAD        `json:"performing_organization_address"`          // OBX.24
-	PerformingOrganizationMedicalDirector []*XCN      `json:"performing_organization_medical_director"` // OBX.25
-	PatientResultsReleaseCategory         string      `json:"patient_results_release_category"`         // OBX.26
-	RootCause                             string      `json:"root_cause"`                               // OBX.27
-	LocalProcessControl                   []*CE       `json:"local_process_control"`                    // OBX.28
+	SetID                                 string    `json:"set_id"`                                   // OBX.1
+	ValueType                             string    `json:"value_type"`                               // OBX.2
+	ObservationIdentifier                 *CE       `json:"observation_identifier"`                   // OBX.3
+	ObservationSubID                      string    `json:"observation_sub_id"`                       // OBX.4
+	ObservationValue                      any       `json:"observation_value"`                        // OBX.5
+	Units                                 *CE       `json:"units"`                                    // OBX.6
+	ReferencesRange                       string    `json:"references_range"`                         // OBX.7
+	AbnormalFlags                         []string  `json:"abnormal_flags"`                           // OBX.8
+	Probability                           string    `json:"probability"`                              // OBX.9
+	NatureOfAbnormalTest                  []string  `json:"nature_of_abnormal_test"`                  // OBX.10
+	ObservationResultStatus               string    `json:"observation_result_status"`                // OBX.11
+	EffectiveDateOfReferenceRange         time.Time `json:"effective_date_of_reference_range"`        // OBX.12
+	UserDefinedAccessChecks               string    `json:"user_defined_access_checks"`               // OBX.13
+	DateTimeOfTheObservation              time.Time `json:"date_time_of_the_observation"`             // OBX.14
+	ProducersID                           *CE       `json:"producers_id"`                             // OBX.15
+	ResponsibleObserver                   []*XCN    `json:"responsible_observer"`                     // OBX.16
+	ObservationMethod                     []*CE     `json:"observation_method"`                       // OBX.17
+	EquipmentInstanceIdentifier           *EI       `json:"equipment_instance_identifier"`            // OBX.18
+	DateTimeOfTheAnalysis                 time.Time `json:"date_time_of_the_analysis"`                // OBX.19
+	ObservationSite                       []*CE     `json:"observation_site"`                         // OBX.20
+	ObservationInstanceIdentifier         *EI       `json:"observation_instance_identifier"`          // OBX.21
+	MoodCode                              string    `json:"mood_code"`                                // OBX.22
+	PerformingOrganizationName            *XON      `json:"performing_organization_name"`             // OBX.23
+	PerformingOrganizationAddress         *XAD      `json:"performing_organization_address"`          // OBX.24
+	PerformingOrganizationMedicalDirector []*XCN    `json:"performing_organization_medical_director"` // OBX.25
+	PatientResultsReleaseCategory         string    `json:"patient_results_release_category"`         // OBX.26
+	RootCause                             string    `json:"root_cause"`                               // OBX.27
+	LocalProcessControl                   []*CE     `json:"local_process_control"`                    // OBX.28
 }
 
 // ORC - Common Order

@@ -19,13 +19,13 @@ func (p *XMLParser) Name() string {
 
 // Detect checks if the data is valid XML
 func (p *XMLParser) Detect(data []byte) bool {
-	var temp interface{}
+	var temp any
 	return xml.Unmarshal(data, &temp) == nil
 }
 
 // Parse parses the XML data
-func (p *XMLParser) Parse(data []byte) (interface{}, error) {
-	var result interface{}
+func (p *XMLParser) Parse(data []byte) (any, error) {
+	var result any
 	err := xml.Unmarshal(data, &result)
 	return result, err
 }
