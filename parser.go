@@ -74,7 +74,7 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 			}
 		}
 	}
-	if p.peekToken.Type == UNION || p.peekToken.Type == INTERSECT || p.peekToken.Type == EXCEPT {
+	if p.curToken.Type == UNION || p.curToken.Type == INTERSECT || p.curToken.Type == EXCEPT {
 		// Advance to the compound operator
 		p.nextToken()
 		compOp := p.curToken.Type
@@ -94,6 +94,10 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 			Left:     stmt.Query,
 			Operator: compOp,
 			Right:    rightStmt.Query,
+		}
+		// Resolve CTEs for the right side of compound query
+		if stmt.With != nil {
+			resolveCTEsForQuery(stmt.With, rightStmt.Query)
 		}
 	}
 	return stmt
@@ -134,6 +138,30 @@ func (p *Parser) parseWithClause() *WithClause {
 	return withClause
 }
 
+func resolveCTEsForQuery(with *WithClause, query *SQL) {
+	if with == nil || query == nil {
+		return
+	}
+	if query.From != nil && query.From.Source == "" {
+		for _, cte := range with.CTEs {
+			if strings.EqualFold(cte.Name, query.From.Name) {
+				query.From.Subquery = cte.Query
+				break
+			}
+		}
+	}
+	for _, join := range query.Joins {
+		if join.Table != nil && join.Table.Source == "" {
+			for _, cte := range with.CTEs {
+				if strings.EqualFold(cte.Name, join.Table.Name) {
+					join.Table.Subquery = cte.Query
+					break
+				}
+			}
+		}
+	}
+}
+
 func (p *Parser) parseSelectQuery() *SQL {
 	query := &SQL{}
 	if p.curToken.Type != SELECT {
@@ -160,8 +188,8 @@ func (p *Parser) parseSelectQuery() *SQL {
 		}
 	}
 	if p.peekToken.Type == WHERE {
-		p.nextToken()
-		p.nextToken()
+		p.nextToken() // consume WHERE
+		p.nextToken() // advance to the expression
 		query.Where = p.parseExpression(0)
 	}
 	if p.peekToken.Type == GROUP {
@@ -172,8 +200,8 @@ func (p *Parser) parseSelectQuery() *SQL {
 		query.GroupBy = p.parseGroupByClause()
 	}
 	if p.peekToken.Type == HAVING {
-		p.nextToken()
-		p.nextToken()
+		p.nextToken() // consume HAVING
+		p.nextToken() // advance to the expression
 		query.Having = p.parseExpression(0)
 	}
 	if p.peekToken.Type == ORDER {
@@ -376,9 +404,15 @@ func (p *Parser) parseCaseExpression() Expression {
 		p.nextToken()
 		wc.Result = p.parseExpression(0)
 		ce.WhenClauses = append(ce.WhenClauses, wc)
+		// Check for more WHEN clauses
+		if p.peekToken.Type != WHEN {
+			break
+		}
+		p.nextToken() // consume WHEN for next iteration
 	}
-	if p.curToken.Type == ELSE {
-		p.nextToken()
+	if p.peekToken.Type == ELSE {
+		p.nextToken() // consume ELSE
+		p.nextToken() // move to ELSE expression
 		ce.Else = p.parseExpression(0)
 	}
 	if !p.expectPeek(END) {
@@ -624,33 +658,62 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 			Right:    &Literal{Value: nil},
 		}
 	case IN:
-		p.nextToken()
-		if !p.expectPeek(LPAREN) {
+		p.nextToken() // consume IN
+		if p.curToken.Type != LPAREN {
+			p.peekError(LPAREN)
 			return nil
 		}
-		list := p.parseExpressionList(COMMA)
-		if !p.expectPeek(RPAREN) {
-			return nil
-		}
-		return &InExpression{
-			Left: left,
-			Not:  false,
-			List: list,
-		}
-	case NOT:
-		if p.peekToken.Type == IN {
-			p.nextToken()
-			if !p.expectPeek(LPAREN) {
+		p.nextToken() // consume (
+		if p.curToken.Type == SELECT {
+			subStmt := p.ParseQueryStatement()
+			if !p.expectPeek(RPAREN) {
 				return nil
 			}
+			return &InExpression{
+				Left:     left,
+				Not:      false,
+				Subquery: &Subquery{Query: subStmt.Query},
+			}
+		} else {
 			list := p.parseExpressionList(COMMA)
 			if !p.expectPeek(RPAREN) {
 				return nil
 			}
 			return &InExpression{
 				Left: left,
-				Not:  true,
+				Not:  false,
 				List: list,
+			}
+		}
+	case NOT:
+		if p.peekToken.Type == IN {
+			p.nextToken() // consume NOT
+			p.nextToken() // consume IN
+			if p.curToken.Type != LPAREN {
+				p.peekError(LPAREN)
+				return nil
+			}
+			p.nextToken() // consume (
+			if p.curToken.Type == SELECT {
+				subStmt := p.ParseQueryStatement()
+				if !p.expectPeek(RPAREN) {
+					return nil
+				}
+				return &InExpression{
+					Left:     left,
+					Not:      true,
+					Subquery: &Subquery{Query: subStmt.Query},
+				}
+			} else {
+				list := p.parseExpressionList(COMMA)
+				if !p.expectPeek(RPAREN) {
+					return nil
+				}
+				return &InExpression{
+					Left: left,
+					Not:  true,
+					List: list,
+				}
 			}
 		} else if p.peekToken.Type == LIKE {
 			p.nextToken()
@@ -751,7 +814,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	default:
 		return nil
 	}
-	for p.peekToken.Type != SEMICOLON && p.peekToken.Type != ILLEGAL && precedence < p.peekPrecedence() {
+	for p.peekToken.Type != SEMICOLON && p.peekToken.Type != ILLEGAL && p.peekToken.Type != UNION && p.peekToken.Type != INTERSECT && p.peekToken.Type != EXCEPT && precedence < p.peekPrecedence() {
 		p.nextToken()
 		leftExp = p.parseInfixExpression(leftExp)
 	}

@@ -27,6 +27,9 @@ func (tr *TableReference) loadData(ctx context.Context) ([]utils.Record, error) 
 		}
 		modTime := fi.ModTime()
 		cacheKey := strings.ToLower(tr.Source) + ":" + tr.Name
+		if tr.Alias != "" {
+			cacheKey += ":" + tr.Alias
+		}
 		if entry, exists := tableCache[cacheKey]; exists {
 			if entry.modTime.Equal(modTime) {
 				return entry.rows, nil
@@ -219,9 +222,10 @@ func (pe *PrefixExpression) String() string {
 }
 
 type InExpression struct {
-	Left Expression
-	Not  bool
-	List []Expression
+	Left     Expression
+	Not      bool
+	List     []Expression
+	Subquery *Subquery
 }
 
 func (ie *InExpression) ExpressionNode() {}
@@ -232,13 +236,16 @@ func (ie *InExpression) TokenLiteral() string {
 	return "IN"
 }
 func (ie *InExpression) String() string {
-	var list []string
-	for _, expr := range ie.List {
-		list = append(list, expr.String())
-	}
 	notStr := ""
 	if ie.Not {
 		notStr = "NOT "
+	}
+	if ie.Subquery != nil {
+		return fmt.Sprintf("(%s %sIN (%s))", ie.Left.String(), notStr, ie.Subquery.String())
+	}
+	var list []string
+	for _, expr := range ie.List {
+		list = append(list, expr.String())
 	}
 	return fmt.Sprintf("(%s %sIN (%s))", ie.Left.String(), notStr, strings.Join(list, ", "))
 }

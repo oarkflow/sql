@@ -18,6 +18,7 @@ type EvalContext struct {
 	OuterRow         utils.Record
 	CurrentResultSet []utils.Record
 	Errors           []string
+	CurrentAlias     string
 }
 
 func NewEvalContext() *EvalContext {
@@ -80,6 +81,13 @@ func (ctx *EvalContext) evalIdentifier(_ context.Context, id *Identifier, row ut
 		return time.Now().Format("2006-01-02")
 	}
 
+	// Try with current alias prefix
+	if ctx.CurrentAlias != "" {
+		if val, ok := row[ctx.CurrentAlias+"."+id.Value]; ok {
+			return val
+		}
+	}
+	// Try direct key
 	if v, ok := row[id.Value]; ok {
 		return v
 	}
@@ -95,12 +103,35 @@ func (ctx *EvalContext) evalIdentifier(_ context.Context, id *Identifier, row ut
 func (ctx *EvalContext) evalInExpression(c context.Context, e *InExpression, row utils.Record) any {
 	leftVal := ctx.evalExpression(c, e.Left, row)
 	found := false
-	for _, exp := range e.List {
-		if utils.CompareValues(ctx.evalExpression(c, exp, row), leftVal) == 0 {
-			found = true
-			break
+
+	if e.Subquery != nil {
+		// Handle subquery IN
+		subRows, err := e.Subquery.Query.executeQuery(c, nil)
+		if err != nil {
+			return false
+		}
+		for _, subRow := range subRows {
+			// For subquery, we assume it returns a single column
+			for _, val := range subRow {
+				if utils.CompareValues(val, leftVal) == 0 {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	} else {
+		// Handle expression list IN
+		for _, exp := range e.List {
+			if utils.CompareValues(ctx.evalExpression(c, exp, row), leftVal) == 0 {
+				found = true
+				break
+			}
 		}
 	}
+
 	if e.Not {
 		return !found
 	}

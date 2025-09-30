@@ -107,48 +107,60 @@ type QueryStatement struct {
 }
 
 func (qs *QueryStatement) parseAndExecute(ctx context.Context) ([]utils.Record, error) {
-	mainRows, err := qs.Query.From.loadData(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if qs.Query.From.Alias != "" {
-		alias := qs.Query.From.Alias
-		for i, row := range mainRows {
-			mainRows[i] = utils.ApplyAliasToRecord(row, alias)
-		}
-	}
-	if len(qs.Query.Joins) > 0 {
-		mainRows, err = qs.Query.executeJoins(ctx, mainRows)
+	if qs.Compound != nil {
+		// For compound queries, execute left and right separately
+		leftRows, err := qs.Compound.Left.executeFullQuery(ctx)
 		if err != nil {
 			return nil, err
 		}
-	}
-	result, err := qs.Query.executeQuery(ctx, mainRows)
-	if err != nil {
-		return nil, err
-	}
-	if qs.Compound != nil {
-		leftRes, _ := qs.Compound.Left.executeQuery(ctx, mainRows)
-		rightRes, _ := qs.Compound.Right.executeQuery(ctx, mainRows)
+		rightRows, err := qs.Compound.Right.executeFullQuery(ctx)
+		if err != nil {
+			return nil, err
+		}
 		switch qs.Compound.Operator {
 		case UNION_ALL:
-			// New handling for UNION ALL: simply append both result sets.
-			result = UnionAll(leftRes, rightRes)
+			return UnionAll(leftRows, rightRows), nil
 		case UNION:
-			result = utils.Union(leftRes, rightRes)
+			return utils.Union(leftRows, rightRows), nil
 		case INTERSECT:
-			result = utils.Intersect(leftRes, rightRes)
+			return utils.Intersect(leftRows, rightRows), nil
 		case EXCEPT:
-			result = utils.Except(leftRes, rightRes)
+			return utils.Except(leftRows, rightRows), nil
 		}
 	}
-	return result, nil
+
+	// For simple queries
+	return qs.Query.executeFullQuery(ctx)
 }
 
 // New helper for UNION ALL compound query
 func UnionAll(a, b []utils.Record) []utils.Record {
 	// UNION ALL: simply return concatenated records
 	return append(a, b...)
+}
+
+func (q *SQL) executeFullQuery(ctx context.Context) ([]utils.Record, error) {
+	mainRows, err := q.From.loadData(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if q.From.Alias != "" {
+		alias := q.From.Alias
+		for i, row := range mainRows {
+			mainRows[i] = utils.ApplyAliasToRecord(row, alias)
+		}
+	}
+	if len(q.Joins) > 0 {
+		mainRows, err = q.executeJoins(ctx, mainRows)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result, err := q.executeQuery(ctx, mainRows)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (qs *QueryStatement) statementNode()       {}
@@ -318,6 +330,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		}
 	}
 	ctx := NewEvalContext()
+	if query.From != nil {
+		ctx.CurrentAlias = query.From.Alias
+	}
 	var filteredRows []utils.Record
 	conds := []Condition{}
 	if query.Where != nil {
