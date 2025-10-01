@@ -43,10 +43,16 @@ func (p *Parser) peekError(t TokenType) {
 }
 
 func (p *Parser) ParseQueryStatement() *QueryStatement {
+	return p.ParseQueryStatementWithCTE(nil)
+}
+
+func (p *Parser) ParseQueryStatementWithCTE(withClause *WithClause) *QueryStatement {
 	stmt := &QueryStatement{}
-	if p.curToken.Type == WITH {
+	if p.curToken.Type == WITH && withClause == nil {
 		stmt.With = p.parseWithClause()
 		p.nextToken()
+	} else if withClause != nil {
+		stmt.With = withClause
 	}
 	if p.curToken.Type != SELECT {
 		p.errors = append(p.errors, fmt.Sprintf("SQL must begin with SELECT (at line %d, col %d)", p.curToken.Line, p.curToken.Column))
@@ -74,7 +80,7 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 			}
 		}
 	}
-	if p.curToken.Type == UNION || p.curToken.Type == INTERSECT || p.curToken.Type == EXCEPT {
+	if p.peekToken.Type == UNION || p.peekToken.Type == INTERSECT || p.peekToken.Type == EXCEPT {
 		// Advance to the compound operator
 		p.nextToken()
 		compOp := p.curToken.Type
@@ -85,7 +91,7 @@ func (p *Parser) ParseQueryStatement() *QueryStatement {
 		}
 		// Advance to start parsing the right-hand query
 		p.nextToken()
-		rightStmt := p.ParseQueryStatement()
+		rightStmt := p.ParseQueryStatementWithCTE(stmt.With)
 		if rightStmt == nil || rightStmt.Query == nil {
 			p.errors = append(p.errors, fmt.Sprintf("Invalid compound query near token %s (line %d, col %d)", p.peekToken.Type, p.peekToken.Line, p.peekToken.Column))
 			return nil
@@ -119,7 +125,7 @@ func (p *Parser) parseWithClause() *WithClause {
 			return nil
 		}
 		p.nextToken()
-		cteStmt := p.ParseQueryStatement()
+		cteStmt := p.ParseQueryStatementWithCTE(nil)
 		if cteStmt == nil || cteStmt.Query == nil {
 			p.errors = append(p.errors, "Invalid CTE query for "+cteName)
 			return nil
@@ -214,6 +220,7 @@ func (p *Parser) parseSelectQuery() *SQL {
 	if p.peekToken.Type == SEMICOLON {
 		p.nextToken()
 	}
+	// Don't consume UNION/INTERSECT/EXCEPT tokens here - let compound query detection handle them
 	return query
 }
 
@@ -307,7 +314,7 @@ func (p *Parser) parseTableReference() *TableReference {
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
-			subStmt := p.ParseQueryStatement()
+			subStmt := p.ParseQueryStatementWithCTE(nil)
 			if !p.expectPeek(RPAREN) {
 				p.errors = append(p.errors, "Expected closing parenthesis for subquery")
 				return nil
@@ -665,7 +672,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 		}
 		p.nextToken() // consume (
 		if p.curToken.Type == SELECT {
-			subStmt := p.ParseQueryStatement()
+			subStmt := p.ParseQueryStatementWithCTE(nil)
 			if !p.expectPeek(RPAREN) {
 				return nil
 			}
@@ -695,7 +702,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 			}
 			p.nextToken() // consume (
 			if p.curToken.Type == SELECT {
-				subStmt := p.ParseQueryStatement()
+				subStmt := p.ParseQueryStatementWithCTE(nil)
 				if !p.expectPeek(RPAREN) {
 					return nil
 				}
@@ -755,7 +762,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
-			subStmt := p.ParseQueryStatement()
+			subStmt := p.ParseQueryStatementWithCTE(nil)
 			if !p.expectPeek(RPAREN) {
 				return nil
 			}
@@ -777,7 +784,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 			return nil
 		}
 		p.nextToken()
-		subStmt := p.ParseQueryStatement()
+		subStmt := p.ParseQueryStatementWithCTE(nil)
 		if !p.expectPeek(RPAREN) {
 			return nil
 		}
@@ -814,7 +821,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	default:
 		return nil
 	}
-	for p.peekToken.Type != SEMICOLON && p.peekToken.Type != ILLEGAL && p.peekToken.Type != UNION && p.peekToken.Type != INTERSECT && p.peekToken.Type != EXCEPT && precedence < p.peekPrecedence() {
+	for p.peekToken.Type != SEMICOLON && p.peekToken.Type != ILLEGAL && precedence < p.peekPrecedence() {
 		p.nextToken()
 		leftExp = p.parseInfixExpression(leftExp)
 	}

@@ -8,7 +8,10 @@ import (
 )
 
 func main() {
-	records, err := sql.Query(context.Background(), "WITH cte1 AS (SELECT id FROM read_file('users.csv') WHERE id <= 2), cte2 AS (SELECT id FROM read_file('users.csv') WHERE id >= 4) SELECT * FROM cte1 UNION SELECT * FROM cte2")
+	records, err := sql.Query(context.Background(), `WITH
+ 	cte1 AS (SELECT id FROM read_file('users.csv') WHERE id <= 2),
+ 	cte2 AS (SELECT id FROM read_file('users.csv') WHERE id >= 4)
+ 	SELECT * FROM (SELECT * FROM cte1 UNION SELECT * FROM cte2) AS combined ORDER BY id DESC`)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
