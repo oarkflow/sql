@@ -15,6 +15,9 @@ func loadDataForSubquery() []utils.Record {
 }
 
 func (tr *TableReference) loadData(ctx context.Context) ([]utils.Record, error) {
+	if tr.CompoundSubquery != nil {
+		return tr.CompoundSubquery.parseAndExecute(ctx)
+	}
 	if tr.Subquery != nil {
 		return tr.Subquery.executeQuery(ctx, nil)
 	}
@@ -291,10 +294,11 @@ func (ee *ExistsExpression) String() string {
 }
 
 type TableReference struct {
-	Source   string
-	Name     string
-	Alias    string
-	Subquery *SQL
+	Source           string
+	Name             string
+	Alias            string
+	Subquery         *SQL
+	CompoundSubquery *QueryStatement
 }
 
 func (tr *TableReference) TokenLiteral() string { return tr.Source }

@@ -7,10 +7,11 @@ import (
 )
 
 type Parser struct {
-	l         *Lexer
-	curToken  Token
-	peekToken Token
-	errors    []string
+	l           *Lexer
+	curToken    Token
+	peekToken   Token
+	errors      []string
+	currentWith *WithClause
 }
 
 func NewParser(l *Lexer) *Parser {
@@ -50,9 +51,11 @@ func (p *Parser) ParseQueryStatementWithCTE(withClause *WithClause) *QueryStatem
 	stmt := &QueryStatement{}
 	if p.curToken.Type == WITH && withClause == nil {
 		stmt.With = p.parseWithClause()
+		p.currentWith = stmt.With
 		p.nextToken()
 	} else if withClause != nil {
 		stmt.With = withClause
+		p.currentWith = withClause
 	}
 	if p.curToken.Type != SELECT {
 		p.errors = append(p.errors, fmt.Sprintf("SQL must begin with SELECT (at line %d, col %d)", p.curToken.Line, p.curToken.Column))
@@ -314,12 +317,18 @@ func (p *Parser) parseTableReference() *TableReference {
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
-			subStmt := p.ParseQueryStatementWithCTE(nil)
+			subStmt := p.ParseQueryStatementWithCTE(p.currentWith)
 			if !p.expectPeek(RPAREN) {
 				p.errors = append(p.errors, "Expected closing parenthesis for subquery")
 				return nil
 			}
-			tr := &TableReference{Subquery: subStmt.Query}
+			// Handle compound queries (UNION, INTERSECT, EXCEPT) in subqueries
+			var tr *TableReference
+			if subStmt.Compound != nil {
+				tr = &TableReference{CompoundSubquery: subStmt}
+			} else {
+				tr = &TableReference{Subquery: subStmt.Query}
+			}
 			switch p.peekToken.Type {
 			case AS:
 				p.nextToken()
@@ -672,7 +681,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 		}
 		p.nextToken() // consume (
 		if p.curToken.Type == SELECT {
-			subStmt := p.ParseQueryStatementWithCTE(nil)
+			subStmt := p.ParseQueryStatementWithCTE(p.currentWith)
 			if !p.expectPeek(RPAREN) {
 				return nil
 			}
@@ -702,7 +711,7 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 			}
 			p.nextToken() // consume (
 			if p.curToken.Type == SELECT {
-				subStmt := p.ParseQueryStatementWithCTE(nil)
+				subStmt := p.ParseQueryStatementWithCTE(p.currentWith)
 				if !p.expectPeek(RPAREN) {
 					return nil
 				}
@@ -762,7 +771,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()
-			subStmt := p.ParseQueryStatementWithCTE(nil)
+			subStmt := p.ParseQueryStatementWithCTE(p.currentWith)
 			if !p.expectPeek(RPAREN) {
 				return nil
 			}
@@ -784,7 +793,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 			return nil
 		}
 		p.nextToken()
-		subStmt := p.ParseQueryStatementWithCTE(nil)
+		subStmt := p.ParseQueryStatementWithCTE(p.currentWith)
 		if !p.expectPeek(RPAREN) {
 			return nil
 		}
