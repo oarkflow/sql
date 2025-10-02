@@ -850,3 +850,7 @@ func (p *Parser) curPrecedence() int {
 	}
 	return 0
 }
+
+func (p *Parser) Errors() []string {
+	return p.errors
+}
