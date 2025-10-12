@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETL Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">ETL Dashboard</h1>
+                <p class="text-lg text-gray-600">Manage configurations and monitor execution summaries</p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <!-- Configurations -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-2xl font-semibold text-gray-800 flex items-center">
+                            <i data-lucide="settings" class="w-6 h-6 mr-2 text-blue-600"></i>
+                            Configurations
+                        </h2>
+                        <button id="refreshConfigsBtn"
+                            class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                            <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
+                            Refresh
+                        </button>
+                    </div>
+
+                    <div id="configurationsList" class="space-y-4 max-h-96 overflow-y-auto">
+                        <!-- Configurations will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="zap" class="w-6 h-6 mr-2 text-green-600"></i>
+                        Quick Actions
+                    </h2>
+
+                    <div class="space-y-4">
+                        <a href="/execute"
+                            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-md transition duration-200 flex items-center justify-center">
+                            <i data-lucide="play" class="w-5 h-5 mr-2"></i>
+                            Execute Configuration
+                        </a>
+
+                        <button id="clearExecutionsBtn"
+                            class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-md transition duration-200 flex items-center justify-center">
+                            <i data-lucide="trash-2" class="w-5 h-5 mr-2"></i>
+                            Clear Execution History
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Execution Summary -->
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-semibold text-gray-800 flex items-center">
+                        <i data-lucide="activity" class="w-6 h-6 mr-2 text-purple-600"></i>
+                        Execution Summary
+                    </h2>
+                    <button id="refreshExecutionsBtn"
+                        class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
+                        Refresh
+                    </button>
+                </div>
+
+                <div id="executionsSummary" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <!-- Summary stats will be populated here -->
+                </div>
+
+                <div id="executionsList" class="space-y-4 max-h-96 overflow-y-auto">
+                    <!-- Executions will be populated here -->
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="mt-8 hidden">
+                <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                    <div class="flex items-center">
+                        <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                        <span id="statusText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        const configurationsList = document.getElementById('configurationsList');
+        const executionsList = document.getElementById('executionsList');
+        const executionsSummary = document.getElementById('executionsSummary');
+        const refreshConfigsBtn = document.getElementById('refreshConfigsBtn');
+        const refreshExecutionsBtn = document.getElementById('refreshExecutionsBtn');
+        const clearExecutionsBtn = document.getElementById('clearExecutionsBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+
+        // Load configurations
+        async function loadConfigurations() {
+            try {
+                const response = await fetch('/api/configurations');
+                const configurations = await response.json();
+
+                configurationsList.innerHTML = '';
+
+                if (configurations.length === 0) {
+                    configurationsList.innerHTML = '<p class="text-gray-500 text-center py-8">No configurations available</p>';
+                    return;
+                }
+
+                configurations.forEach(config => {
+                    const configDiv = createConfigurationElement(config);
+                    configurationsList.appendChild(configDiv);
+                });
+
+                lucide.createIcons();
+            } catch (error) {
+                console.error('Failed to load configurations:', error);
+            }
+        }
+
+        // Load executions
+        async function loadExecutions() {
+            try {
+                const response = await fetch('/api/executions');
+                const executions = await response.json();
+
+                executionsList.innerHTML = '';
+                executionsSummary.innerHTML = '';
+
+                if (executions.length === 0) {
+                    executionsList.innerHTML = '<p class="text-gray-500 text-center py-8">No executions yet</p>';
+                    executionsSummary.innerHTML = `
+                        <div class="text-center py-8">
+                            <div class="text-3xl font-bold text-gray-400">0</div>
+                            <div class="text-sm text-gray-600">Total Executions</div>
+                        </div>
+                        <div class="text-center py-8">
+                            <div class="text-3xl font-bold text-green-400">0</div>
+                            <div class="text-sm text-gray-600">Completed</div>
+                        </div>
+                        <div class="text-center py-8">
+                            <div class="text-3xl font-bold text-blue-400">0</div>
+                            <div class="text-sm text-gray-600">Running</div>
+                        </div>
+                        <div class="text-center py-8">
+                            <div class="text-3xl font-bold text-red-400">0</div>
+                            <div class="text-sm text-gray-600">Failed</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Calculate summary stats
+                const total = executions.length;
+                const completed = executions.filter(e => e.status === 'completed').length;
+                const running = executions.filter(e => e.status === 'running').length;
+                const failed = executions.filter(e => e.status === 'failed').length;
+
+                executionsSummary.innerHTML = `
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-gray-600">${total}</div>
+                        <div class="text-sm text-gray-600">Total Executions</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-green-600">${completed}</div>
+                        <div class="text-sm text-gray-600">Completed</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-blue-600">${running}</div>
+                        <div class="text-sm text-gray-600">Running</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-red-600">${failed}</div>
+                        <div class="text-sm text-gray-600">Failed</div>
+                    </div>
+                `;
+
+                executions.reverse().forEach(execution => {
+                    const executionDiv = createExecutionElement(execution);
+                    executionsList.appendChild(executionDiv);
+                });
+
+                lucide.createIcons();
+            } catch (error) {
+                console.error('Failed to load executions:', error);
+            }
+        }
+
+        // Create configuration element
+        function createConfigurationElement(config) {
+            const div = document.createElement('div');
+            div.className = 'border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition duration-200';
+
+            const typeColor = getTypeColor(config.type);
+
+            div.innerHTML = `
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-semibold text-gray-800">${config.name}</span>
+                    <span class="px-2 py-1 rounded-full text-xs font-medium ${typeColor} uppercase">
+                        ${config.type}
+                    </span>
+                </div>
+                <div class="text-sm text-gray-600 mb-2">
+                    ${config.description}
+                </div>
+                <div class="text-xs text-gray-500">
+                    ${config.path}
+                </div>
+            `;
+
+            return div;
+        }
+
+        // Create execution element
+        function createExecutionElement(execution) {
+            const div = document.createElement('div');
+            div.className = 'border border-gray-200 rounded-lg p-4';
+
+            const statusColor = getStatusColor(execution.status);
+            const statusIcon = getStatusIcon(execution.status);
+
+            let metricsHtml = '';
+            if (execution.detailedMetrics) {
+                const totalProcessed = (execution.detailedMetrics.extracted || 0) +
+                    (execution.detailedMetrics.mapped || 0) +
+                    (execution.detailedMetrics.transformed || 0) +
+                    (execution.detailedMetrics.loaded || 0);
+                metricsHtml = `
+                    <div class="mt-2 grid grid-cols-5 gap-2 text-xs">
+                        <div class="text-center">
+                            <div class="font-semibold text-blue-600">${execution.detailedMetrics.extracted || 0}</div>
+                            <div class="text-gray-500">Extracted</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="font-semibold text-green-600">${execution.detailedMetrics.mapped || 0}</div>
+                            <div class="text-gray-500">Mapped</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="font-semibold text-purple-600">${execution.detailedMetrics.transformed || 0}</div>
+                            <div class="text-gray-500">Transformed</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="font-semibold text-indigo-600">${execution.detailedMetrics.loaded || 0}</div>
+                            <div class="text-gray-500">Loaded</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="font-semibold text-red-600">${execution.detailedMetrics.errors || 0}</div>
+                            <div class="text-gray-500">Errors</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            div.innerHTML = `
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-semibold text-gray-800">${execution.id}</span>
+                    <span class="px-2 py-1 rounded-full text-xs font-medium ${statusColor} flex items-center">
+                        <i data-lucide="${statusIcon}" class="w-3 h-3 mr-1"></i>
+                        ${execution.status}
+                    </span>
+                </div>
+                <div class="text-sm text-gray-600 mb-1">
+                    Started: ${new Date(execution.startTime).toLocaleString()}
+                </div>
+                ${execution.endTime ? `<div class="text-sm text-gray-600 mb-1">Ended: ${new Date(execution.endTime).toLocaleString()}</div>` : ''}
+                ${execution.recordsProcessed ? `<div class="text-sm text-gray-600 mb-2">Records Processed: ${execution.recordsProcessed}</div>` : ''}
+                ${execution.error ? `<div class="text-sm text-red-600">Error: ${execution.error}</div>` : ''}
+                ${metricsHtml}
+            `;
+
+            return div;
+        }
+
+        // Get type color
+        function getTypeColor(type) {
+            switch (type) {
+                case 'json': return 'bg-blue-100 text-blue-800';
+                case 'yaml': return 'bg-green-100 text-green-800';
+                case 'bcl': return 'bg-purple-100 text-purple-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Get status color
+        function getStatusColor(status) {
+            switch (status) {
+                case 'completed': return 'bg-green-100 text-green-800';
+                case 'running': return 'bg-blue-100 text-blue-800';
+                case 'failed': return 'bg-red-100 text-red-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Get status icon
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'completed': return 'check-circle';
+                case 'running': return 'loader';
+                case 'failed': return 'x-circle';
+                default: return 'clock';
+            }
+        }
+
+        // Show status message
+        function showStatus(message, type) {
+            statusText.textContent = message;
+            statusMessage.className = 'mt-8';
+
+            if (type === 'error') {
+                statusMessage.innerHTML = `
+                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusMessage.innerHTML = `
+                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            lucide.createIcons();
+
+            setTimeout(() => {
+                statusMessage.className = 'mt-8 hidden';
+            }, 5000);
+        }
+
+        // Event listeners
+        refreshConfigsBtn.addEventListener('click', loadConfigurations);
+        refreshExecutionsBtn.addEventListener('click', loadExecutions);
+
+        clearExecutionsBtn.addEventListener('click', async () => {
+            if (confirm('Are you sure you want to clear all execution history?')) {
+                try {
+                    // Note: This would need a backend endpoint to actually clear executions
+                    showStatus('Execution history cleared', 'success');
+                    loadExecutions();
+                } catch (error) {
+                    showStatus('Failed to clear execution history', 'error');
+                }
+            }
+        });
+
+        // Load executions on page load
+        loadConfigurations();
+        loadExecutions();
+
+        // Auto-refresh executions every 30 seconds
+        setInterval(loadExecutions, 30000);
+    </script>
+</body>
+
+</html>

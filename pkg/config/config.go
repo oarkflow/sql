@@ -161,6 +161,32 @@ func LoadBCL(path string) (*Config, error) {
 	})
 }
 
+func LoadYamlFromString(content string) (*Config, error) {
+	return loadConfigFromString(content, yaml.Unmarshal)
+}
+
+func LoadJsonFromString(content string) (*Config, error) {
+	return loadConfigFromString(content, func(data []byte, v any) error {
+		return json.Unmarshal(data, v)
+	})
+}
+
+func LoadBCLFromString(content string) (*Config, error) {
+	return loadConfigFromString(content, func(data []byte, v any) error {
+		_, err := bcl.Unmarshal(data, v)
+		return err
+	})
+}
+
+func loadConfigFromString(content string, unmarshal UnmarshalFunc) (*Config, error) {
+	var cfg Config
+	err := unmarshal([]byte(content), &cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 func OpenDB(cfg DataConfig) (*squealx.DB, error) {
 	squealxCfg := cfg.ToSquealxConfig()
 	db, _, err := connection.FromConfig(squealxCfg)
