@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/convert"
@@ -25,6 +26,60 @@ import (
 	"github.com/oarkflow/sql/pkg/utils/sqlutil"
 )
 
+// Runner defines the interface for running ETL jobs asynchronously
+type Runner interface {
+	// Submit submits a job for execution
+	Submit(ctx context.Context, job *Job) error
+
+	// Cancel cancels a running job
+	Cancel(jobID string) error
+
+	// GetJob returns the job status and result
+	GetJob(jobID string) (*Job, error)
+
+	// ListJobs returns all jobs with optional status filter
+	ListJobs(status JobStatus) ([]*Job, error)
+
+	// Start starts the runner
+	Start(ctx context.Context) error
+
+	// Stop stops the runner
+	Stop() error
+}
+
+// Job represents an ETL job for the runner
+type Job struct {
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Config      *config.Config         `json:"config"`
+	Status      JobStatus              `json:"status"`
+	CreatedAt   time.Time              `json:"created_at"`
+	StartedAt   *time.Time             `json:"started_at,omitempty"`
+	CompletedAt *time.Time             `json:"completed_at,omitempty"`
+	Error       string                 `json:"error,omitempty"`
+	Result      *JobResult             `json:"result,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// JobStatus represents the status of a job
+type JobStatus string
+
+const (
+	JobStatusPending   JobStatus = "pending"
+	JobStatusRunning   JobStatus = "running"
+	JobStatusCompleted JobStatus = "completed"
+	JobStatusFailed    JobStatus = "failed"
+	JobStatusCancelled JobStatus = "cancelled"
+)
+
+// JobResult contains the result of a completed job
+type JobResult struct {
+	Metrics          Metrics       `json:"metrics"`
+	Summary          Summary       `json:"summary"`
+	Duration         time.Duration `json:"duration"`
+	RecordsProcessed int           `json:"records_processed"`
+}
+
 func DetectConfigFormat(input string) (config.Config, error) {
 	trimmed := strings.TrimSpace(input)
 	var cfg config.Config
@@ -41,13 +96,21 @@ func DetectConfigFormat(input string) (config.Config, error) {
 }
 
 type Manager struct {
-	mu   sync.Mutex
-	etls map[string]*ETL
+	mu     sync.Mutex
+	etls   map[string]*ETL
+	runner Runner
 }
 
 func NewManager() *Manager {
 	return &Manager{
 		etls: make(map[string]*ETL),
+	}
+}
+
+func NewManagerWithRunner(runner Runner) *Manager {
+	return &Manager{
+		etls:   make(map[string]*ETL),
+		runner: runner,
 	}
 }
 
@@ -288,4 +351,56 @@ func (m *Manager) AdjustWorker(workerCount int, etlID string) {
 	if ok {
 		etl.AdjustWorker(workerCount)
 	}
+}
+
+// SubmitJob submits an ETL job to the runner if available, otherwise runs synchronously
+func (m *Manager) SubmitJob(ctx context.Context, cfg *config.Config, jobName string) (string, error) {
+	if m.runner != nil {
+		// Use runner for asynchronous execution
+		jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+		job := &Job{
+			ID:        jobID,
+			Name:      jobName,
+			Config:    cfg,
+			Status:    JobStatusPending,
+			CreatedAt: time.Now(),
+			Metadata:  make(map[string]interface{}),
+		}
+
+		if err := m.runner.Submit(ctx, job); err != nil {
+			return "", fmt.Errorf("failed to submit job to runner: %v", err)
+		}
+
+		return jobID, nil
+	}
+
+	// Fallback to synchronous execution
+	ids, err := m.Prepare(cfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to prepare ETL: %v", err)
+	}
+
+	for _, id := range ids {
+		if err := m.Start(ctx, id); err != nil {
+			return "", fmt.Errorf("failed to start ETL job %s: %v", id, err)
+		}
+	}
+
+	return ids[0], nil // Return first job ID for compatibility
+}
+
+// GetJobStatus returns job status if using runner
+func (m *Manager) GetJobStatus(jobID string) (*Job, error) {
+	if m.runner == nil {
+		return nil, fmt.Errorf("no runner configured")
+	}
+	return m.runner.GetJob(jobID)
+}
+
+// CancelJob cancels a job if using runner
+func (m *Manager) CancelJob(jobID string) error {
+	if m.runner == nil {
+		return fmt.Errorf("no runner configured")
+	}
+	return m.runner.Cancel(jobID)
 }
