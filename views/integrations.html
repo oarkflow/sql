@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integration Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://unpkg.com/monaco-editor@0.44.0/min/vs/loader.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">Integration Management</h1>
+                <p class="text-lg text-gray-600">Configure and manage data integrations</p>
+            </div>
+
+            <!-- Navigation -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex flex-wrap justify-center space-x-4">
+                    <a href="/"
+                        class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center">
+                        <i data-lucide="home" class="w-4 h-4 mr-2"></i>
+                        Dashboard
+                    </a>
+                    <a href="/integrations"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center">
+                        <i data-lucide="plug" class="w-4 h-4 mr-2"></i>
+                        Integrations
+                    </a>
+                    <a href="/etl"
+                        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center">
+                        <i data-lucide="git-branch" class="w-4 h-4 mr-2"></i>
+                        ETL Pipelines
+                    </a>
+                    <a href="/adapters"
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center">
+                        <i data-lucide="puzzle" class="w-4 h-4 mr-2"></i>
+                        Adapters
+                    </a>
+                    <a href="/query"
+                        class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center">
+                        <i data-lucide="database" class="w-4 h-4 mr-2"></i>
+                        Query Editor
+                    </a>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Integration List -->
+                <div class="lg:col-span-2">
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h2 class="text-2xl font-semibold text-gray-800 flex items-center">
+                                <i data-lucide="plug" class="w-6 h-6 mr-2 text-blue-600"></i>
+                                Integrations
+                            </h2>
+                            <button id="addIntegrationBtn"
+                                class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                                <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
+                                Add Integration
+                            </button>
+                        </div>
+
+                        <!-- Filter and Search -->
+                        <div class="mb-4 flex flex-col sm:flex-row gap-4">
+                            <div class="flex-1">
+                                <input type="text" id="searchInput" placeholder="Search integrations..."
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+                            <select id="typeFilter"
+                                class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">All Types</option>
+                                <option value="api">API</option>
+                                <option value="database">Database</option>
+                                <option value="file">File</option>
+                                <option value="message">Message Queue</option>
+                                <option value="notification">Notification</option>
+                            </select>
+                        </div>
+
+                        <div id="integrationsList" class="space-y-4 max-h-96 overflow-y-auto">
+                            <!-- Integrations will be populated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Integration Form -->
+                <div class="lg:col-span-1">
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="settings" class="w-6 h-6 mr-2 text-green-600"></i>
+                            Configuration
+                        </h2>
+
+                        <form id="integrationForm" class="space-y-4">
+                            <input type="hidden" id="integrationId" value="">
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                                <input type="text" id="integrationName" required
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                                <select id="integrationType" required
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    <option value="">Select Type</option>
+                                    <option value="api">API</option>
+                                    <option value="database">Database</option>
+                                    <option value="file">File</option>
+                                    <option value="message">Message Queue</option>
+                                    <option value="notification">Notification</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                                <textarea id="integrationDescription" rows="3"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <input type="checkbox" id="requireAuth" class="mr-2">
+                                    Requires Authentication
+                                </label>
+                            </div>
+
+                            <div id="credentialSection" class="hidden space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Credential Type</label>
+                                    <select id="credentialType"
+                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="">Select Type</option>
+                                        <option value="api_key">API Key</option>
+                                        <option value="bearer">Bearer Token</option>
+                                        <option value="basic">Basic Auth</option>
+                                        <option value="oauth2">OAuth 2.0</option>
+                                    </select>
+                                </div>
+
+                                <div id="credentialFields" class="space-y-2">
+                                    <!-- Credential fields will be dynamically added -->
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Configuration</label>
+                                <div id="configEditor" style="height: 200px; border: 1px solid #ccc;"></div>
+                            </div>
+
+                            <div class="flex space-x-2">
+                                <button type="submit"
+                                    class="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200">
+                                    <i data-lucide="save" class="w-4 h-4 mr-2 inline"></i>
+                                    Save
+                                </button>
+                                <button type="button" id="testBtn"
+                                    class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200">
+                                    <i data-lucide="play" class="w-4 h-4 mr-2 inline"></i>
+                                    Test
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="mt-8 hidden">
+                <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                    <div class="flex items-center">
+                        <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                        <span id="statusText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Global variables
+        let integrations = [];
+        let configEditor;
+
+        // DOM elements
+        const integrationsList = document.getElementById('integrationsList');
+        const integrationForm = document.getElementById('integrationForm');
+        const addIntegrationBtn = document.getElementById('addIntegrationBtn');
+        const testBtn = document.getElementById('testBtn');
+        const searchInput = document.getElementById('searchInput');
+        const typeFilter = document.getElementById('typeFilter');
+        const requireAuth = document.getElementById('requireAuth');
+        const credentialSection = document.getElementById('credentialSection');
+        const credentialType = document.getElementById('credentialType');
+        const credentialFields = document.getElementById('credentialFields');
+        const statusMessage = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+
+        // Initialize Monaco Editor
+        require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
+            configEditor = monaco.editor.create(document.getElementById('configEditor'), {
+                value: '{\n  \n}',
+                language: 'json',
+                theme: 'vs',
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true
+            });
+        });
+
+        // Load integrations
+        async function loadIntegrations() {
+            try {
+                const response = await fetch('/api/integrations');
+                integrations = await response.json();
+                renderIntegrations();
+            } catch (error) {
+                console.error('Failed to load integrations:', error);
+                showStatus('Failed to load integrations', 'error');
+            }
+        }
+
+        // Render integrations list
+        function renderIntegrations() {
+            const searchTerm = searchInput.value.toLowerCase();
+            const typeValue = typeFilter.value;
+
+            const filteredIntegrations = integrations.filter(integration => {
+                const matchesSearch = integration.name.toLowerCase().includes(searchTerm) ||
+                    integration.description.toLowerCase().includes(searchTerm);
+                const matchesType = !typeValue || integration.type === typeValue;
+                return matchesSearch && matchesType;
+            });
+
+            if (filteredIntegrations.length === 0) {
+                integrationsList.innerHTML = '<p class="text-gray-500 text-center py-8">No integrations found</p>';
+                return;
+            }
+
+            integrationsList.innerHTML = filteredIntegrations.map(integration => createIntegrationElement(integration)).join('');
+            lucide.createIcons();
+        }
+
+        // Create integration element
+        function createIntegrationElement(integration) {
+            const statusColor = getStatusColor(integration.status);
+            const typeIcon = getTypeIcon(integration.type);
+
+            return `
+                <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition duration-200">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center">
+                            <i data-lucide="${typeIcon}" class="w-5 h-5 mr-2 text-gray-600"></i>
+                            <span class="font-semibold text-gray-800">${integration.name}</span>
+                        </div>
+                        <span class="px-2 py-1 rounded-full text-xs font-medium ${statusColor}">
+                            ${integration.status}
+                        </span>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        ${integration.description}
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div class="text-xs text-gray-500">
+                            Type: ${integration.type} | Created: ${new Date(integration.createdAt).toLocaleDateString()}
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="editIntegration('${integration.id}')"
+                                class="text-blue-600 hover:text-blue-800">
+                                <i data-lucide="edit" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="testIntegration('${integration.id}')"
+                                class="text-green-600 hover:text-green-800">
+                                <i data-lucide="play" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="deleteIntegration('${integration.id}')"
+                                class="text-red-600 hover:text-red-800">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Get status color
+        function getStatusColor(status) {
+            switch (status) {
+                case 'connected': return 'bg-green-100 text-green-800';
+                case 'disconnected': return 'bg-red-100 text-red-800';
+                case 'pending': return 'bg-yellow-100 text-yellow-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Get type icon
+        function getTypeIcon(type) {
+            switch (type) {
+                case 'api': return 'globe';
+                case 'database': return 'database';
+                case 'file': return 'file-text';
+                case 'message': return 'message-square';
+                case 'notification': return 'bell';
+                default: return 'plug';
+            }
+        }
+
+        // Edit integration
+        async function editIntegration(id) {
+            try {
+                const response = await fetch(`/api/integrations/${id}`);
+                const integration = await response.json();
+
+                document.getElementById('integrationId').value = integration.id;
+                document.getElementById('integrationName').value = integration.name;
+                document.getElementById('integrationType').value = integration.type;
+                document.getElementById('integrationDescription').value = integration.description;
+                requireAuth.checked = integration.requireAuth;
+
+                if (integration.requireAuth) {
+                    credentialSection.classList.remove('hidden');
+                    updateCredentialFields();
+                }
+
+                if (configEditor) {
+                    configEditor.setValue(JSON.stringify(integration.config, null, 2));
+                }
+
+                // Scroll to form
+                integrationForm.scrollIntoView({ behavior: 'smooth' });
+            } catch (error) {
+                console.error('Failed to load integration:', error);
+                showStatus('Failed to load integration', 'error');
+            }
+        }
+
+        // Test integration
+        async function testIntegration(id) {
+            try {
+                showStatus('Testing integration...', 'info');
+                const response = await fetch(`/api/integrations/${id}/test`, { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    showStatus('Integration test successful', 'success');
+                } else {
+                    showStatus(`Integration test failed: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                console.error('Failed to test integration:', error);
+                showStatus('Failed to test integration', 'error');
+            }
+        }
+
+        // Delete integration
+        async function deleteIntegration(id) {
+            if (!confirm('Are you sure you want to delete this integration?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/integrations/${id}`, { method: 'DELETE' });
+                if (response.ok) {
+                    showStatus('Integration deleted successfully', 'success');
+                    loadIntegrations();
+                } else {
+                    const result = await response.json();
+                    showStatus(`Failed to delete integration: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                console.error('Failed to delete integration:', error);
+                showStatus('Failed to delete integration', 'error');
+            }
+        }
+
+        // Update credential fields based on type
+        function updateCredentialFields() {
+            const type = credentialType.value;
+            let fieldsHTML = '';
+
+            switch (type) {
+                case 'api_key':
+                    fieldsHTML = `
+                        <input type="text" id="apiKey" placeholder="API Key"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    `;
+                    break;
+                case 'bearer':
+                    fieldsHTML = `
+                        <input type="text" id="bearerToken" placeholder="Bearer Token"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    `;
+                    break;
+                case 'basic':
+                    fieldsHTML = `
+                        <input type="text" id="username" placeholder="Username"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <input type="password" id="password" placeholder="Password"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    `;
+                    break;
+                case 'oauth2':
+                    fieldsHTML = `
+                        <input type="text" id="clientId" placeholder="Client ID"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <input type="text" id="clientSecret" placeholder="Client Secret"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <input type="text" id="tokenUrl" placeholder="Token URL"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    `;
+                    break;
+            }
+
+            credentialFields.innerHTML = fieldsHTML;
+        }
+
+        // Show status message
+        function showStatus(message, type) {
+            statusText.textContent = message;
+            statusMessage.className = 'mt-8';
+
+            if (type === 'error') {
+                statusMessage.innerHTML = `
+                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'success') {
+                statusMessage.innerHTML = `
+                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusMessage.innerHTML = `
+                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            lucide.createIcons();
+
+            setTimeout(() => {
+                statusMessage.className = 'mt-8 hidden';
+            }, 5000);
+        }
+
+        // Event listeners
+        addIntegrationBtn.addEventListener('click', () => {
+            integrationForm.reset();
+            document.getElementById('integrationId').value = '';
+            credentialSection.classList.add('hidden');
+            if (configEditor) {
+                configEditor.setValue('{\n  \n}');
+            }
+            integrationForm.scrollIntoView({ behavior: 'smooth' });
+        });
+
+        requireAuth.addEventListener('change', () => {
+            if (requireAuth.checked) {
+                credentialSection.classList.remove('hidden');
+            } else {
+                credentialSection.classList.add('hidden');
+            }
+        });
+
+        credentialType.addEventListener('change', updateCredentialFields);
+
+        searchInput.addEventListener('input', renderIntegrations);
+        typeFilter.addEventListener('change', renderIntegrations);
+
+        integrationForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const id = document.getElementById('integrationId').value;
+            const name = document.getElementById('integrationName').value;
+            const type = document.getElementById('integrationType').value;
+            const description = document.getElementById('integrationDescription').value;
+            const requiresAuth = requireAuth.checked;
+
+            let config = {};
+            try {
+                if (configEditor) {
+                    config = JSON.parse(configEditor.getValue());
+                }
+            } catch (error) {
+                showStatus('Invalid JSON configuration', 'error');
+                return;
+            }
+
+            const integrationData = {
+                name,
+                type,
+                description,
+                config,
+                requireAuth: requiresAuth
+            };
+
+            // Add credentials if required
+            if (requiresAuth) {
+                const credType = credentialType.value;
+                if (!credType) {
+                    showStatus('Please select a credential type', 'error');
+                    return;
+                }
+
+                integrationData.credential = {
+                    type: credType
+                };
+
+                switch (credType) {
+                    case 'api_key':
+                        integrationData.credential.key = document.getElementById('apiKey').value;
+                        break;
+                    case 'bearer':
+                        integrationData.credential.token = document.getElementById('bearerToken').value;
+                        break;
+                    case 'basic':
+                        integrationData.credential.username = document.getElementById('username').value;
+                        integrationData.credential.password = document.getElementById('password').value;
+                        break;
+                    case 'oauth2':
+                        integrationData.credential.clientId = document.getElementById('clientId').value;
+                        integrationData.credential.clientSecret = document.getElementById('clientSecret').value;
+                        integrationData.credential.tokenUrl = document.getElementById('tokenUrl').value;
+                        break;
+                }
+            }
+
+            try {
+                const url = id ? `/api/integrations/${id}` : '/api/integrations';
+                const method = id ? 'PUT' : 'POST';
+                const response = await fetch(url, {
+                    method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(integrationData)
+                });
+
+                if (response.ok) {
+                    showStatus(`Integration ${id ? 'updated' : 'created'} successfully`, 'success');
+                    integrationForm.reset();
+                    document.getElementById('integrationId').value = '';
+                    credentialSection.classList.add('hidden');
+                    if (configEditor) {
+                        configEditor.setValue('{\n  \n}');
+                    }
+                    loadIntegrations();
+                } else {
+                    const result = await response.json();
+                    showStatus(`Failed to ${id ? 'update' : 'create'} integration: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                console.error('Failed to save integration:', error);
+                showStatus('Failed to save integration', 'error');
+            }
+        });
+
+        testBtn.addEventListener('click', async () => {
+            const id = document.getElementById('integrationId').value;
+            if (!id) {
+                showStatus('Please save the integration first', 'error');
+                return;
+            }
+            await testIntegration(id);
+        });
+
+        // Load integrations on page load
+        loadIntegrations();
+    </script>
+</body>
+
+</html>

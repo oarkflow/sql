@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Editor & Runner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://unpkg.com/monaco-editor@0.44.0/min/vs/loader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-orange-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">Query Editor & Runner</h1>
+                <p class="text-lg text-gray-600">Write, execute, and analyze SQL queries with real-time results</p>
+            </div>
+
+            <!-- Navigation -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex flex-wrap justify-center space-x-4">
+                    <a href="/"
+                        class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center">
+                        <i data-lucide="home" class="w-4 h-4 mr-2"></i>
+                        Dashboard
+                    </a>
+                    <a href="/integrations"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center">
+                        <i data-lucide="plug" class="w-4 h-4 mr-2"></i>
+                        Integrations
+                    </a>
+                    <a href="/etl"
+                        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center">
+                        <i data-lucide="git-branch" class="w-4 h-4 mr-2"></i>
+                        ETL Pipelines
+                    </a>
+                    <a href="/adapters"
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center">
+                        <i data-lucide="puzzle" class="w-4 h-4 mr-2"></i>
+                        Adapters
+                    </a>
+                    <a href="/query"
+                        class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center">
+                        <i data-lucide="database" class="w-4 h-4 mr-2"></i>
+                        Query Editor
+                    </a>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Query Editor -->
+                <div class="lg:col-span-2">
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h2 class="text-2xl font-semibold text-gray-800 flex items-center">
+                                <i data-lucide="edit-3" class="w-6 h-6 mr-2 text-orange-600"></i>
+                                Query Editor
+                            </h2>
+                            <div class="flex space-x-2">
+                                <button id="formatBtn"
+                                    class="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                                    <i data-lucide="align-left" class="w-4 h-4 mr-2"></i>
+                                    Format
+                                </button>
+                                <button id="validateBtn"
+                                    class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                                    <i data-lucide="check-circle" class="w-4 h-4 mr-2"></i>
+                                    Validate
+                                </button>
+                                <button id="executeBtn"
+                                    class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                                    <i data-lucide="play" class="w-4 h-4 mr-2"></i>
+                                    Execute
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Query Selection -->
+                        <div class="mb-4 flex space-x-4">
+                            <div class="flex-1">
+                                <select id="integrationSelect"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500">
+                                    <option value="">Select Integration</option>
+                                    <option value="users.csv">users.csv</option>
+                                    <option value="PostgreSQL DB">PostgreSQL DB</option>
+                                </select>
+                            </div>
+                            <div class="flex-1">
+                                <select id="savedQueries"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500">
+                                    <option value="">Saved Queries</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Query Editor -->
+                        <div class="mb-4">
+                            <div id="queryEditor" style="height: 300px; border: 1px solid #ccc;"></div>
+                        </div>
+
+                        <!-- Query Tabs -->
+                        <div class="border-b border-gray-200 mb-4">
+                            <nav class="flex space-x-8">
+                                <button id="resultsTab"
+                                    class="py-2 px-1 border-b-2 border-orange-500 text-orange-600 font-medium">
+                                    Results
+                                </button>
+                                <button id="explainTab"
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                                    Explain Plan
+                                </button>
+                                <button id="historyTab"
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                                    History
+                                </button>
+                            </nav>
+                        </div>
+
+                        <!-- Results Panel -->
+                        <div id="resultsPanel" class="space-y-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <h3 class="text-lg font-semibold text-gray-800">Query Results</h3>
+                                <div class="flex space-x-2">
+                                    <button id="exportCsvBtn"
+                                        class="text-sm bg-gray-600 hover:bg-gray-700 text-white font-semibold py-1 px-3 rounded transition duration-200">
+                                        Export CSV
+                                    </button>
+                                    <button id="exportJsonBtn"
+                                        class="text-sm bg-gray-600 hover:bg-gray-700 text-white font-semibold py-1 px-3 rounded transition duration-200">
+                                        Export JSON
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="queryStats" class="bg-gray-50 p-3 rounded-lg text-sm text-gray-600">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div>Rows: <span id="rowCount" class="font-semibold">0</span></div>
+                                    <div>Columns: <span id="columnCount" class="font-semibold">0</span></div>
+                                    <div>Time: <span id="executionTime" class="font-semibold">0ms</span></div>
+                                    <div>Status: <span id="queryStatus" class="font-semibold">Ready</span></div>
+                                </div>
+                            </div>
+                            <div id="resultsTable" class="overflow-x-auto">
+                                <div class="text-gray-500 text-center py-8">
+                                    Execute a query to see results
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Explain Plan Panel -->
+                        <div id="explainPanel" class="hidden space-y-4">
+                            <h3 class="text-lg font-semibold text-gray-800">Query Execution Plan</h3>
+                            <div id="explainContent" class="bg-gray-50 p-4 rounded-lg">
+                                <div class="text-gray-500 text-center py-8">
+                                    Execute a query to see the execution plan
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- History Panel -->
+                        <div id="historyPanel" class="hidden space-y-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <h3 class="text-lg font-semibold text-gray-800">Query History</h3>
+                                <button id="clearHistoryBtn"
+                                    class="text-sm bg-red-600 hover:bg-red-700 text-white font-semibold py-1 px-3 rounded transition duration-200">
+                                    Clear History
+                                </button>
+                            </div>
+                            <div id="historyList" class="space-y-2 max-h-96 overflow-y-auto">
+                                <!-- History items will be populated here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sidebar -->
+                <div class="lg:col-span-1 space-y-6">
+                    <!-- Schema Explorer -->
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="database" class="w-5 h-5 mr-2 text-blue-600"></i>
+                            Schema Explorer
+                        </h3>
+                        <div id="schemaTree" class="space-y-2">
+                            <div class="text-gray-500 text-center py-4">
+                                Select an integration to explore schema
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Actions -->
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="zap" class="w-5 h-5 mr-2 text-yellow-600"></i>
+                            Quick Actions
+                        </h3>
+                        <div class="space-y-2">
+                            <button id="saveQueryBtn"
+                                class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center justify-center">
+                                <i data-lucide="save" class="w-4 h-4 mr-2"></i>
+                                Save Query
+                            </button>
+                            <button id="shareQueryBtn"
+                                class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center justify-center">
+                                <i data-lucide="share" class="w-4 h-4 mr-2"></i>
+                                Share Query
+                            </button>
+                            <button id="scheduleQueryBtn"
+                                class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center justify-center">
+                                <i data-lucide="calendar" class="w-4 h-4 mr-2"></i>
+                                Schedule Query
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Performance Metrics -->
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="bar-chart-2" class="w-5 h-5 mr-2 text-green-600"></i>
+                            Performance Metrics
+                        </h3>
+                        <canvas id="performanceChart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="mt-8 hidden">
+                <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                    <div class="flex items-center">
+                        <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                        <span id="statusText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Global variables
+        let queryEditor = null;
+        let queryHistory = [];
+        let performanceChart = null;
+        let currentResults = null;
+
+        // DOM elements
+        const formatBtn = document.getElementById('formatBtn');
+        const validateBtn = document.getElementById('validateBtn');
+        const executeBtn = document.getElementById('executeBtn');
+        const integrationSelect = document.getElementById('integrationSelect');
+        const savedQueries = document.getElementById('savedQueries');
+        const resultsTab = document.getElementById('resultsTab');
+        const explainTab = document.getElementById('explainTab');
+        const historyTab = document.getElementById('historyTab');
+        const resultsPanel = document.getElementById('resultsPanel');
+        const explainPanel = document.getElementById('explainPanel');
+        const historyPanel = document.getElementById('historyPanel');
+        const statusMessage = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+
+        // Initialize Monaco Editor
+        require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
+            // Register SQL language
+            monaco.languages.register({ id: 'sql' });
+
+            // Set up SQL language features
+            monaco.languages.setMonarchTokensProvider('sql', {
+                tokenizer: {
+                    root: [
+                        [/[a-zA-Z_]\w*/, {
+                            cases: {
+                                '@keywords': 'keyword',
+                                '@builtins': 'type.identifier',
+                                '@default': 'identifier'
+                            }
+                        }],
+                        [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
+                        [/\d+/, 'number'],
+                        [/"/, 'string', '@string_double'],
+                        [/'/, 'string', '@string_single'],
+                        [/[/*+\-<>!=&|~%]/, 'operators'],
+                        [/[;,.()]/, 'delimiter']
+                    ],
+                    string_double: [
+                        [/[^\\"]+/, 'string'],
+                        [/\\./, 'string.escape'],
+                        [/"/, 'string', '@pop']
+                    ],
+                    string_single: [
+                        [/[^\\']+/, 'string'],
+                        [/\\./, 'string.escape'],
+                        [/'/, 'string', '@pop']
+                    ]
+                },
+                keywords: [
+                    'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER',
+                    'TABLE', 'INDEX', 'VIEW', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
+                    'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'DISTINCT',
+                    'AS', 'ON', 'AND', 'OR', 'NOT', 'IN', 'EXISTS', 'BETWEEN', 'LIKE', 'IS', 'NULL',
+                    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'COALESCE', 'CAST', 'CONVERT'
+                ]
+            });
+
+            queryEditor = monaco.editor.create(document.getElementById('queryEditor'), {
+                value: 'SELECT * FROM read_file(\'users.csv\') LIMIT 10',
+                language: 'sql',
+                theme: 'vs',
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                wordWrap: 'on'
+            });
+        });
+
+        // Initialize Performance Chart
+        function initPerformanceChart() {
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            performanceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Execution Time (ms)',
+                        data: [],
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        // Load schema for selected integration
+        async function loadSchema(integration) {
+            try {
+                const response = await fetch(`/api/schema/${integration}`);
+                const schema = await response.json();
+                renderSchema(schema);
+            } catch (error) {
+                console.error('Failed to load schema:', error);
+                document.getElementById('schemaTree').innerHTML = '<div class="text-red-500 text-sm">Failed to load schema</div>';
+            }
+        }
+
+        // Render schema tree
+        function renderSchema(schema) {
+            const schemaTree = document.getElementById('schemaTree');
+
+            if (!schema.tables || schema.tables.length === 0) {
+                schemaTree.innerHTML = '<div class="text-gray-500 text-sm">No tables found</div>';
+                return;
+            }
+
+            let html = '<div class="space-y-2">';
+            schema.tables.forEach(table => {
+                html += `
+                    <div class="border border-gray-200 rounded-lg p-2">
+                        <div class="flex items-center cursor-pointer" onclick="toggleTable('${table}')">
+                            <i data-lucide="chevron-right" class="w-4 h-4 mr-1 transition-transform" id="chevron-${table}"></i>
+                            <i data-lucide="table" class="w-4 h-4 mr-1 text-blue-600"></i>
+                            <span class="font-medium">${table}</span>
+                        </div>
+                        <div id="columns-${table}" class="hidden mt-2 ml-6 space-y-1">
+                `;
+
+                if (schema.columns[table]) {
+                    schema.columns[table].forEach(column => {
+                        html += `
+                            <div class="flex items-center text-sm text-gray-600 cursor-pointer hover:text-gray-800"
+                                 onclick="insertColumn('${table}', '${column}')">
+                                <i data-lucide="column" class="w-3 h-3 mr-1"></i>
+                                <span>${column}</span>
+                            </div>
+                        `;
+                    });
+                }
+
+                html += `
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+
+            schemaTree.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        // Toggle table visibility
+        function toggleTable(table) {
+            const columns = document.getElementById(`columns-${table}`);
+            const chevron = document.getElementById(`chevron-${table}`);
+
+            if (columns.classList.contains('hidden')) {
+                columns.classList.remove('hidden');
+                chevron.style.transform = 'rotate(90deg)';
+            } else {
+                columns.classList.add('hidden');
+                chevron.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        // Insert column into query
+        function insertColumn(table, column) {
+            if (!queryEditor) return;
+
+            const position = queryEditor.getPosition();
+            const text = queryEditor.getModel().getValueInRange({
+                startLineNumber: position.lineNumber,
+                startColumn: 1,
+                endLineNumber: position.lineNumber,
+                endColumn: position.column
+            });
+
+            const columnText = table + '.' + column;
+            queryEditor.executeEdits('', [{
+                range: {
+                    startLineNumber: position.lineNumber,
+                    startColumn: position.column,
+                    endLineNumber: position.lineNumber,
+                    endColumn: position.column
+                },
+                text: columnText
+            }]);
+
+            queryEditor.focus();
+        }
+
+        // Execute query
+        async function executeQuery() {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+            const integration = integrationSelect.value;
+
+            if (!integration) {
+                showStatus('Please select an integration', 'error');
+                return;
+            }
+
+            if (!query.trim()) {
+                showStatus('Query cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                showStatus('Executing query...', 'info');
+                updateQueryStatus('Running');
+
+                const startTime = Date.now();
+                const response = await fetch('/api/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                const executionTime = Date.now() - startTime;
+
+                if (response.ok) {
+                    const result = await response.json();
+                    currentResults = result;
+
+                    // Update stats
+                    document.getElementById('rowCount').textContent = result.rowCount;
+                    document.getElementById('columnCount').textContent = result.columns.length;
+                    document.getElementById('executionTime').textContent = `${executionTime}ms`;
+                    updateQueryStatus('Success');
+
+                    // Render results
+                    renderResults(result);
+
+                    // Add to history
+                    addToHistory(query, integration, result, executionTime);
+
+                    // Update performance chart
+                    updatePerformanceChart(executionTime);
+
+                    showStatus('Query executed successfully', 'success');
+                } else {
+                    const error = await response.json();
+                    showStatus(`Query failed: ${error.error}`, 'error');
+                    updateQueryStatus('Error');
+                }
+            } catch (error) {
+                console.error('Failed to execute query:', error);
+                showStatus('Failed to execute query', 'error');
+                updateQueryStatus('Error');
+            }
+        }
+
+        // Render query results
+        function renderResults(result) {
+            const resultsTable = document.getElementById('resultsTable');
+
+            if (!result.rows || result.rows.length === 0) {
+                resultsTable.innerHTML = '<div class="text-gray-500 text-center py-8">No results found</div>';
+                return;
+            }
+
+            let html = '<table class="min-w-full table-auto border-collapse border border-gray-300">';
+
+            // Header
+            html += '<thead><tr class="bg-gray-50">';
+            result.columns.forEach(column => {
+                html += `<th class="border border-gray-300 px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">${column}</th>`;
+            });
+            html += '</tr></thead>';
+
+            // Body
+            html += '<tbody class="bg-white">';
+            result.rows.forEach(row => {
+                html += '<tr>';
+                row.forEach(cell => {
+                    html += `<td class="border border-gray-300 px-4 py-2 text-sm text-gray-900">${cell}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+
+            resultsTable.innerHTML = html;
+        }
+
+        // Add to history
+        function addToHistory(query, integration, result, executionTime) {
+            const historyItem = {
+                id: Date.now(),
+                query,
+                integration,
+                timestamp: new Date().toISOString(),
+                rowCount: result.rowCount,
+                executionTime,
+                success: result.rowCount !== undefined
+            };
+
+            queryHistory.unshift(historyItem);
+
+            // Keep only last 50 items
+            if (queryHistory.length > 50) {
+                queryHistory = queryHistory.slice(0, 50);
+            }
+
+            renderHistory();
+        }
+
+        // Render history
+        function renderHistory() {
+            const historyList = document.getElementById('historyList');
+
+            if (queryHistory.length === 0) {
+                historyList.innerHTML = '<div class="text-gray-500 text-center py-4">No query history</div>';
+                return;
+            }
+
+            let html = '';
+            queryHistory.forEach(item => {
+                const statusColor = item.success ? 'text-green-600' : 'text-red-600';
+                const statusIcon = item.success ? 'check-circle' : 'x-circle';
+
+                html += `
+                    <div class="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 cursor-pointer"
+                         onclick="loadFromHistory(${item.id})">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm font-medium text-gray-800 truncate">${item.query.substring(0, 50)}...</span>
+                            <i data-lucide="${statusIcon}" class="w-4 h-4 ${statusColor}"></i>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            ${item.integration} | ${item.rowCount} rows | ${item.executionTime}ms | ${new Date(item.timestamp).toLocaleString()}
+                        </div>
+                    </div>
+                `;
+            });
+
+            historyList.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        // Load from history
+        function loadFromHistory(id) {
+            const item = queryHistory.find(h => h.id === id);
+            if (!item) return;
+
+            if (queryEditor) {
+                queryEditor.setValue(item.query);
+            }
+            integrationSelect.value = item.integration;
+
+            // Switch to results tab
+            resultsTab.click();
+        }
+
+        // Validate query
+        async function validateQuery() {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+
+            if (!query.trim()) {
+                showStatus('Query cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                showStatus('Validating query...', 'info');
+
+                const response = await fetch('/api/query/validate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                const result = await response.json();
+
+                if (result.valid) {
+                    showStatus('Query syntax is valid', 'success');
+                } else {
+                    showStatus(`Query validation failed: ${result.errors.join(', ')}`, 'error');
+                }
+            } catch (error) {
+                console.error('Failed to validate query:', error);
+                showStatus('Failed to validate query', 'error');
+            }
+        }
+
+        // Format query
+        function formatQuery() {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+
+            // Simple SQL formatting
+            const formatted = query
+                .replace(/\s+/g, ' ')
+                .replace(/\bSELECT\b/gi, '\nSELECT')
+                .replace(/\bFROM\b/gi, '\nFROM')
+                .replace(/\bWHERE\b/gi, '\nWHERE')
+                .replace(/\bGROUP BY\b/gi, '\nGROUP BY')
+                .replace(/\bORDER BY\b/gi, '\nORDER BY')
+                .replace(/\bHAVING\b/gi, '\nHAVING')
+                .replace(/\bLIMIT\b/gi, '\nLIMIT')
+                .replace(/\bJOIN\b/gi, '\n  JOIN')
+                .replace(/\bLEFT JOIN\b/gi, '\n  LEFT JOIN')
+                .replace(/\bRIGHT JOIN\b/gi, '\n  RIGHT JOIN')
+                .replace(/\bINNER JOIN\b/gi, '\n  INNER JOIN')
+                .replace(/\bOUTER JOIN\b/gi, '\n  OUTER JOIN')
+                .trim();
+
+            queryEditor.setValue(formatted);
+            showStatus('Query formatted', 'success');
+        }
+
+        // Update query status
+        function updateQueryStatus(status) {
+            const statusElement = document.getElementById('queryStatus');
+            statusElement.textContent = status;
+
+            statusElement.className = 'font-semibold';
+            switch (status) {
+                case 'Success':
+                    statusElement.classList.add('text-green-600');
+                    break;
+                case 'Error':
+                    statusElement.classList.add('text-red-600');
+                    break;
+                case 'Running':
+                    statusElement.classList.add('text-blue-600');
+                    break;
+                default:
+                    statusElement.classList.add('text-gray-600');
+            }
+        }
+
+        // Update performance chart
+        function updatePerformanceChart(executionTime) {
+            if (!performanceChart) return;
+
+            const now = new Date().toLocaleTimeString();
+
+            performanceChart.data.labels.push(now);
+            performanceChart.data.datasets[0].data.push(executionTime);
+
+            // Keep only last 10 data points
+            if (performanceChart.data.labels.length > 10) {
+                performanceChart.data.labels.shift();
+                performanceChart.data.datasets[0].data.shift();
+            }
+
+            performanceChart.update();
+        }
+
+        // Export results
+        function exportResults(format) {
+            if (!currentResults) {
+                showStatus('No results to export', 'error');
+                return;
+            }
+
+            let content = '';
+            let filename = '';
+            let mimeType = '';
+
+            if (format === 'csv') {
+                // CSV format
+                content = currentResults.columns.join(',') + '\n';
+                currentResults.rows.forEach(row => {
+                    content += row.map(cell => `"${cell}"`).join(',') + '\n';
+                });
+                filename = 'query_results.csv';
+                mimeType = 'text/csv';
+            } else if (format === 'json') {
+                // JSON format
+                const jsonData = currentResults.rows.map(row => {
+                    const obj = {};
+                    currentResults.columns.forEach((col, index) => {
+                        obj[col] = row[index];
+                    });
+                    return obj;
+                });
+                content = JSON.stringify(jsonData, null, 2);
+                filename = 'query_results.json';
+                mimeType = 'application/json';
+            }
+
+            // Download file
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showStatus(`Results exported as ${format.toUpperCase()}`, 'success');
+        }
+
+        // Show status message
+        function showStatus(message, type) {
+            statusText.textContent = message;
+            statusMessage.className = 'mt-8';
+
+            if (type === 'error') {
+                statusMessage.innerHTML = `
+                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'success') {
+                statusMessage.innerHTML = `
+                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusMessage.innerHTML = `
+                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            lucide.createIcons();
+
+            setTimeout(() => {
+                statusMessage.className = 'mt-8 hidden';
+            }, 5000);
+        }
+
+        // Event listeners
+        formatBtn.addEventListener('click', formatQuery);
+        validateBtn.addEventListener('click', validateQuery);
+        executeBtn.addEventListener('click', executeQuery);
+
+        integrationSelect.addEventListener('change', () => {
+            const integration = integrationSelect.value;
+            if (integration) {
+                loadSchema(integration);
+            } else {
+                document.getElementById('schemaTree').innerHTML = '<div class="text-gray-500 text-center py-4">Select an integration to explore schema</div>';
+            }
+        });
+
+        // Tab switching
+        resultsTab.addEventListener('click', () => {
+            resultsTab.classList.add('border-orange-500', 'text-orange-600');
+            resultsTab.classList.remove('border-transparent', 'text-gray-500');
+            explainTab.classList.remove('border-orange-500', 'text-orange-600');
+            explainTab.classList.add('border-transparent', 'text-gray-500');
+            historyTab.classList.remove('border-orange-500', 'text-orange-600');
+            historyTab.classList.add('border-transparent', 'text-gray-500');
+
+            resultsPanel.classList.remove('hidden');
+            explainPanel.classList.add('hidden');
+            historyPanel.classList.add('hidden');
+        });
+
+        explainTab.addEventListener('click', () => {
+            explainTab.classList.add('border-orange-500', 'text-orange-600');
+            explainTab.classList.remove('border-transparent', 'text-gray-500');
+            resultsTab.classList.remove('border-orange-500', 'text-orange-600');
+            resultsTab.classList.add('border-transparent', 'text-gray-500');
+            historyTab.classList.remove('border-orange-500', 'text-orange-600');
+            historyTab.classList.add('border-transparent', 'text-gray-500');
+
+            explainPanel.classList.remove('hidden');
+            resultsPanel.classList.add('hidden');
+            historyPanel.classList.add('hidden');
+
+            // Mock explain plan
+            document.getElementById('explainContent').innerHTML = `
+                <div class="space-y-2">
+                    <div class="font-mono text-sm">
+                        <div class="font-semibold">→ Seq Scan on users (cost=0.00..15.50 rows=550 width=4)</div>
+                        <div class="ml-4">Filter: (id > 100)</div>
+                    </div>
+                    <div class="font-mono text-sm">
+                        <div class="font-semibold">→ Hash Join (cost=15.50..35.75 rows=550 width=8)</div>
+                        <div class="ml-4">Hash Cond: (users.id = orders.user_id)</div>
+                    </div>
+                    <div class="font-mono text-sm">
+                        <div class="font-semibold">→ Sort (cost=35.75..37.00 rows=550 width=20)</div>
+                        <div class="ml-4">Sort Key: users.name</div>
+                    </div>
+                </div>
+            `;
+        });
+
+        historyTab.addEventListener('click', () => {
+            historyTab.classList.add('border-orange-500', 'text-orange-600');
+            historyTab.classList.remove('border-transparent', 'text-gray-500');
+            resultsTab.classList.remove('border-orange-500', 'text-orange-600');
+            resultsTab.classList.add('border-transparent', 'text-gray-500');
+            explainTab.classList.remove('border-orange-500', 'text-orange-600');
+            explainTab.classList.add('border-transparent', 'text-gray-500');
+
+            historyPanel.classList.remove('hidden');
+            resultsPanel.classList.add('hidden');
+            explainPanel.classList.add('hidden');
+
+            renderHistory();
+        });
+
+        document.getElementById('exportCsvBtn').addEventListener('click', () => exportResults('csv'));
+        document.getElementById('exportJsonBtn').addEventListener('click', () => exportResults('json'));
+
+        document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+            if (confirm('Are you sure you want to clear query history?')) {
+                queryHistory = [];
+                renderHistory();
+                showStatus('Query history cleared', 'success');
+            }
+        });
+
+        document.getElementById('saveQueryBtn').addEventListener('click', () => {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+            const name = prompt('Enter a name for this query:');
+
+            if (name && query.trim()) {
+                // Mock save
+                showStatus('Query saved successfully', 'success');
+            }
+        });
+
+        document.getElementById('shareQueryBtn').addEventListener('click', () => {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+
+            // Mock share - copy to clipboard
+            navigator.clipboard.writeText(query).then(() => {
+                showStatus('Query copied to clipboard', 'success');
+            }).catch(() => {
+                showStatus('Failed to copy query', 'error');
+            });
+        });
+
+        document.getElementById('scheduleQueryBtn').addEventListener('click', () => {
+            showStatus('Query scheduling feature coming soon', 'info');
+        });
+
+        // Initialize
+        initPerformanceChart();
+        renderHistory();
+    </script>
+</body>
+
+</html>

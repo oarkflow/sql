@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adapter Configuration</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://unpkg.com/monaco-editor@0.44.0/min/vs/loader.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-green-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">Adapter Configuration</h1>
+                <p class="text-lg text-gray-600">Configure and manage data adapters for ETL pipelines</p>
+            </div>
+
+            <!-- Navigation -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex flex-wrap justify-center space-x-4">
+                    <a href="/"
+                        class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center">
+                        <i data-lucide="home" class="w-4 h-4 mr-2"></i>
+                        Dashboard
+                    </a>
+                    <a href="/integrations"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center">
+                        <i data-lucide="plug" class="w-4 h-4 mr-2"></i>
+                        Integrations
+                    </a>
+                    <a href="/etl"
+                        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center">
+                        <i data-lucide="git-branch" class="w-4 h-4 mr-2"></i>
+                        ETL Pipelines
+                    </a>
+                    <a href="/adapters"
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center">
+                        <i data-lucide="puzzle" class="w-4 h-4 mr-2"></i>
+                        Adapters
+                    </a>
+                    <a href="/query"
+                        class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center">
+                        <i data-lucide="database" class="w-4 h-4 mr-2"></i>
+                        Query Editor
+                    </a>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Adapter List -->
+                <div class="lg:col-span-2">
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h2 class="text-2xl font-semibold text-gray-800 flex items-center">
+                                <i data-lucide="puzzle" class="w-6 h-6 mr-2 text-green-600"></i>
+                                Adapters
+                            </h2>
+                            <button id="addAdapterBtn"
+                                class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                                <i data-lucide="plus" class="w-4 h-4 mr-2"></i>
+                                Add Adapter
+                            </button>
+                        </div>
+
+                        <!-- Filter and Search -->
+                        <div class="mb-4 flex flex-col sm:flex-row gap-4">
+                            <div class="flex-1">
+                                <input type="text" id="adapterSearch" placeholder="Search adapters..."
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                            </div>
+                            <select id="adapterTypeFilter"
+                                class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                                <option value="">All Types</option>
+                                <option value="source">Source</option>
+                                <option value="transform">Transform</option>
+                                <option value="load">Load</option>
+                                <option value="lookup">Lookup</option>
+                            </select>
+                        </div>
+
+                        <div id="adaptersList" class="space-y-4 max-h-96 overflow-y-auto">
+                            <!-- Adapters will be populated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Adapter Configuration -->
+                <div class="lg:col-span-1">
+                    <div class="bg-white rounded-xl shadow-lg p-6">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="settings" class="w-6 h-6 mr-2 text-blue-600"></i>
+                            Configuration
+                        </h2>
+
+                        <form id="adapterForm" class="space-y-4">
+                            <input type="hidden" id="adapterId" value="">
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                                <input type="text" id="adapterName" required
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                                <select id="adapterType" required
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                                    <option value="">Select Type</option>
+                                    <option value="source">Source</option>
+                                    <option value="transform">Transform</option>
+                                    <option value="load">Load</option>
+                                    <option value="lookup">Lookup</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Adapter Kind</label>
+                                <select id="adapterKind" required
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                                    <option value="">Select Kind</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                                <textarea id="adapterDescription" rows="3"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"></textarea>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Configuration</label>
+                                <div id="configEditor" style="height: 200px; border: 1px solid #ccc;"></div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    <input type="checkbox" id="adapterEnabled" class="mr-2" checked>
+                                    Enabled
+                                </label>
+                            </div>
+
+                            <div class="flex space-x-2">
+                                <button type="submit"
+                                    class="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200">
+                                    <i data-lucide="save" class="w-4 h-4 mr-2 inline"></i>
+                                    Save
+                                </button>
+                                <button type="button" id="testAdapterBtn"
+                                    class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200">
+                                    <i data-lucide="play" class="w-4 h-4 mr-2 inline"></i>
+                                    Test
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Adapter Templates -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mt-8">
+                <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                    <i data-lucide="layers" class="w-6 h-6 mr-2 text-purple-600"></i>
+                    Adapter Templates
+                </h2>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('csv-source')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="file-text" class="w-5 h-5 mr-2 text-blue-600"></i>
+                            <span class="font-semibold text-gray-800">CSV Source</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Read data from CSV files</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('database-source')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="database" class="w-5 h-5 mr-2 text-green-600"></i>
+                            <span class="font-semibold text-gray-800">Database Source</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Read from SQL databases</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('api-source')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="globe" class="w-5 h-5 mr-2 text-purple-600"></i>
+                            <span class="font-semibold text-gray-800">API Source</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Fetch data from REST APIs</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('transform-json')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="cpu" class="w-5 h-5 mr-2 text-orange-600"></i>
+                            <span class="font-semibold text-gray-800">JSON Transform</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Transform JSON data</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('filter-data')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="filter" class="w-5 h-5 mr-2 text-red-600"></i>
+                            <span class="font-semibold text-gray-800">Filter Data</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Filter records based on conditions</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('database-load')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="upload" class="w-5 h-5 mr-2 text-indigo-600"></i>
+                            <span class="font-semibold text-gray-800">Database Load</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Load data to SQL databases</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('file-load')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="file-plus" class="w-5 h-5 mr-2 text-teal-600"></i>
+                            <span class="font-semibold text-gray-800">File Load</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Write data to files</p>
+                    </div>
+
+                    <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition duration-200"
+                        onclick="createFromTemplate('lookup-table')">
+                        <div class="flex items-center mb-2">
+                            <i data-lucide="search" class="w-5 h-5 mr-2 text-yellow-600"></i>
+                            <span class="font-semibold text-gray-800">Lookup Table</span>
+                        </div>
+                        <p class="text-sm text-gray-600">Reference data lookups</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="mt-8 hidden">
+                <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                    <div class="flex items-center">
+                        <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                        <span id="statusText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Global variables
+        let adapters = [];
+        let configEditor;
+
+        // DOM elements
+        const adaptersList = document.getElementById('adaptersList');
+        const adapterForm = document.getElementById('adapterForm');
+        const addAdapterBtn = document.getElementById('addAdapterBtn');
+        const testAdapterBtn = document.getElementById('testAdapterBtn');
+        const adapterSearch = document.getElementById('adapterSearch');
+        const adapterTypeFilter = document.getElementById('adapterTypeFilter');
+        const adapterType = document.getElementById('adapterType');
+        const adapterKind = document.getElementById('adapterKind');
+        const statusMessage = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+
+        // Adapter type options
+        const adapterTypeOptions = {
+            source: ['file', 'database', 'api', 'stream', 'webhook'],
+            transform: ['mapper', 'filter', 'aggregator', 'joiner', 'splitter'],
+            load: ['file', 'database', 'api', 'message', 'notification'],
+            lookup: ['database', 'file', 'api', 'cache']
+        };
+
+        // Adapter templates
+        const adapterTemplates = {
+            'csv-source': {
+                type: 'source',
+                kind: 'file',
+                name: 'CSV File Source',
+                description: 'Read data from CSV files',
+                config: {
+                    format: 'csv',
+                    delimiter: ',',
+                    hasHeader: true,
+                    path: '/path/to/file.csv',
+                    encoding: 'utf-8'
+                }
+            },
+            'database-source': {
+                type: 'source',
+                kind: 'database',
+                name: 'Database Source',
+                description: 'Read from SQL databases',
+                config: {
+                    connection: 'integration_name',
+                    query: 'SELECT * FROM table_name',
+                    batchSize: 1000,
+                    incremental: false
+                }
+            },
+            'api-source': {
+                type: 'source',
+                kind: 'api',
+                name: 'API Source',
+                description: 'Fetch data from REST APIs',
+                config: {
+                    integration: 'api_integration',
+                    endpoint: '/data',
+                    method: 'GET',
+                    headers: {},
+                    pagination: {
+                        type: 'offset',
+                        pageSize: 100
+                    }
+                }
+            },
+            'transform-json': {
+                type: 'transform',
+                kind: 'mapper',
+                name: 'JSON Transformer',
+                description: 'Transform JSON data',
+                config: {
+                    mappings: [
+                        {
+                            from: 'field1',
+                            to: 'new_field1'
+                        }
+                    ],
+                    expressions: []
+                }
+            },
+            'filter-data': {
+                type: 'transform',
+                kind: 'filter',
+                name: 'Data Filter',
+                description: 'Filter records based on conditions',
+                config: {
+                    condition: 'status == "active"',
+                    negate: false
+                }
+            },
+            'database-load': {
+                type: 'load',
+                kind: 'database',
+                name: 'Database Loader',
+                description: 'Load data to SQL databases',
+                config: {
+                    connection: 'integration_name',
+                    table: 'target_table',
+                    mode: 'insert',
+                    batchSize: 1000,
+                    conflictResolution: 'ignore'
+                }
+            },
+            'file-load': {
+                type: 'load',
+                kind: 'file',
+                name: 'File Loader',
+                description: 'Write data to files',
+                config: {
+                    path: '/path/to/output.csv',
+                    format: 'csv',
+                    delimiter: ',',
+                    hasHeader: true,
+                    encoding: 'utf-8'
+                }
+            },
+            'lookup-table': {
+                type: 'lookup',
+                kind: 'database',
+                name: 'Lookup Table',
+                description: 'Reference data lookups',
+                config: {
+                    connection: 'integration_name',
+                    table: 'lookup_table',
+                    keyField: 'id',
+                    valueFields: ['name', 'description']
+                }
+            }
+        };
+
+        // Initialize Monaco Editor
+        require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
+        require(['vs/editor/editor.main'], function () {
+            configEditor = monaco.editor.create(document.getElementById('configEditor'), {
+                value: '{\n  \n}',
+                language: 'json',
+                theme: 'vs',
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true
+            });
+        });
+
+        // Load adapters
+        async function loadAdapters() {
+            try {
+                // Mock data for now
+                adapters = [
+                    {
+                        id: '1',
+                        name: 'Customer CSV Source',
+                        type: 'source',
+                        kind: 'file',
+                        description: 'Read customer data from CSV',
+                        config: {
+                            format: 'csv',
+                            path: '/data/customers.csv',
+                            hasHeader: true
+                        },
+                        enabled: true,
+                        createdAt: '2025-01-15T10:30:00Z',
+                        lastUsed: '2025-01-20T14:20:00Z'
+                    },
+                    {
+                        id: '2',
+                        name: 'Order Transform',
+                        type: 'transform',
+                        kind: 'mapper',
+                        description: 'Transform order data',
+                        config: {
+                            mappings: [
+                                { from: 'order_id', to: 'id' },
+                                { from: 'customer_name', to: 'customer' }
+                            ]
+                        },
+                        enabled: true,
+                        createdAt: '2025-01-16T08:00:00Z',
+                        lastUsed: '2025-01-21T09:15:00Z'
+                    }
+                ];
+                renderAdapters();
+            } catch (error) {
+                console.error('Failed to load adapters:', error);
+                showStatus('Failed to load adapters', 'error');
+            }
+        }
+
+        // Render adapters list
+        function renderAdapters() {
+            const searchTerm = adapterSearch.value.toLowerCase();
+            const typeValue = adapterTypeFilter.value;
+
+            const filteredAdapters = adapters.filter(adapter => {
+                const matchesSearch = adapter.name.toLowerCase().includes(searchTerm) ||
+                    adapter.description.toLowerCase().includes(searchTerm);
+                const matchesType = !typeValue || adapter.type === typeValue;
+                return matchesSearch && matchesType;
+            });
+
+            if (filteredAdapters.length === 0) {
+                adaptersList.innerHTML = '<p class="text-gray-500 text-center py-8">No adapters found</p>';
+                return;
+            }
+
+            adaptersList.innerHTML = filteredAdapters.map(adapter => createAdapterElement(adapter)).join('');
+            lucide.createIcons();
+        }
+
+        // Create adapter element
+        function createAdapterElement(adapter) {
+            const typeColor = getTypeColor(adapter.type);
+            const typeIcon = getTypeIcon(adapter.type);
+            const statusIcon = adapter.enabled ? 'check-circle' : 'x-circle';
+            const statusColor = adapter.enabled ? 'text-green-600' : 'text-red-600';
+
+            return `
+                <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition duration-200">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center">
+                            <i data-lucide="${typeIcon}" class="w-5 h-5 mr-2 text-gray-600"></i>
+                            <span class="font-semibold text-gray-800">${adapter.name}</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <i data-lucide="${statusIcon}" class="w-4 h-4 ${statusColor}"></i>
+                            <span class="px-2 py-1 rounded-full text-xs font-medium ${typeColor}">
+                                ${adapter.type}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-sm text-gray-600 mb-2">
+                        ${adapter.description}
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div class="text-xs text-gray-500">
+                            Kind: ${adapter.kind} | Last used: ${new Date(adapter.lastUsed).toLocaleDateString()}
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="editAdapter('${adapter.id}')"
+                                class="text-blue-600 hover:text-blue-800">
+                                <i data-lucide="edit" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="testAdapter('${adapter.id}')"
+                                class="text-green-600 hover:text-green-800">
+                                <i data-lucide="play" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="deleteAdapter('${adapter.id}')"
+                                class="text-red-600 hover:text-red-800">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Get type color
+        function getTypeColor(type) {
+            switch (type) {
+                case 'source': return 'bg-blue-100 text-blue-800';
+                case 'transform': return 'bg-orange-100 text-orange-800';
+                case 'load': return 'bg-green-100 text-green-800';
+                case 'lookup': return 'bg-purple-100 text-purple-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Get type icon
+        function getTypeIcon(type) {
+            switch (type) {
+                case 'source': return 'database';
+                case 'transform': return 'cpu';
+                case 'load': return 'upload';
+                case 'lookup': return 'search';
+                default: return 'puzzle';
+            }
+        }
+
+        // Edit adapter
+        function editAdapter(id) {
+            const adapter = adapters.find(a => a.id === id);
+            if (!adapter) return;
+
+            document.getElementById('adapterId').value = adapter.id;
+            document.getElementById('adapterName').value = adapter.name;
+            document.getElementById('adapterType').value = adapter.type;
+            document.getElementById('adapterDescription').value = adapter.description;
+            document.getElementById('adapterEnabled').checked = adapter.enabled;
+
+            updateAdapterKindOptions(adapter.type);
+            document.getElementById('adapterKind').value = adapter.kind;
+
+            if (configEditor) {
+                configEditor.setValue(JSON.stringify(adapter.config, null, 2));
+            }
+
+            // Scroll to form
+            adapterForm.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Test adapter
+        async function testAdapter(id) {
+            try {
+                showStatus('Testing adapter...', 'info');
+                // Mock test
+                setTimeout(() => {
+                    showStatus('Adapter test successful', 'success');
+                }, 1000);
+            } catch (error) {
+                console.error('Failed to test adapter:', error);
+                showStatus('Failed to test adapter', 'error');
+            }
+        }
+
+        // Delete adapter
+        async function deleteAdapter(id) {
+            if (!confirm('Are you sure you want to delete this adapter?')) {
+                return;
+            }
+
+            try {
+                adapters = adapters.filter(a => a.id !== id);
+                showStatus('Adapter deleted successfully', 'success');
+                renderAdapters();
+            } catch (error) {
+                console.error('Failed to delete adapter:', error);
+                showStatus('Failed to delete adapter', 'error');
+            }
+        }
+
+        // Update adapter kind options based on type
+        function updateAdapterKindOptions(type) {
+            const kinds = adapterTypeOptions[type] || [];
+            adapterKind.innerHTML = '<option value="">Select Kind</option>';
+
+            kinds.forEach(kind => {
+                const option = document.createElement('option');
+                option.value = kind;
+                option.textContent = kind.charAt(0).toUpperCase() + kind.slice(1);
+                adapterKind.appendChild(option);
+            });
+        }
+
+        // Create from template
+        function createFromTemplate(templateName) {
+            const template = adapterTemplates[templateName];
+            if (!template) return;
+
+            document.getElementById('adapterId').value = '';
+            document.getElementById('adapterName').value = template.name;
+            document.getElementById('adapterType').value = template.type;
+            document.getElementById('adapterDescription').value = template.description;
+            document.getElementById('adapterEnabled').checked = true;
+
+            updateAdapterKindOptions(template.type);
+            document.getElementById('adapterKind').value = template.kind;
+
+            if (configEditor) {
+                configEditor.setValue(JSON.stringify(template.config, null, 2));
+            }
+
+            // Scroll to form
+            adapterForm.scrollIntoView({ behavior: 'smooth' });
+            showStatus(`Created adapter from ${template.name} template`, 'success');
+        }
+
+        // Show status message
+        function showStatus(message, type) {
+            statusText.textContent = message;
+            statusMessage.className = 'mt-8';
+
+            if (type === 'error') {
+                statusMessage.innerHTML = `
+                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'success') {
+                statusMessage.innerHTML = `
+                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusMessage.innerHTML = `
+                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            lucide.createIcons();
+
+            setTimeout(() => {
+                statusMessage.className = 'mt-8 hidden';
+            }, 5000);
+        }
+
+        // Event listeners
+        addAdapterBtn.addEventListener('click', () => {
+            adapterForm.reset();
+            document.getElementById('adapterId').value = '';
+            document.getElementById('adapterEnabled').checked = true;
+            if (configEditor) {
+                configEditor.setValue('{\n  \n}');
+            }
+            adapterForm.scrollIntoView({ behavior: 'smooth' });
+        });
+
+        adapterType.addEventListener('change', () => {
+            updateAdapterKindOptions(adapterType.value);
+        });
+
+        adapterSearch.addEventListener('input', renderAdapters);
+        adapterTypeFilter.addEventListener('change', renderAdapters);
+
+        adapterForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const id = document.getElementById('adapterId').value;
+            const name = document.getElementById('adapterName').value;
+            const type = document.getElementById('adapterType').value;
+            const kind = document.getElementById('adapterKind').value;
+            const description = document.getElementById('adapterDescription').value;
+            const enabled = document.getElementById('adapterEnabled').checked;
+
+            let config = {};
+            try {
+                if (configEditor) {
+                    config = JSON.parse(configEditor.getValue());
+                }
+            } catch (error) {
+                showStatus('Invalid JSON configuration', 'error');
+                return;
+            }
+
+            const adapterData = {
+                name,
+                type,
+                kind,
+                description,
+                config,
+                enabled,
+                createdAt: new Date().toISOString(),
+                lastUsed: new Date().toISOString()
+            };
+
+            try {
+                if (id) {
+                    // Update existing adapter
+                    const index = adapters.findIndex(a => a.id === id);
+                    if (index !== -1) {
+                        adapters[index] = { ...adapterData, id };
+                    }
+                } else {
+                    // Create new adapter
+                    adapterData.id = 'adapter-' + Date.now();
+                    adapters.push(adapterData);
+                }
+
+                showStatus(`Adapter ${id ? 'updated' : 'created'} successfully`, 'success');
+                adapterForm.reset();
+                document.getElementById('adapterId').value = '';
+                document.getElementById('adapterEnabled').checked = true;
+                if (configEditor) {
+                    configEditor.setValue('{\n  \n}');
+                }
+                renderAdapters();
+            } catch (error) {
+                console.error('Failed to save adapter:', error);
+                showStatus('Failed to save adapter', 'error');
+            }
+        });
+
+        testAdapterBtn.addEventListener('click', async () => {
+            const id = document.getElementById('adapterId').value;
+            if (!id) {
+                showStatus('Please save the adapter first', 'error');
+                return;
+            }
+            await testAdapter(id);
+        });
+
+        // Initialize
+        loadAdapters();
+    </script>
+</body>
+
+</html>

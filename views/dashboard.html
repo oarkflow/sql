@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETL Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+</head>
+
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-7xl mx-auto">
+            <!-- Header -->
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">ETL Dashboard</h1>
+                <p class="text-lg text-gray-600">Monitor and manage your data integration ecosystem</p>
+            </div>
+
+            <!-- Navigation -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex flex-wrap justify-center space-x-4">
+                    <a href="/"
+                        class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center">
+                        <i data-lucide="home" class="w-4 h-4 mr-2"></i>
+                        Dashboard
+                    </a>
+                    <a href="/integrations"
+                        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center">
+                        <i data-lucide="plug" class="w-4 h-4 mr-2"></i>
+                        Integrations
+                    </a>
+                    <a href="/etl"
+                        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center">
+                        <i data-lucide="git-branch" class="w-4 h-4 mr-2"></i>
+                        ETL Pipelines
+                    </a>
+                    <a href="/adapters"
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center">
+                        <i data-lucide="puzzle" class="w-4 h-4 mr-2"></i>
+                        Adapters
+                    </a>
+                    <a href="/query"
+                        class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition flex items-center">
+                        <i data-lucide="database" class="w-4 h-4 mr-2"></i>
+                        Query Editor
+                    </a>
+                    <a href="/scheduler"
+                        class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition flex items-center">
+                        <i data-lucide="calendar" class="w-4 h-4 mr-2"></i>
+                        Scheduler
+                    </a>
+                </div>
+            </div>
+
+            <!-- System Overview -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="p-3 bg-blue-100 rounded-lg">
+                                <i data-lucide="plug" class="w-6 h-6 text-blue-600"></i>
+                            </div>
+                        </div>
+                        <span
+                            class="text-sm font-medium text-green-600 bg-green-100 px-2 py-1 rounded-full">Active</span>
+                    </div>
+                    <h3 class="text-2xl font-bold text-gray-900" id="integrationCount">12</h3>
+                    <p class="text-gray-600 text-sm">Integrations</p>
+                    <div class="mt-4 flex items-center text-sm">
+                        <span class="text-green-600 flex items-center">
+                            <i data-lucide="trending-up" class="w-4 h-4 mr-1"></i>
+                            2 new this week
+                        </span>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="p-3 bg-purple-100 rounded-lg">
+                                <i data-lucide="git-branch" class="w-6 h-6 text-purple-600"></i>
+                            </div>
+                        </div>
+                        <span class="text-sm font-medium text-blue-600 bg-blue-100 px-2 py-1 rounded-full">3
+                            Running</span>
+                    </div>
+                    <h3 class="text-2xl font-bold text-gray-900" id="pipelineCount">8</h3>
+                    <p class="text-gray-600 text-sm">ETL Pipelines</p>
+                    <div class="mt-4 flex items-center text-sm">
+                        <span class="text-blue-600 flex items-center">
+                            <i data-lucide="activity" class="w-4 h-4 mr-1"></i>
+                            3 active now
+                        </span>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="p-3 bg-green-100 rounded-lg">
+                                <i data-lucide="puzzle" class="w-6 h-6 text-green-600"></i>
+                            </div>
+                        </div>
+                        <span
+                            class="text-sm font-medium text-green-600 bg-green-100 px-2 py-1 rounded-full">Healthy</span>
+                    </div>
+                    <h3 class="text-2xl font-bold text-gray-900" id="adapterCount">24</h3>
+                    <p class="text-gray-600 text-sm">Adapters</p>
+                    <div class="mt-4 flex items-center text-sm">
+                        <span class="text-green-600 flex items-center">
+                            <i data-lucide="check-circle" class="w-4 h-4 mr-1"></i>
+                            All operational
+                        </span>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="p-3 bg-orange-100 rounded-lg">
+                                <i data-lucide="database" class="w-6 h-6 text-orange-600"></i>
+                            </div>
+                        </div>
+                        <span class="text-sm font-medium text-gray-600 bg-gray-100 px-2 py-1 rounded-full">Today</span>
+                    </div>
+                    <h3 class="text-2xl font-bold text-gray-900" id="queryCount">156</h3>
+                    <p class="text-gray-600 text-sm">Queries Executed</p>
+                    <div class="mt-4 flex items-center text-sm">
+                        <span class="text-orange-600 flex items-center">
+                            <i data-lucide="clock" class="w-4 h-4 mr-1"></i>
+                            Avg: 245ms
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Metrics Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <!-- ETL Performance Metrics -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="bar-chart-2" class="w-5 h-5 mr-2 text-purple-600"></i>
+                        ETL Performance Metrics
+                    </h2>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Success Rate (Last 7 Days)</span>
+                            <span class="text-2xl font-bold text-green-600">96.4%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Avg Execution Time</span>
+                            <span class="text-2xl font-bold text-blue-600">42.3s</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Total Records Processed</span>
+                            <span class="text-2xl font-bold text-purple-600">1.2M</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Error Rate</span>
+                            <span class="text-2xl font-bold text-red-600">3.6%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Data Volume Metrics -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="trending-up" class="w-5 h-5 mr-2 text-blue-600"></i>
+                        Data Volume Processed
+                    </h2>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Today</span>
+                            <span class="text-2xl font-bold text-blue-600">245K</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">Yesterday</span>
+                            <span class="text-2xl font-bold text-green-600">198K</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">This Week</span>
+                            <span class="text-2xl font-bold text-purple-600">1.5M</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-600">This Month</span>
+                            <span class="text-2xl font-bold text-orange-600">6.8M</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+                <!-- Recent ETL Runs -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="activity" class="w-5 h-5 mr-2 text-green-600"></i>
+                        Recent ETL Runs
+                    </h2>
+                    <div id="recentEtlRuns" class="space-y-3">
+                        <!-- ETL runs will be populated here -->
+                    </div>
+                </div>
+
+                <!-- System Health -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="heart" class="w-5 h-5 mr-2 text-red-600"></i>
+                        System Health
+                    </h2>
+                    <div id="systemHealth" class="space-y-4">
+                        <!-- System health will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Recent Queries -->
+                <div class="bg-white rounded-xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <i data-lucide="database" class="w-5 h-5 mr-2 text-orange-600"></i>
+                        Recent Queries
+                    </h2>
+                    <div id="recentQueries" class="space-y-3">
+                        <!-- Recent queries will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Pipelines -->
+            <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800 flex items-center">
+                        <i data-lucide="git-branch" class="w-5 h-5 mr-2 text-purple-600"></i>
+                        Active Pipelines
+                    </h2>
+                    <button id="refreshPipelinesBtn"
+                        class="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200 flex items-center">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2"></i>
+                        Refresh
+                    </button>
+                </div>
+                <div id="activePipelines" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Active pipelines will be populated here -->
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="mt-8 hidden">
+                <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                    <div class="flex items-center">
+                        <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                        <span id="statusText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // DOM elements
+        const statusMessage = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+
+        // Load dashboard data
+        async function loadDashboardData() {
+            try {
+                // Load recent ETL runs
+                await loadRecentEtlRuns();
+
+                // Load system health
+                await loadSystemHealth();
+
+                // Load recent queries
+                await loadRecentQueries();
+
+                // Load active pipelines
+                await loadActivePipelines();
+
+                // Update counts
+                updateCounts();
+            } catch (error) {
+                console.error('Failed to load dashboard data:', error);
+                showStatus('Failed to load dashboard data', 'error');
+            }
+        }
+
+        // Load dashboard data without chart updates
+        async function loadDashboardDataStatic() {
+            try {
+                // Load recent ETL runs
+                await loadRecentEtlRuns();
+
+                // Load system health
+                await loadSystemHealth();
+
+                // Load recent queries
+                await loadRecentQueries();
+
+                // Load active pipelines
+                await loadActivePipelines();
+
+                // Update counts
+                updateCounts();
+            } catch (error) {
+                console.error('Failed to load dashboard data:', error);
+                showStatus('Failed to load dashboard data', 'error');
+            }
+        }
+
+        // Load recent ETL runs
+        async function loadRecentEtlRuns() {
+            try {
+                const response = await fetch('/api/executions');
+                const executions = await response.json();
+
+                const recentEtlRuns = document.getElementById('recentEtlRuns');
+
+                if (executions.length === 0) {
+                    recentEtlRuns.innerHTML = '<p class="text-gray-500 text-center py-4">No ETL runs yet</p>';
+                    return;
+                }
+
+                // Get the 5 most recent executions
+                const recentExecutions = executions.slice(0, 5);
+
+                let html = '';
+                recentExecutions.forEach(execution => {
+                    const statusColor = getStatusColor(execution.status);
+                    const statusIcon = getStatusIcon(execution.status);
+                    const startTime = new Date(execution.startTime).toLocaleString();
+
+                    html += `
+                        <div class="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition duration-200">
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="font-medium text-gray-800">${execution.id}</span>
+                                <span class="px-2 py-1 rounded-full text-xs font-medium ${statusColor} flex items-center">
+                                    <i data-lucide="${statusIcon}" class="w-3 h-3 mr-1"></i>
+                                    ${execution.status}
+                                </span>
+                            </div>
+                            <div class="text-sm text-gray-600">
+                                Started: ${startTime}
+                            </div>
+                            ${execution.recordsProcessed ? `
+                                <div class="text-sm text-gray-600">
+                                    Records: ${execution.recordsProcessed}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                });
+
+                recentEtlRuns.innerHTML = html;
+                lucide.createIcons();
+            } catch (error) {
+                console.error('Failed to load recent ETL runs:', error);
+                document.getElementById('recentEtlRuns').innerHTML = '<p class="text-red-500 text-center py-4">Failed to load</p>';
+            }
+        }
+
+        // Load system health
+        async function loadSystemHealth() {
+            const systemHealth = document.getElementById('systemHealth');
+
+            // Mock system health data
+            const healthData = [
+                { name: 'ETL Engine', status: 'healthy', value: 98 },
+                { name: 'Database', status: 'healthy', value: 95 },
+                { name: 'API Gateway', status: 'warning', value: 87 },
+                { name: 'Message Queue', status: 'healthy', value: 92 },
+                { name: 'File Storage', status: 'healthy', value: 99 }
+            ];
+
+            let html = '';
+            healthData.forEach(item => {
+                const statusColor = item.status === 'healthy' ? 'text-green-600' : 'text-yellow-600';
+                const bgColor = item.status === 'healthy' ? 'bg-green-100' : 'bg-yellow-100';
+                const barColor = item.status === 'healthy' ? 'bg-green-500' : 'bg-yellow-500';
+
+                html += `
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-medium text-gray-700">${item.name}</span>
+                            <span class="text-sm ${statusColor}">${item.value}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="${barColor} h-2 rounded-full" style="width: ${item.value}%"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            systemHealth.innerHTML = html;
+        }
+
+        // Load recent queries
+        async function loadRecentQueries() {
+            try {
+                const response = await fetch('/api/query/history');
+                const queries = await response.json();
+
+                const recentQueries = document.getElementById('recentQueries');
+
+                if (queries.length === 0) {
+                    recentQueries.innerHTML = '<p class="text-gray-500 text-center py-4">No queries yet</p>';
+                    return;
+                }
+
+                // Get the 5 most recent queries
+                const recentQueriesList = queries.slice(0, 5);
+
+                let html = '';
+                recentQueriesList.forEach(query => {
+                    const statusColor = query.success ? 'text-green-600' : 'text-red-600';
+                    const statusIcon = query.success ? 'check-circle' : 'x-circle';
+                    const timestamp = new Date(query.timestamp).toLocaleString();
+
+                    html += `
+                        <div class="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition duration-200">
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="font-medium text-gray-800 truncate">${query.query.substring(0, 30)}...</span>
+                                <i data-lucide="${statusIcon}" class="w-4 h-4 ${statusColor}"></i>
+                            </div>
+                            <div class="text-sm text-gray-600">
+                                ${query.rowCount} rows | ${query.executionTime}ms
+                            </div>
+                            <div class="text-xs text-gray-500">
+                                ${timestamp}
+                            </div>
+                        </div>
+                    `;
+                });
+
+                recentQueries.innerHTML = html;
+                lucide.createIcons();
+            } catch (error) {
+                console.error('Failed to load recent queries:', error);
+                document.getElementById('recentQueries').innerHTML = '<p class="text-red-500 text-center py-4">Failed to load</p>';
+            }
+        }
+
+        // Load active pipelines
+        async function loadActivePipelines() {
+            try {
+                const response = await fetch('/api/pipelines');
+                const pipelines = await response.json();
+
+                const activePipelines = document.getElementById('activePipelines');
+
+                if (pipelines.length === 0) {
+                    activePipelines.innerHTML = '<p class="text-gray-500 text-center py-8 col-span-full">No pipelines found</p>';
+                    return;
+                }
+
+                let html = '';
+                pipelines.forEach(pipeline => {
+                    const statusColor = getStatusColor(pipeline.status);
+                    const typeIcon = getTypeIcon(pipeline.type || 'default');
+
+                    html += `
+                        <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition duration-200">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="flex items-center">
+                                    <i data-lucide="${typeIcon}" class="w-5 h-5 mr-2 text-gray-600"></i>
+                                    <span class="font-semibold text-gray-800">${pipeline.name}</span>
+                                </div>
+                                <span class="px-2 py-1 rounded-full text-xs font-medium ${statusColor}">
+                                    ${pipeline.status}
+                                </span>
+                            </div>
+                            <div class="text-sm text-gray-600 mb-2">
+                                ${pipeline.description || 'No description'}
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <div class="text-xs text-gray-500">
+                                    Last run: ${pipeline.lastRun ? new Date(pipeline.lastRun).toLocaleDateString() : 'Never'}
+                                </div>
+                                <button onclick="viewPipelineDetails('${pipeline.id}')"
+                                    class="text-blue-600 hover:text-blue-800">
+                                    <i data-lucide="eye" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                activePipelines.innerHTML = html;
+                lucide.createIcons();
+            } catch (error) {
+                console.error('Failed to load active pipelines:', error);
+                document.getElementById('activePipelines').innerHTML = '<p class="text-red-500 text-center py-8 col-span-full">Failed to load</p>';
+            }
+        }
+
+        // Update counts
+        function updateCounts() {
+            // Mock count updates
+            document.getElementById('integrationCount').textContent = '12';
+            document.getElementById('pipelineCount').textContent = '8';
+            document.getElementById('adapterCount').textContent = '24';
+            document.getElementById('queryCount').textContent = '156';
+        }
+
+        // Get status color
+        function getStatusColor(status) {
+            switch (status) {
+                case 'completed': return 'bg-green-100 text-green-800';
+                case 'running': return 'bg-blue-100 text-blue-800';
+                case 'failed': return 'bg-red-100 text-red-800';
+                case 'paused': return 'bg-yellow-100 text-yellow-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Get status icon
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'completed': return 'check-circle';
+                case 'running': return 'loader';
+                case 'failed': return 'x-circle';
+                case 'paused': return 'pause-circle';
+                default: return 'clock';
+            }
+        }
+
+        // Get type icon
+        function getTypeIcon(type) {
+            switch (type) {
+                case 'api': return 'globe';
+                case 'database': return 'database';
+                case 'file': return 'file-text';
+                case 'message': return 'message-square';
+                case 'notification': return 'bell';
+                default: return 'git-branch';
+            }
+        }
+
+        // View pipeline details
+        function viewPipelineDetails(id) {
+            window.location.href = `/etl#${id}`;
+        }
+
+        // Show status message
+        function showStatus(message, type) {
+            statusText.textContent = message;
+            statusMessage.className = 'mt-8';
+
+            if (type === 'error') {
+                statusMessage.innerHTML = `
+                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'success') {
+                statusMessage.innerHTML = `
+                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusMessage.innerHTML = `
+                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
+                        <div class="flex items-center">
+                            <i data-lucide="info" class="w-5 h-5 mr-2"></i>
+                            <span>${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            lucide.createIcons();
+
+            setTimeout(() => {
+                statusMessage.className = 'mt-8 hidden';
+            }, 5000);
+        }
+
+        // Event listeners
+        document.getElementById('refreshPipelinesBtn').addEventListener('click', () => {
+            loadActivePipelines();
+            showStatus('Pipelines refreshed', 'success');
+        });
+
+
+        // Auto-refresh every 30 seconds with visibility check (excluding charts)
+        let refreshInterval = setInterval(() => {
+            // Only refresh if page is visible and not updating charts
+            if (!document.hidden) {
+                loadDashboardDataStatic();
+            }
+        }, 30000);
+
+        // Clear interval when page is hidden to prevent unnecessary updates
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                clearInterval(refreshInterval);
+            } else {
+                // Restart interval when page becomes visible again
+                refreshInterval = setInterval(() => {
+                    if (!document.hidden) {
+                        loadDashboardDataStatic();
+                    }
+                }, 30000);
+            }
+        });
+
+
+        // Initialize
+        loadDashboardData();
+    </script>
+</body>
+
+</html>

@@ -170,15 +170,56 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/api/runs", s.getRunsHandler)
 	s.app.Get("/api/runs/:id", s.getRunHandler)
 
+	// Real-time updates endpoint
+	s.app.Get("/api/updates", s.getUpdatesHandler)
+
 	// Execute config endpoint
 	s.app.Post("/api/execute", s.executeConfigHandler)
 	s.app.Get("/api/executions", s.getExecutionsHandler)
 	s.app.Get("/api/configurations", s.getConfigurationsHandler)
 
-	// Serve execute page
+	// Serve HTML pages
+	s.app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/dashboard.html")
+	})
+	s.app.Get("/integrations", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/integrations.html")
+	})
+	s.app.Get("/etl", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/etl.html")
+	})
+	s.app.Get("/adapters", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/adapters.html")
+	})
+	s.app.Get("/query", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/query.html")
+	})
+	s.app.Get("/scheduler", func(c *fiber.Ctx) error {
+		return c.SendFile(s.config.StaticPath + "/scheduler.html")
+	})
 	s.app.Get("/execute", func(c *fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/execute.html")
 	})
+
+	// Adapter endpoints
+	s.app.Get("/api/adapters", s.getAdaptersHandler)
+	s.app.Get("/api/adapters/:id", s.getAdapterHandler)
+	s.app.Post("/api/adapters", s.createAdapterHandler)
+	s.app.Put("/api/adapters/:id", s.updateAdapterHandler)
+	s.app.Delete("/api/adapters/:id", s.deleteAdapterHandler)
+	s.app.Post("/api/adapters/:id/test", s.testAdapterHandler)
+
+	// Integration test endpoints
+	s.app.Post("/api/integrations/:id/test", s.testIntegrationHandler)
+
+	// Scheduler endpoints
+	s.app.Get("/api/schedules", s.getSchedulesHandler)
+	s.app.Post("/api/schedules", s.createScheduleHandler)
+	s.app.Get("/api/schedules/:id", s.getScheduleHandler)
+	s.app.Put("/api/schedules/:id", s.updateScheduleHandler)
+	s.app.Delete("/api/schedules/:id", s.deleteScheduleHandler)
+	s.app.Post("/api/schedules/:id/toggle", s.toggleScheduleHandler)
+	s.app.Get("/api/schedule-executions", s.getScheduleExecutionsHandler)
 
 	// Legacy ETL endpoints (for compatibility)
 	s.app.Get("/config", s.getConfigHandler)
@@ -390,12 +431,49 @@ func (s *Server) getQueryHistoryHandler(c *fiber.Ctx) error {
 	history := []SavedQuery{
 		{
 			ID:        "1",
-			Query:     "SELECT * FROM read_file('users.csv')",
-			Timestamp: "2025-09-29T10:00:00Z",
+			Query:     "SELECT * FROM read_file('users.csv') LIMIT 10",
+			Name:      "User Data Query",
+			Timestamp: "2025-01-21T10:00:00Z",
 			Success:   true,
 		},
+		{
+			ID:        "2",
+			Query:     "SELECT name, email FROM read_file('customers.csv') WHERE status = 'active'",
+			Name:      "Active Customers",
+			Timestamp: "2025-01-21T09:30:00Z",
+			Success:   true,
+		},
+		{
+			ID:        "3",
+			Query:     "SELECT COUNT(*) as total FROM read_file('orders.csv')",
+			Name:      "Order Count",
+			Timestamp: "2025-01-21T09:15:00Z",
+			Success:   true,
+		},
+		{
+			ID:        "4",
+			Query:     "SELECT * FROM invalid_table",
+			Name:      "Failed Query",
+			Timestamp: "2025-01-21T08:45:00Z",
+			Success:   false,
+		},
 	}
-	return c.JSON(history)
+
+	// Add execution time data for each query
+	queries := make([]map[string]interface{}, len(history))
+	for i, query := range history {
+		queries[i] = map[string]interface{}{
+			"id":            query.ID,
+			"query":         query.Query,
+			"name":          query.Name,
+			"timestamp":     query.Timestamp,
+			"success":       query.Success,
+			"rowCount":      (time.Now().Unix() + int64(i*100)) % 1000,
+			"executionTime": (time.Now().Unix() + int64(i*50)) % 500,
+		}
+	}
+
+	return c.JSON(queries)
 }
 
 func (s *Server) saveQueryHandler(c *fiber.Ctx) error {
@@ -413,12 +491,60 @@ func (s *Server) saveQueryHandler(c *fiber.Ctx) error {
 }
 
 func (s *Server) getPipelinesHandler(c *fiber.Ctx) error {
-	return c.JSON([]map[string]interface{}{})
+	if !s.config.EnableMocks {
+		return c.JSON([]map[string]interface{}{})
+	}
+	// Mock pipelines
+	pipelines := []map[string]interface{}{
+		{
+			"id":          "pipeline-1",
+			"name":        "Customer Data Pipeline",
+			"description": "Process customer data from CSV to database",
+			"status":      "running",
+			"nodes":       []interface{}{map[string]interface{}{"id": 1, "label": "Source", "type": "source"}, map[string]interface{}{"id": 2, "label": "Transform", "type": "transform"}, map[string]interface{}{"id": 3, "label": "Load", "type": "load"}},
+			"schedule":    map[string]interface{}{"type": "cron", "value": "0 */6 * * *"},
+			"lastRun":     "2025-01-21T08:00:00Z",
+			"createdAt":   "2025-01-15T10:30:00Z",
+		},
+		{
+			"id":          "pipeline-2",
+			"name":        "Order Processing Pipeline",
+			"description": "Transform and load order data",
+			"status":      "completed",
+			"nodes":       []interface{}{map[string]interface{}{"id": 1, "label": "Source", "type": "source"}, map[string]interface{}{"id": 2, "label": "Filter", "type": "filter"}, map[string]interface{}{"id": 3, "label": "Load", "type": "load"}},
+			"schedule":    map[string]interface{}{"type": "manual", "value": ""},
+			"lastRun":     "2025-01-21T07:30:00Z",
+			"createdAt":   "2025-01-16T08:00:00Z",
+		},
+		{
+			"id":          "pipeline-3",
+			"name":        "Product Sync Pipeline",
+			"description": "Sync product data from API to database",
+			"status":      "failed",
+			"nodes":       []interface{}{map[string]interface{}{"id": 1, "label": "API Source", "type": "source"}, map[string]interface{}{"id": 2, "label": "Transform", "type": "transform"}, map[string]interface{}{"id": 3, "label": "Load", "type": "load"}},
+			"schedule":    map[string]interface{}{"type": "interval", "value": "30m"},
+			"lastRun":     "2025-01-21T06:45:00Z",
+			"createdAt":   "2025-01-17T12:00:00Z",
+		},
+	}
+	return c.JSON(pipelines)
 }
 
 func (s *Server) getPipelineHandler(c *fiber.Ctx) error {
 	id := c.Params("id")
-	return c.JSON(map[string]interface{}{"id": id})
+	// Mock implementation with more detailed data
+	return c.JSON(map[string]interface{}{
+		"id":          id,
+		"name":        "Customer Data Pipeline",
+		"description": "Process customer data from CSV to database",
+		"status":      "running",
+		"config":      "source:\n  type: file\n  path: customers.csv\ntransform:\n  - type: filter\n    condition: \"status == 'active'\"\nload:\n  type: database\n  table: customers",
+		"nodes":       []interface{}{map[string]interface{}{"id": 1, "label": "Source", "type": "source"}, map[string]interface{}{"id": 2, "label": "Transform", "type": "transform"}, map[string]interface{}{"id": 3, "label": "Load", "type": "load"}},
+		"edges":       []interface{}{map[string]interface{}{"from": 1, "to": 2}, map[string]interface{}{"from": 2, "to": 3}},
+		"schedule":    map[string]interface{}{"type": "cron", "value": "0 */6 * * *", "timezone": "UTC", "retry": true, "maxRetries": 3, "retryDelay": 60},
+		"lastRun":     "2025-01-21T08:00:00Z",
+		"createdAt":   "2025-01-15T10:30:00Z",
+	})
 }
 
 func (s *Server) createPipelineHandler(c *fiber.Ctx) error {
@@ -441,7 +567,53 @@ func (s *Server) deletePipelineHandler(c *fiber.Ctx) error {
 
 func (s *Server) runPipelineHandler(c *fiber.Ctx) error {
 	id := c.Params("id")
-	return c.JSON(map[string]interface{}{"id": id, "status": "running"})
+
+	// Create a new execution
+	executionID := fmt.Sprintf("run-%d", time.Now().Unix())
+
+	// Add to executions list
+	execution := ExecutionSummary{
+		ID:        executionID,
+		Config:    fmt.Sprintf("Pipeline %s execution", id),
+		Status:    "running",
+		StartTime: time.Now(),
+	}
+	s.executions = append(s.executions, execution)
+
+	// Simulate pipeline execution in background
+	go func() {
+		// Simulate work
+		time.Sleep(5 * time.Second)
+
+		// Update execution status
+		for i := range s.executions {
+			if s.executions[i].ID == executionID {
+				s.executions[i].Status = "completed"
+				s.executions[i].RecordsProcessed = int(1000 + (time.Now().Unix() % 5000))
+				s.executions[i].DetailedMetrics = DetailedMetrics{
+					Extracted:   1000 + (time.Now().Unix() % 1000),
+					Mapped:      900 + (time.Now().Unix() % 100),
+					Transformed: 850 + (time.Now().Unix() % 100),
+					Loaded:      800 + (time.Now().Unix() % 200),
+					Errors:      time.Now().Unix() % 10,
+					WorkerActivities: []WorkerActivity{
+						{Node: "source", WorkerID: 1, Processed: 1000, Failed: 0, Timestamp: time.Now(), Activity: "Extraction completed"},
+						{Node: "transform", WorkerID: 1, Processed: 950, Failed: 5, Timestamp: time.Now(), Activity: "Transformation completed"},
+						{Node: "load", WorkerID: 1, Processed: 900, Failed: 2, Timestamp: time.Now(), Activity: "Load completed"},
+					},
+				}
+				now := time.Now()
+				s.executions[i].EndTime = &now
+				break
+			}
+		}
+	}()
+
+	return c.JSON(map[string]interface{}{
+		"runId":   executionID,
+		"status":  "running",
+		"message": "Pipeline execution started",
+	})
 }
 
 func (s *Server) getRunsHandler(c *fiber.Ctx) error {
@@ -697,6 +869,332 @@ func (s *Server) getETLMetricsHandler(c *fiber.Ctx) error {
 			"duration":  60.5,
 		},
 	})
+}
+
+// Adapter handlers
+func (s *Server) getAdaptersHandler(c *fiber.Ctx) error {
+	if !s.config.EnableMocks {
+		return c.JSON([]map[string]interface{}{})
+	}
+	// Mock adapters
+	adapters := []map[string]interface{}{
+		{
+			"id":          "1",
+			"name":        "Customer CSV Source",
+			"type":        "source",
+			"kind":        "file",
+			"description": "Read customer data from CSV",
+			"config":      map[string]interface{}{"format": "csv", "path": "/data/customers.csv", "hasHeader": true},
+			"enabled":     true,
+			"createdAt":   "2025-01-15T10:30:00Z",
+			"lastUsed":    "2025-01-20T14:20:00Z",
+		},
+		{
+			"id":          "2",
+			"name":        "Order Transform",
+			"type":        "transform",
+			"kind":        "mapper",
+			"description": "Transform order data",
+			"config":      map[string]interface{}{"mappings": []interface{}{map[string]interface{}{"from": "order_id", "to": "id"}, map[string]interface{}{"from": "customer_name", "to": "customer"}}},
+			"enabled":     true,
+			"createdAt":   "2025-01-16T08:00:00Z",
+			"lastUsed":    "2025-01-21T09:15:00Z",
+		},
+	}
+	return c.JSON(adapters)
+}
+
+func (s *Server) getAdapterHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":          id,
+		"name":        "Mock Adapter",
+		"type":        "source",
+		"kind":        "file",
+		"description": "Mock adapter",
+		"config":      map[string]interface{}{},
+		"enabled":     true,
+	})
+}
+
+func (s *Server) createAdapterHandler(c *fiber.Ctx) error {
+	var adapter map[string]interface{}
+	if err := c.BodyParser(&adapter); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	// Mock implementation
+	adapter["id"] = "adapter-" + fmt.Sprintf("%d", time.Now().Unix())
+	adapter["createdAt"] = time.Now().Format(time.RFC3339)
+
+	return c.Status(201).JSON(adapter)
+}
+
+func (s *Server) updateAdapterHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var updates map[string]interface{}
+	if err := c.BodyParser(&updates); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"message": "Adapter updated successfully",
+	})
+}
+
+func (s *Server) deleteAdapterHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"message": "Adapter deleted successfully",
+	})
+}
+
+func (s *Server) testAdapterHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation - simulate test
+	time.Sleep(1 * time.Second)
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"status":  "success",
+		"message": "Adapter test completed successfully",
+		"metrics": map[string]interface{}{
+			"latency": "150ms",
+			"records": 100,
+			"success": true,
+		},
+	})
+}
+
+func (s *Server) testIntegrationHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation - simulate test
+	time.Sleep(2 * time.Second)
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"status":  "success",
+		"message": "Integration test completed successfully",
+		"metrics": map[string]interface{}{
+			"latency":     "250ms",
+			"status":      "connected",
+			"lastChecked": time.Now().Format(time.RFC3339),
+		},
+	})
+}
+
+// Real-time updates endpoint for polling
+func (s *Server) getUpdatesHandler(c *fiber.Ctx) error {
+	lastUpdate := c.Query("since")
+
+	// Filter executions based on last update time
+	var filteredExecutions []ExecutionSummary
+	if lastUpdate != "" {
+		lastTime, err := time.Parse(time.RFC3339, lastUpdate)
+		if err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid timestamp format"})
+		}
+
+		for _, exec := range s.executions {
+			if exec.StartTime.After(lastTime) {
+				filteredExecutions = append(filteredExecutions, exec)
+			}
+		}
+	} else {
+		filteredExecutions = s.executions
+	}
+
+	return c.JSON(map[string]interface{}{
+		"timestamp":  time.Now().Format(time.RFC3339),
+		"executions": filteredExecutions,
+	})
+}
+
+// Scheduler handlers
+func (s *Server) getSchedulesHandler(c *fiber.Ctx) error {
+	if !s.config.EnableMocks {
+		return c.JSON([]map[string]interface{}{})
+	}
+	// Mock schedules
+	schedules := []map[string]interface{}{
+		{
+			"id":           "schedule-1",
+			"name":         "Daily Customer Sync",
+			"pipelineId":   "pipeline-1",
+			"pipelineName": "Customer Data Pipeline",
+			"type":         "cron",
+			"schedule":     map[string]interface{}{"cron": "0 2 * * *"},
+			"timezone":     "UTC",
+			"enabled":      true,
+			"nextRun":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+			"retry":        map[string]interface{}{"maxRetries": 3, "retryDelay": 60},
+			"createdAt":    "2025-01-15T10:30:00Z",
+			"lastRun":      "2025-01-21T02:00:00Z",
+		},
+		{
+			"id":           "schedule-2",
+			"name":         "Hourly Order Processing",
+			"pipelineId":   "pipeline-2",
+			"pipelineName": "Order Processing Pipeline",
+			"type":         "interval",
+			"schedule":     map[string]interface{}{"interval": "1 hours"},
+			"timezone":     "America/New_York",
+			"enabled":      true,
+			"nextRun":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+			"retry":        nil,
+			"createdAt":    "2025-01-16T08:00:00Z",
+			"lastRun":      "2025-01-21T08:00:00Z",
+		},
+		{
+			"id":           "schedule-3",
+			"name":         "Weekly Product Sync",
+			"pipelineId":   "pipeline-3",
+			"pipelineName": "Product Sync Pipeline",
+			"type":         "cron",
+			"schedule":     map[string]interface{}{"cron": "0 3 * * 0"},
+			"timezone":     "Europe/London",
+			"enabled":      false,
+			"nextRun":      "",
+			"retry":        map[string]interface{}{"maxRetries": 5, "retryDelay": 120},
+			"createdAt":    "2025-01-17T12:00:00Z",
+			"lastRun":      "2025-01-14T03:00:00Z",
+		},
+	}
+	return c.JSON(schedules)
+}
+
+func (s *Server) createScheduleHandler(c *fiber.Ctx) error {
+	var schedule map[string]interface{}
+	if err := c.BodyParser(&schedule); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	// Mock implementation
+	schedule["id"] = "schedule-" + fmt.Sprintf("%d", time.Now().Unix())
+	schedule["createdAt"] = time.Now().Format(time.RFC3339)
+	schedule["lastRun"] = ""
+	schedule["nextRun"] = calculateNextRun(schedule["type"].(string), schedule["schedule"].(map[string]interface{}))
+
+	return c.Status(201).JSON(schedule)
+}
+
+func (s *Server) getScheduleHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":           id,
+		"name":         "Mock Schedule",
+		"pipelineId":   "pipeline-1",
+		"pipelineName": "Customer Data Pipeline",
+		"type":         "cron",
+		"schedule":     map[string]interface{}{"cron": "0 2 * * *"},
+		"timezone":     "UTC",
+		"enabled":      true,
+		"nextRun":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+		"retry":        map[string]interface{}{"maxRetries": 3, "retryDelay": 60},
+		"createdAt":    "2025-01-15T10:30:00Z",
+		"lastRun":      "2025-01-21T02:00:00Z",
+	})
+}
+
+func (s *Server) updateScheduleHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var updates map[string]interface{}
+	if err := c.BodyParser(&updates); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"message": "Schedule updated successfully",
+	})
+}
+
+func (s *Server) deleteScheduleHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"message": "Schedule deleted successfully",
+	})
+}
+
+func (s *Server) toggleScheduleHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// Mock implementation
+	return c.JSON(map[string]interface{}{
+		"id":      id,
+		"message": "Schedule toggled successfully",
+		"enabled": true,
+	})
+}
+
+func (s *Server) getScheduleExecutionsHandler(c *fiber.Ctx) error {
+	if !s.config.EnableMocks {
+		return c.JSON([]map[string]interface{}{})
+	}
+	// Mock execution history
+	executions := []map[string]interface{}{
+		{
+			"id":           "exec-1",
+			"scheduleId":   "schedule-1",
+			"scheduleName": "Daily Customer Sync",
+			"status":       "completed",
+			"startTime":    "2025-01-21T02:00:00Z",
+			"endTime":      "2025-01-21T02:05:30Z",
+			"error":        "",
+		},
+		{
+			"id":           "exec-2",
+			"scheduleId":   "schedule-2",
+			"scheduleName": "Hourly Order Processing",
+			"status":       "failed",
+			"startTime":    "2025-01-21T08:00:00Z",
+			"endTime":      "2025-01-21T08:01:15Z",
+			"error":        "Connection timeout",
+		},
+		{
+			"id":           "exec-3",
+			"scheduleId":   "schedule-2",
+			"scheduleName": "Hourly Order Processing",
+			"status":       "running",
+			"startTime":    "2025-01-21T09:00:00Z",
+			"endTime":      "",
+			"error":        "",
+		},
+	}
+	return c.JSON(executions)
+}
+
+// Helper function to calculate next run time
+func calculateNextRun(scheduleType string, schedule map[string]interface{}) string {
+	now := time.Now()
+
+	switch scheduleType {
+	case "cron":
+		// Mock calculation - in real implementation, use a cron library
+		return now.Add(24 * time.Hour).Format(time.RFC3339)
+	case "interval":
+		// Mock calculation
+		interval := schedule["interval"].(string)
+		if strings.Contains(interval, "hours") {
+			return now.Add(1 * time.Hour).Format(time.RFC3339)
+		} else if strings.Contains(interval, "minutes") {
+			return now.Add(30 * time.Minute).Format(time.RFC3339)
+		} else if strings.Contains(interval, "days") {
+			return now.Add(24 * time.Hour).Format(time.RFC3339)
+		}
+	case "once":
+		// Return the scheduled time
+		onceTime := schedule["once"].(string)
+		return onceTime
+	}
+
+	return now.Add(24 * time.Hour).Format(time.RFC3339)
 }
 
 func (s *Server) Start(addr string) error {
