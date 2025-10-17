@@ -120,17 +120,25 @@
 
                         <!-- Tabs -->
                         <div class="border-b border-gray-200 mb-4">
-                            <nav class="flex space-x-8">
+                            <nav class="flex space-x-4 overflow-x-auto">
                                 <button id="visualTab"
-                                    class="py-2 px-1 border-b-2 border-purple-500 text-purple-600 font-medium">
+                                    class="py-2 px-1 border-b-2 border-purple-500 text-purple-600 font-medium whitespace-nowrap">
                                     Visual Designer
                                 </button>
-                                <button id="codeTab"
-                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                                <button id="yamlTab"
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
                                     YAML Editor
                                 </button>
+                                <button id="jsonTab"
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
+                                    JSON Editor
+                                </button>
+                                <button id="bclTab"
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
+                                    BCL Editor
+                                </button>
                                 <button id="scheduleTab"
-                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                                    class="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap">
                                     Schedule
                                 </button>
                             </nav>
@@ -203,8 +211,18 @@
                         </div>
 
                         <!-- YAML Editor -->
-                        <div id="codePanel" class="hidden">
+                        <div id="yamlPanel" class="hidden">
                             <div id="yamlEditor" style="height: 500px; border: 1px solid #ccc;"></div>
+                        </div>
+
+                        <!-- JSON Editor -->
+                        <div id="jsonPanel" class="hidden">
+                            <div id="jsonEditor" style="height: 500px; border: 1px solid #ccc;"></div>
+                        </div>
+
+                        <!-- BCL Editor -->
+                        <div id="bclPanel" class="hidden">
+                            <div id="bclEditor" style="height: 500px; border: 1px solid #ccc;"></div>
                         </div>
 
                         <!-- Schedule Panel -->
@@ -284,6 +302,8 @@
         let nodes = null;
         let edges = null;
         let yamlEditor = null;
+        let jsonEditor = null;
+        let bclEditor = null;
         let selectedNode = null;
 
         // DOM elements
@@ -291,10 +311,14 @@
         const pipelineSearch = document.getElementById('pipelineSearch');
         const pipelineInfo = document.getElementById('pipelineInfo');
         const visualTab = document.getElementById('visualTab');
-        const codeTab = document.getElementById('codeTab');
+        const yamlTab = document.getElementById('yamlTab');
+        const jsonTab = document.getElementById('jsonTab');
+        const bclTab = document.getElementById('bclTab');
         const scheduleTab = document.getElementById('scheduleTab');
         const visualPanel = document.getElementById('visualPanel');
-        const codePanel = document.getElementById('codePanel');
+        const yamlPanel = document.getElementById('yamlPanel');
+        const jsonPanel = document.getElementById('jsonPanel');
+        const bclPanel = document.getElementById('bclPanel');
         const schedulePanel = document.getElementById('schedulePanel');
         const statusMessage = document.getElementById('statusMessage');
         const statusText = document.getElementById('statusText');
@@ -302,6 +326,7 @@
         // Initialize Monaco Editor
         require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
         require(['vs/editor/editor.main'], function () {
+            // YAML Editor
             yamlEditor = monaco.editor.create(document.getElementById('yamlEditor'), {
                 value: '# Pipeline Configuration\nsource:\n  type: file\n  path: data.csv\n\ntransform:\n  - type: filter\n    condition: "status == \'active\'"\n\nload:\n  type: database\n  table: output',
                 language: 'yaml',
@@ -314,6 +339,38 @@
             yamlEditor.onDidChangeModelContent(() => {
                 if (currentPipeline) {
                     currentPipeline.config = yamlEditor.getValue();
+                }
+            });
+
+            // JSON Editor
+            jsonEditor = monaco.editor.create(document.getElementById('jsonEditor'), {
+                value: '{\n  "source": {\n    "type": "file",\n    "path": "data.csv"\n  },\n  "transform": [\n    {\n      "type": "filter",\n      "condition": "status == \'active\'"\n    }\n  ],\n  "load": {\n    "type": "database",\n    "table": "output"\n  }\n}',
+                language: 'json',
+                theme: 'vs',
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true
+            });
+
+            jsonEditor.onDidChangeModelContent(() => {
+                if (currentPipeline) {
+                    currentPipeline.jsonConfig = jsonEditor.getValue();
+                }
+            });
+
+            // BCL Editor
+            bclEditor = monaco.editor.create(document.getElementById('bclEditor'), {
+                value: '# BCL Pipeline Configuration\n\nSOURCE file FROM "data.csv"\n\nTRANSFORM FILTER WHERE status == "active"\n\nLOAD TO DATABASE TABLE "output"',
+                language: 'plaintext',
+                theme: 'vs',
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                automaticLayout: true
+            });
+
+            bclEditor.onDidChangeModelContent(() => {
+                if (currentPipeline) {
+                    currentPipeline.bclConfig = bclEditor.getValue();
                 }
             });
         });
@@ -454,6 +511,16 @@
                 // Update YAML editor
                 if (yamlEditor) {
                     yamlEditor.setValue(currentPipeline.config || '');
+                }
+
+                // Update JSON editor
+                if (jsonEditor) {
+                    jsonEditor.setValue(currentPipeline.jsonConfig || '{}');
+                }
+
+                // Update BCL editor
+                if (bclEditor) {
+                    bclEditor.setValue(currentPipeline.bclConfig || '# BCL Pipeline Configuration');
                 }
 
                 // Update schedule info
@@ -704,6 +771,14 @@
                 yamlEditor.setValue(currentPipeline.config);
             }
 
+            if (jsonEditor) {
+                jsonEditor.setValue(currentPipeline.jsonConfig || '{}');
+            }
+
+            if (bclEditor) {
+                bclEditor.setValue(currentPipeline.bclConfig || '# BCL Pipeline Configuration');
+            }
+
             updatePipelineInfo();
         });
 
@@ -717,7 +792,17 @@
                 showStatus('Validating pipeline...', 'info');
 
                 // Basic validation
-                const config = yamlEditor ? yamlEditor.getValue() : '';
+                const activeTab = document.querySelector('[class*="border-purple-500"]');
+                let config = '';
+
+                if (activeTab === yamlTab && yamlEditor) {
+                    config = yamlEditor.getValue();
+                } else if (activeTab === jsonTab && jsonEditor) {
+                    config = jsonEditor.getValue();
+                } else if (activeTab === bclTab && bclEditor) {
+                    config = bclEditor.getValue();
+                }
+
                 if (!config.trim()) {
                     showStatus('Pipeline configuration cannot be empty', 'error');
                     return;
@@ -752,6 +837,8 @@
                     name: document.getElementById('pipelineName').value,
                     description: document.getElementById('pipelineDescription').value,
                     config: yamlEditor ? yamlEditor.getValue() : '',
+                    jsonConfig: jsonEditor ? jsonEditor.getValue() : '',
+                    bclConfig: bclEditor ? bclEditor.getValue() : '',
                     nodes: nodes ? nodes.get() : [],
                     edges: edges ? edges.get() : [],
                     schedule: {
@@ -825,43 +912,64 @@
         });
 
         // Tab switching
-        visualTab.addEventListener('click', () => {
-            visualTab.classList.add('border-purple-500', 'text-purple-600');
-            visualTab.classList.remove('border-transparent', 'text-gray-500');
-            codeTab.classList.remove('border-purple-500', 'text-purple-600');
-            codeTab.classList.add('border-transparent', 'text-gray-500');
-            scheduleTab.classList.remove('border-purple-500', 'text-purple-600');
-            scheduleTab.classList.add('border-transparent', 'text-gray-500');
+        function switchToTab(activeTab, activePanel, inactiveTabs, inactivePanels) {
+            // Set active tab
+            activeTab.classList.add('border-purple-500', 'text-purple-600');
+            activeTab.classList.remove('border-transparent', 'text-gray-500');
 
-            visualPanel.classList.remove('hidden');
-            codePanel.classList.add('hidden');
-            schedulePanel.classList.add('hidden');
+            // Set inactive tabs
+            inactiveTabs.forEach(tab => {
+                tab.classList.remove('border-purple-500', 'text-purple-600');
+                tab.classList.add('border-transparent', 'text-gray-500');
+            });
+
+            // Show active panel
+            activePanel.classList.remove('hidden');
+
+            // Hide inactive panels
+            inactivePanels.forEach(panel => {
+                panel.classList.add('hidden');
+            });
+        }
+
+        visualTab.addEventListener('click', () => {
+            switchToTab(
+                visualTab, visualPanel,
+                [yamlTab, jsonTab, bclTab, scheduleTab],
+                [yamlPanel, jsonPanel, bclPanel, schedulePanel]
+            );
         });
 
-        codeTab.addEventListener('click', () => {
-            codeTab.classList.add('border-purple-500', 'text-purple-600');
-            codeTab.classList.remove('border-transparent', 'text-gray-500');
-            visualTab.classList.remove('border-purple-500', 'text-purple-600');
-            visualTab.classList.add('border-transparent', 'text-gray-500');
-            scheduleTab.classList.remove('border-purple-500', 'text-purple-600');
-            scheduleTab.classList.add('border-transparent', 'text-gray-500');
+        yamlTab.addEventListener('click', () => {
+            switchToTab(
+                yamlTab, yamlPanel,
+                [visualTab, jsonTab, bclTab, scheduleTab],
+                [visualPanel, jsonPanel, bclPanel, schedulePanel]
+            );
+        });
 
-            codePanel.classList.remove('hidden');
-            visualPanel.classList.add('hidden');
-            schedulePanel.classList.add('hidden');
+        jsonTab.addEventListener('click', () => {
+            switchToTab(
+                jsonTab, jsonPanel,
+                [visualTab, yamlTab, bclTab, scheduleTab],
+                [visualPanel, yamlPanel, bclPanel, schedulePanel]
+            );
+        });
+
+        bclTab.addEventListener('click', () => {
+            switchToTab(
+                bclTab, bclPanel,
+                [visualTab, yamlTab, jsonTab, scheduleTab],
+                [visualPanel, yamlPanel, jsonPanel, schedulePanel]
+            );
         });
 
         scheduleTab.addEventListener('click', () => {
-            scheduleTab.classList.add('border-purple-500', 'text-purple-600');
-            scheduleTab.classList.remove('border-transparent', 'text-gray-500');
-            visualTab.classList.remove('border-purple-500', 'text-purple-600');
-            visualTab.classList.add('border-transparent', 'text-gray-500');
-            codeTab.classList.remove('border-purple-500', 'text-purple-600');
-            codeTab.classList.add('border-transparent', 'text-gray-500');
-
-            schedulePanel.classList.remove('hidden');
-            visualPanel.classList.add('hidden');
-            codePanel.classList.add('hidden');
+            switchToTab(
+                scheduleTab, schedulePanel,
+                [visualTab, yamlTab, jsonTab, bclTab],
+                [visualPanel, yamlPanel, jsonPanel, bclPanel]
+            );
         });
 
         // Node palette buttons

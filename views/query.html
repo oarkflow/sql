@@ -100,6 +100,10 @@
                         <!-- Query Editor -->
                         <div class="mb-4">
                             <div id="queryEditor" style="height: 300px; border: 1px solid #ccc;"></div>
+                            <!-- Fallback textarea in case Monaco fails to load -->
+                            <textarea id="queryEditorFallback" rows="15"
+                                style="display: none; width: 100%; font-family: 'Courier New', monospace; font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
+                                placeholder="SELECT * FROM read_file('users.csv') LIMIT 10"></textarea>
                         </div>
 
                         <!-- Query Tabs -->
@@ -267,56 +271,158 @@
         // Initialize Monaco Editor
         require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
         require(['vs/editor/editor.main'], function () {
-            // Register SQL language
-            monaco.languages.register({ id: 'sql' });
+            try {
+                // Register SQL language
+                monaco.languages.register({ id: 'sql' });
 
-            // Set up SQL language features
-            monaco.languages.setMonarchTokensProvider('sql', {
-                tokenizer: {
-                    root: [
-                        [/[a-zA-Z_]\w*/, {
-                            cases: {
-                                '@keywords': 'keyword',
-                                '@builtins': 'type.identifier',
-                                '@default': 'identifier'
-                            }
-                        }],
-                        [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
-                        [/\d+/, 'number'],
-                        [/"/, 'string', '@string_double'],
-                        [/'/, 'string', '@string_single'],
-                        [/[/*+\-<>!=&|~%]/, 'operators'],
-                        [/[;,.()]/, 'delimiter']
-                    ],
-                    string_double: [
-                        [/[^\\"]+/, 'string'],
-                        [/\\./, 'string.escape'],
-                        [/"/, 'string', '@pop']
-                    ],
-                    string_single: [
-                        [/[^\\']+/, 'string'],
-                        [/\\./, 'string.escape'],
-                        [/'/, 'string', '@pop']
+                // Set up SQL language features
+                monaco.languages.setMonarchTokensProvider('sql', {
+                    tokenizer: {
+                        root: [
+                            [/[a-zA-Z_]\w*/, {
+                                cases: {
+                                    '@keywords': 'keyword',
+                                    '@builtins': 'type.identifier',
+                                    '@default': 'identifier'
+                                }
+                            }],
+                            [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
+                            [/\d+/, 'number'],
+                            [/"/, 'string', '@string_double'],
+                            [/'/, 'string', '@string_single'],
+                            [/[/*+\-<>!=&|~%]/, 'operators'],
+                            [/[;,.()]/, 'delimiter']
+                        ],
+                        string_double: [
+                            [/[^\\"]+/, 'string'],
+                            [/\\./, 'string.escape'],
+                            [/"/, 'string', '@pop']
+                        ],
+                        string_single: [
+                            [/[^\\']+/, 'string'],
+                            [/\\./, 'string.escape'],
+                            [/'/, 'string', '@pop']
+                        ]
+                    },
+                    keywords: [
+                        'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER',
+                        'TABLE', 'INDEX', 'VIEW', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
+                        'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'DISTINCT',
+                        'AS', 'ON', 'AND', 'OR', 'NOT', 'IN', 'EXISTS', 'BETWEEN', 'LIKE', 'IS', 'NULL',
+                        'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'COALESCE', 'CAST', 'CONVERT'
                     ]
-                },
-                keywords: [
-                    'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER',
-                    'TABLE', 'INDEX', 'VIEW', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
-                    'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'DISTINCT',
-                    'AS', 'ON', 'AND', 'OR', 'NOT', 'IN', 'EXISTS', 'BETWEEN', 'LIKE', 'IS', 'NULL',
-                    'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'COALESCE', 'CAST', 'CONVERT'
-                ]
-            });
+                });
 
-            queryEditor = monaco.editor.create(document.getElementById('queryEditor'), {
-                value: 'SELECT * FROM read_file(\'users.csv\') LIMIT 10',
-                language: 'sql',
-                theme: 'vs',
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                wordWrap: 'on'
-            });
+                queryEditor = monaco.editor.create(document.getElementById('queryEditor'), {
+                    value: 'SELECT * FROM read_file(\'users.csv\') LIMIT 10',
+                    language: 'sql',
+                    theme: 'vs',
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                    wordWrap: 'on',
+                    fontSize: 14,
+                    lineNumbers: 'on',
+                    roundedSelection: false,
+                    readOnly: false,
+                    cursorStyle: 'line',
+                    brackets: ['(', ')', '[', ']', '{', '}'],
+                    autoClosingBrackets: 'always',
+                    autoIndent: 'full',
+                    formatOnPaste: true,
+                    formatOnType: true,
+                    suggestOnTriggerCharacters: true,
+                    quickSuggestions: true,
+                    parameterHints: { enabled: true }
+                });
+
+                // Add keyboard shortcuts
+                queryEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, function () {
+                    executeQuery();
+                });
+
+                queryEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
+                    saveQuery();
+                });
+
+                queryEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, function () {
+                    // Trigger find action
+                    queryEditor.getAction('actions.find').run();
+                });
+
+                // Add SQL auto-completion
+                monaco.languages.registerCompletionItemProvider('sql', {
+                    provideCompletionItems: function (model, position) {
+                        var word = model.getWordUntilPosition(position);
+                        var range = {
+                            startLineNumber: position.lineNumber,
+                            endLineNumber: position.lineNumber,
+                            startColumn: word.startColumn,
+                            endColumn: word.endColumn
+                        };
+
+                        return {
+                            suggestions: [
+                                {
+                                    label: 'SELECT',
+                                    kind: monaco.languages.CompletionItemKind.Keyword,
+                                    insertText: 'SELECT ',
+                                    range: range
+                                },
+                                {
+                                    label: 'FROM',
+                                    kind: monaco.languages.CompletionItemKind.Keyword,
+                                    insertText: 'FROM ',
+                                    range: range
+                                },
+                                {
+                                    label: 'WHERE',
+                                    kind: monaco.languages.CompletionItemKind.Keyword,
+                                    insertText: 'WHERE ',
+                                    range: range
+                                },
+                                {
+                                    label: 'INSERT INTO',
+                                    kind: monaco.languages.CompletionItemKind.Snippet,
+                                    insertText: 'INSERT INTO ${1:table_name} (${2:columns}) VALUES (${3:values});',
+                                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                    range: range
+                                },
+                                {
+                                    label: 'CREATE TABLE',
+                                    kind: monaco.languages.CompletionItemKind.Snippet,
+                                    insertText: 'CREATE TABLE ${1:table_name} (\n\t${2:id} INT PRIMARY KEY,\n\t${3:name} VARCHAR(255)\n);',
+                                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                    range: range
+                                },
+                                {
+                                    label: 'read_file',
+                                    kind: monaco.languages.CompletionItemKind.Function,
+                                    insertText: 'read_file(\'${1:filename}\')',
+                                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                    range: range
+                                }
+                            ]
+                        };
+                    }
+                });
+
+                queryEditor.onDidChangeModelContent(() => {
+                    updateQueryStats();
+                });
+            } catch (error) {
+                console.warn('Monaco Editor failed to load, falling back to textarea:', error);
+                // Show fallback textarea
+                document.getElementById('queryEditor').style.display = 'none';
+                document.getElementById('queryEditorFallback').style.display = 'block';
+                document.getElementById('queryEditorFallback').value = 'SELECT * FROM read_file(\'users.csv\') LIMIT 10';
+
+                // Update functions to work with textarea
+                queryEditor = {
+                    getValue: function () { return document.getElementById('queryEditorFallback').value; },
+                    setValue: function (value) { document.getElementById('queryEditorFallback').value = value; }
+                };
+            }
         });
 
         // Initialize Performance Chart
