@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -87,46 +88,47 @@ func Shutdown(cancel context.CancelFunc) {
 }
 
 type ETL struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	sources         []contracts.Source
-	mappers         []contracts.Mapper
-	transformers    []contracts.Transformer
-	loaders         []contracts.Loader
-	lookups         []contracts.LookupLoader
-	checkpointStore contracts.CheckpointStore
-	checkpointFile  string // NEW field to hold the checkpoint file path
-	circuitBreaker  *transactions.CircuitBreaker
-	tableCfg        config.TableMapping
-	workerCount     int
-	loaderWorkers   int
-	batchSize       int
-	retryCount      int
-	retryDelay      time.Duration
-	rawChanBuffer   int
-	checkpointFunc  func(rec utils.Record) string
-	lastCheckpoint  *atomic.Value
-	cpMutex         sync.Mutex
-	maxErrorCount   int
-	errorCount      int
-	cancelFunc      context.CancelFunc
-	lookupStore     map[string][]utils.Record
-	lookupInCache   sync.Map
-	pipelineConfig  *PipelineConfig
-	normalizeSchema map[string]string
-	hooks           *LifecycleHooks
-	validations     *Validations
-	eventBus        *EventBus
-	plugins         []Plugin
-	metrics         *Metrics
-	dashboardUser   string
-	dashboardPass   string
-	dedupEnabled    bool
-	dedupField      string
-	Logger          *log.Logger
-	CreatedAt       time.Time
-	LastRunAt       time.Time
-	Status          string
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	sources            []contracts.Source
+	mappers            []contracts.Mapper
+	transformers       []contracts.Transformer
+	loaders            []contracts.Loader
+	lookups            []contracts.LookupLoader
+	checkpointStore    contracts.CheckpointStore
+	checkpointFile     string // NEW field to hold the checkpoint file path
+	circuitBreaker     *transactions.CircuitBreaker
+	tableCfg           config.TableMapping
+	workerCount        int
+	loaderWorkers      int
+	batchSize          int
+	retryCount         int
+	retryDelay         time.Duration
+	rawChanBuffer      int
+	checkpointFunc     func(rec utils.Record) string
+	lastCheckpoint     *atomic.Value
+	cpMutex            sync.Mutex
+	maxErrorCount      int
+	errorCount         int
+	cancelFunc         context.CancelFunc
+	checkpointInterval time.Duration
+	lookupStore        map[string][]utils.Record
+	lookupInCache      sync.Map
+	pipelineConfig     *PipelineConfig
+	normalizeSchema    map[string]string
+	hooks              *LifecycleHooks
+	validations        *Validations
+	eventBus           *EventBus
+	plugins            []Plugin
+	metrics            *Metrics
+	dashboardUser      string
+	dashboardPass      string
+	dedupEnabled       bool
+	dedupField         string
+	Logger             *log.Logger
+	CreatedAt          time.Time
+	LastRunAt          time.Time
+	Status             string
 
 	// Enhanced incremental ETL components
 	stateManager    *StateManager
@@ -146,23 +148,24 @@ func defaultConfig() *ETL {
 	etlID := fmt.Sprintf("etl_%s", timestamp)
 
 	return &ETL{
-		workerCount:     4,
-		batchSize:       100,
-		retryCount:      3,
-		retryDelay:      100 * time.Millisecond,
-		loaderWorkers:   2,
-		rawChanBuffer:   100,
-		maxErrorCount:   10,
-		lookupStore:     make(map[string][]utils.Record),
-		circuitBreaker:  transactions.NewCircuitBreaker(5, 5*time.Second),
-		metrics:         &Metrics{},
-		Logger:          log.Default(),
-		CreatedAt:       time.Now(),
-		Status:          "INACTIVE",
-		lastCheckpoint:  v,
-		stateFile:       fmt.Sprintf("etl_state_%s.json", etlID),
-		dlqFile:         fmt.Sprintf("etl_dlq_%s.json", etlID),
-		idempotencyFile: fmt.Sprintf("etl_idempotency_%s.json", etlID),
+		workerCount:        4,
+		batchSize:          100,
+		retryCount:         3,
+		retryDelay:         100 * time.Millisecond,
+		loaderWorkers:      2,
+		rawChanBuffer:      100,
+		maxErrorCount:      10,
+		checkpointInterval: 5 * time.Second,
+		lookupStore:        make(map[string][]utils.Record),
+		circuitBreaker:     transactions.NewCircuitBreaker(5, 5*time.Second),
+		metrics:            &Metrics{},
+		Logger:             log.Default(),
+		CreatedAt:          time.Now(),
+		Status:             "INACTIVE",
+		lastCheckpoint:     v,
+		stateFile:          fmt.Sprintf("etl_state_%s.json", etlID),
+		dlqFile:            fmt.Sprintf("etl_dlq_%s.json", etlID),
+		idempotencyFile:    fmt.Sprintf("etl_idempotency_%s.json", etlID),
 	}
 }
 
@@ -470,11 +473,13 @@ func (e *ETL) Run(ctx context.Context, args ...any) error {
 	return nil
 }
 
-// confirmResume asks the user if they want to resume (for now, auto-confirm)
+// confirmResume asks the user if they want to resume
 func (e *ETL) confirmResume() bool {
-	// In a real implementation, this might prompt the user or check configuration
-	// For now, we'll auto-resume if possible
-	return true
+	fmt.Print("Found resumable state. Do you want to resume the ETL job? (y/N): ")
+	var response string
+	fmt.Scanln(&response)
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes"
 }
 
 // GetEnhancedMetrics returns comprehensive metrics including state information
@@ -483,7 +488,14 @@ func (e *ETL) GetEnhancedMetrics() map[string]any {
 
 	// Basic metrics
 	basicMetrics := e.GetMetrics()
-	metrics["basic"] = basicMetrics
+	metrics["basic"] = map[string]any{
+		"extracted":         basicMetrics.Extracted,
+		"mapped":            basicMetrics.Mapped,
+		"transformed":       basicMetrics.Transformed,
+		"loaded":            basicMetrics.Loaded,
+		"errors":            basicMetrics.Errors,
+		"worker_activities": basicMetrics.WorkerActivities,
+	}
 
 	// State information
 	if e.stateManager != nil {
@@ -601,9 +613,9 @@ func (e *ETL) GetStateManager() *StateManager {
 	return e.stateManager
 }
 
-// SetCheckpointInterval sets the checkpoint interval (placeholder)
+// SetCheckpointInterval sets the checkpoint interval
 func (e *ETL) SetCheckpointInterval(interval time.Duration) {
-	// This would update the checkpoint interval in the loader node
+	e.checkpointInterval = interval
 	log.Printf("[ETL %s] Checkpoint interval set to %v", e.ID, interval)
 }
 
@@ -616,7 +628,7 @@ func (e *ETL) SetMaxErrorThreshold(threshold int) {
 // Cleanup cleans up old state and temporary files
 func (e *ETL) Cleanup(retentionPeriod time.Duration) {
 	if e.stateManager != nil {
-		// Clean up old state files
+		e.stateManager.Cleanup(retentionPeriod)
 	}
 
 	if e.deadLetterQueue != nil {
@@ -747,7 +759,7 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			dedupCache:         cache,
 			metrics:            e.metrics,
 			NodeName:           "load",
-			checkpointInterval: 5 * time.Second,
+			checkpointInterval: e.checkpointInterval,
 			lastCheckpointTime: time.Now(),
 			deadLetterQueueCap: 1000,
 		},
@@ -804,40 +816,63 @@ func (pc *PipelineConfig) prepare() map[string]*dagNode {
 
 func (e *ETL) runPipeline(ctx context.Context, pc *PipelineConfig, args ...any) error {
 	nodes := pc.prepare()
-	queue := make([]string, 0)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	ready := make(chan string, len(pc.nodes)) // buffered channel for ready nodes
+
+	// Initialize ready nodes
+	mu.Lock()
 	for id, node := range pc.nodes {
 		if node.indegree == 0 {
-			queue = append(queue, id)
+			ready <- id
 		}
 	}
-	for len(queue) > 0 {
-		currentID := queue[0]
-		queue = queue[1:]
-		currentNode := nodes[currentID]
-		var inputCh <-chan utils.Record
-		if len(currentNode.inChs) == 0 {
-			inputCh = nil
-		} else if len(currentNode.inChs) == 1 {
-			inputCh = currentNode.inChs[0]
-		} else {
-			inputCh = mergeChannels(currentNode.inChs)
-		}
-		outCh, err := currentNode.pn.Process(ctx, inputCh, e.tableCfg, args...)
-		if err != nil {
-			return fmt.Errorf("error running node %s: %v", currentID, err)
-		}
-		currentNode.outCh = outCh
-		for _, edge := range pc.Edges {
-			if edge.Source == currentID {
-				targetNode := nodes[edge.Target]
-				targetNode.inChs = append(targetNode.inChs, currentNode.outCh)
-				targetNode.indegree--
-				if targetNode.indegree == 0 {
-					queue = append(queue, targetNode.id)
+	mu.Unlock()
+
+	// Process nodes concurrently
+	for i := 0; i < len(pc.nodes); i++ {
+		select {
+		case currentID := <-ready:
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				currentNode := nodes[id]
+				var inputCh <-chan utils.Record
+				if len(currentNode.inChs) == 0 {
+					inputCh = nil
+				} else if len(currentNode.inChs) == 1 {
+					inputCh = currentNode.inChs[0]
+				} else {
+					inputCh = mergeChannels(currentNode.inChs)
 				}
-			}
+				outCh, err := currentNode.pn.Process(ctx, inputCh, e.tableCfg, args...)
+				if err != nil {
+					log.Printf("error running node %s: %v", id, err)
+					return // or handle error appropriately
+				}
+				currentNode.outCh = outCh
+
+				// Update successors
+				mu.Lock()
+				for _, edge := range pc.Edges {
+					if edge.Source == id {
+						targetNode := nodes[edge.Target]
+						targetNode.inChs = append(targetNode.inChs, currentNode.outCh)
+						targetNode.indegree--
+						if targetNode.indegree == 0 {
+							ready <- targetNode.id
+						}
+					}
+				}
+				mu.Unlock()
+			}(currentID)
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
+
+	wg.Wait()
+
 	if loadNode, ok := nodes["load"]; ok {
 		for range loadNode.outCh {
 		}

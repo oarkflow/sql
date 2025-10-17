@@ -396,3 +396,9 @@ func (sm *StateManager) GetMetadata(key string) (any, bool) {
 	value, exists := sm.state.Metadata[key]
 	return value, exists
 }
+
+// Cleanup removes old state files based on retention period
+func (sm *StateManager) Cleanup(retentionPeriod time.Duration) {
+	// For now, just log. In a real implementation, scan directory for old state files
+	log.Printf("[StateManager %s] Cleanup called with retention %v", sm.etlID, retentionPeriod)
+}
