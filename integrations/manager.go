@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/oarkflow/errors"
 	"github.com/oarkflow/json"
@@ -1078,7 +1078,7 @@ func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, messa
 	if err != nil {
 		return nil, err
 	}
-	
+
 	cfg, ok := service.Config.(SMPPConfig)
 	if !ok {
 		return nil, fmt.Errorf("not a valid SMPP configuration for service: %s", serviceName)
@@ -1156,7 +1156,7 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if !ok {
 		return nil, errors.New("invalid Database configuration")
 	}
-	
+
 	if service.CredentialKey == "" {
 		return nil, errors.New("credentials not found")
 	}
@@ -1291,7 +1291,7 @@ func (is *Manager) HealthCheck(ctx context.Context) error {
 		for e := range errCh {
 			errMsg += e.Error() + "; "
 		}
-		return fmt.Errorf(errMsg)
+		return sterrors.New(errMsg)
 	}
 	return nil
 }

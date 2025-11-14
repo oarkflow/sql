@@ -275,6 +275,13 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 				tableCfg.ValueField,
 			))
 		}
+		if len(tableCfg.Transformers) > 0 {
+			built, err := transformers.BuildTransformers(tableCfg.Transformers)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build transformers: %w", err)
+			}
+			opts = append(opts, WithTransformers(built...))
+		}
 		id := wuid.New().String()
 		etlJob := NewETL(id, id, opts...)
 		var lookups []contracts.LookupLoader

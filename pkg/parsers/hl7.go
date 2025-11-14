@@ -2,6 +2,7 @@ package parsers
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,127 @@ func NewHL7Parser() *HL7Parser {
 		repetitionSeparator:   "~",
 		escapeCharacter:       "\\",
 	}
+}
+
+var segmentFieldNames = map[string][]string{
+	"MSH": {
+		"encoding_characters",
+		"sending_application",
+		"sending_facility",
+		"receiving_application",
+		"receiving_facility",
+		"datetime_of_message",
+		"security",
+		"message_type",
+		"message_control_id",
+		"processing_id",
+		"version_id",
+		"sequence_number",
+		"continuation_pointer",
+		"accept_acknowledgment_type",
+		"application_acknowledgment_type",
+		"country_code",
+		"character_set",
+		"principal_language_of_message",
+		"alternate_character_set_handling_scheme",
+		"message_profile_identifier",
+		"sending_responsible_organization",
+		"receiving_responsible_organization",
+		"sending_network_address",
+		"receiving_network_address",
+	},
+	"PID": {
+		"set_id",
+		"patient_id",
+		"patient_identifier_list",
+		"alternate_patient_id",
+		"patient_name",
+		"mother_maiden_name",
+		"datetime_of_birth",
+		"administrative_sex",
+		"patient_alias",
+		"race",
+		"patient_address",
+		"county_code",
+		"phone_number_home",
+		"phone_number_business",
+		"primary_language",
+		"marital_status",
+		"religion",
+		"patient_account_number",
+		"ssn_number",
+		"drivers_license_number",
+		"mothers_identifier",
+		"ethnic_group",
+		"birth_place",
+		"multiple_birth_indicator",
+		"birth_order",
+		"citizenship",
+		"veterans_military_status",
+		"nationality",
+		"patient_death_datetime",
+		"patient_death_indicator",
+		"identity_unknown_indicator",
+		"identity_reliability_code",
+		"last_update_datetime",
+		"last_update_facility",
+		"species_code",
+		"breed_code",
+		"strain",
+		"production_class_code",
+		"tribal_citizenship",
+	},
+	"PV1": {
+		"set_id",
+		"patient_class",
+		"assigned_patient_location",
+		"admission_type",
+		"preadmit_number",
+		"prior_patient_location",
+		"attending_doctor",
+		"referring_doctor",
+		"consulting_doctor",
+		"hospital_service",
+		"temporary_location",
+		"preadmit_test_indicator",
+		"readmission_indicator",
+		"admit_source",
+		"ambulatory_status",
+		"vip_indicator",
+		"admitting_doctor",
+		"patient_type",
+		"visit_number",
+		"financial_class",
+		"charge_price_indicator",
+		"courtesy_code",
+		"credit_rating",
+		"contract_code",
+		"contract_effective_date",
+		"contract_amount",
+		"contract_period",
+		"interest_code",
+		"transfer_to_bad_debt_code",
+		"transfer_to_bad_debt_date",
+		"bad_debt_agency_code",
+		"bad_debt_transfer_amount",
+		"bad_debt_recovery_amount",
+		"delete_account_indicator",
+		"delete_account_date",
+		"discharge_disposition",
+		"discharged_to_location",
+		"diet_type",
+		"servicing_facility",
+		"bed_status",
+		"account_status",
+		"pending_location",
+		"prior_temporary_location",
+		"admit_datetime",
+		"discharge_datetime",
+		"current_patient_balance",
+		"total_charges",
+		"total_adjustments",
+		"total_payments",
+	},
 }
 
 // Detect checks if the data is a valid HL7 message
@@ -102,6 +224,92 @@ func (p *HL7Parser) ParseString(message string) (map[string]any, error) {
 	}
 
 	return result, nil
+}
+
+func (p *HL7Parser) toNamedSegments(raw map[string]any) map[string]any {
+	named := make(map[string]any, len(raw))
+	for segment, data := range raw {
+		records, ok := data.([]map[string]any)
+		if !ok {
+			named[segment] = data
+			continue
+		}
+		defs := segmentFieldNames[segment]
+		converted := make([]map[string]any, len(records))
+		for i, rec := range records {
+			converted[i] = p.mapSegmentFields(rec, defs)
+		}
+		named[segment] = converted
+	}
+	return named
+}
+
+func (p *HL7Parser) mapSegmentFields(fields map[string]any, defs []string) map[string]any {
+	converted := make(map[string]any, len(fields))
+	for key, val := range fields {
+		name := resolveFieldName(key, defs)
+		converted[name] = p.normalizeHL7Value(val)
+	}
+	return converted
+}
+
+func resolveFieldName(key string, defs []string) string {
+	idx, err := strconv.Atoi(key)
+	if err != nil || idx <= 0 {
+		if key == "" {
+			return "field"
+		}
+		return key
+	}
+	if idx <= len(defs) {
+		if label := defs[idx-1]; label != "" {
+			return label
+		}
+	}
+	return fmt.Sprintf("field_%d", idx)
+}
+
+func (p *HL7Parser) normalizeHL7Value(value any) any {
+	switch v := value.(type) {
+	case string:
+		return p.expandFieldValue(v)
+	case []string:
+		if len(v) == 1 {
+			return p.expandFieldValue(v[0])
+		}
+		result := make([]any, len(v))
+		for i, item := range v {
+			result[i] = p.expandFieldValue(item)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+func (p *HL7Parser) expandFieldValue(field string) any {
+	if field == "" {
+		return ""
+	}
+	if strings.Contains(field, p.componentSeparator) {
+		components := strings.Split(field, p.componentSeparator)
+		result := make(map[string]any, len(components))
+		for i, comp := range components {
+			key := fmt.Sprintf("component_%d", i+1)
+			if strings.Contains(comp, p.subcomponentSeparator) {
+				subs := strings.Split(comp, p.subcomponentSeparator)
+				subMap := make(map[string]string, len(subs))
+				for idx, sub := range subs {
+					subMap[fmt.Sprintf("subcomponent_%d", idx+1)] = sub
+				}
+				result[key] = subMap
+			} else {
+				result[key] = comp
+			}
+		}
+		return result
+	}
+	return field
 }
 
 // ParseTyped parses an HL7 message into a typed struct based on message type
@@ -200,55 +408,12 @@ func (p *HL7Parser) parseField(field string) any {
 		return field
 	}
 
-	// Check for repetitions
 	if strings.Contains(field, p.repetitionSeparator) {
 		repetitions := strings.Split(field, p.repetitionSeparator)
-		result := make([]any, len(repetitions))
-		for i, rep := range repetitions {
-			result[i] = p.parseComponents(rep)
-		}
-		return result
+		return repetitions
 	}
 
-	return p.parseComponents(field)
-}
-
-// parseComponents parses components within a field
-func (p *HL7Parser) parseComponents(field string) any {
-	if !strings.Contains(field, p.componentSeparator) {
-		return field
-	}
-
-	components := strings.Split(field, p.componentSeparator)
-	if len(components) == 1 {
-		return field
-	}
-
-	result := make([]any, len(components))
-	for i, comp := range components {
-		result[i] = p.parseSubcomponents(comp)
-	}
-
-	return result
-}
-
-// parseSubcomponents parses subcomponents within a component
-func (p *HL7Parser) parseSubcomponents(component string) any {
-	if !strings.Contains(component, p.subcomponentSeparator) {
-		return component
-	}
-
-	subcomponents := strings.Split(component, p.subcomponentSeparator)
-	if len(subcomponents) == 1 {
-		return component
-	}
-
-	result := make([]any, len(subcomponents))
-	for i, subcomp := range subcomponents {
-		result[i] = subcomp
-	}
-
-	return result
+	return field
 }
 
 // getMessageType extracts message type from MSH data
@@ -1138,16 +1303,49 @@ func (p *HL7Parser) reconstructEncodingCharacters(val any) string {
 }
 
 func (p *HL7Parser) getString(val any) string {
-	if str, ok := val.(string); ok {
-		return str
+	switch v := val.(type) {
+	case string:
+		return v
+	case []string:
+		if len(v) > 0 {
+			return v[0]
+		}
+		return ""
+	case []any:
+		return p.joinComponents(v, p.componentSeparator)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-	return ""
+}
+
+func (p *HL7Parser) joinComponents(values []any, separator string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, len(values))
+	for i, item := range values {
+		switch nested := item.(type) {
+		case string:
+			parts[i] = nested
+		case []any:
+			parts[i] = p.joinComponents(nested, p.subcomponentSeparator)
+		case nil:
+			parts[i] = ""
+		default:
+			parts[i] = fmt.Sprintf("%v", nested)
+		}
+	}
+	return strings.Join(parts, separator)
 }
 
 func (p *HL7Parser) getStringSlice(val any) []string {
 	switch v := val.(type) {
 	case string:
 		return []string{v}
+	case []string:
+		return append([]string(nil), v...)
 	case []any:
 		result := make([]string, len(v))
 		for i, item := range v {
@@ -1362,31 +1560,36 @@ func (p *HL7Parser) parseCXList(val any) []*CX {
 		if cx := p.parseCX(v); cx != nil {
 			return []*CX{cx}
 		}
-	case []any:
+	case []string:
 		result := make([]*CX, 0, len(v))
 		for _, item := range v {
 			if cx := p.parseCX(item); cx != nil {
 				result = append(result, cx)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
+
 func (p *HL7Parser) parseXPNList(val any) []*XPN {
 	switch v := val.(type) {
 	case string:
 		if xpn := p.parseXPN(v); xpn != nil {
 			return []*XPN{xpn}
 		}
-	case []any:
+	case []string:
 		result := make([]*XPN, 0, len(v))
 		for _, item := range v {
 			if xpn := p.parseXPN(item); xpn != nil {
 				result = append(result, xpn)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
@@ -1519,14 +1722,16 @@ func (p *HL7Parser) parseXADList(val any) []*XAD {
 		if xad := p.parseXAD(v); xad != nil {
 			return []*XAD{xad}
 		}
-	case []any:
+	case []string:
 		result := make([]*XAD, 0, len(v))
 		for _, item := range v {
 			if xad := p.parseXAD(item); xad != nil {
 				result = append(result, xad)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
@@ -1583,14 +1788,16 @@ func (p *HL7Parser) parseXTNList(val any) []*XTN {
 		if xtn := p.parseXTN(v); xtn != nil {
 			return []*XTN{xtn}
 		}
-	case []any:
+	case []string:
 		result := make([]*XTN, 0, len(v))
 		for _, item := range v {
 			if xtn := p.parseXTN(item); xtn != nil {
 				result = append(result, xtn)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
@@ -1697,14 +1904,16 @@ func (p *HL7Parser) parseEISlice(val any) []*EI {
 		if ei := p.parseEI(v); ei != nil {
 			return []*EI{ei}
 		}
-	case []any:
+	case []string:
 		result := make([]*EI, 0, len(v))
 		for _, item := range v {
 			if ei := p.parseEI(item); ei != nil {
 				result = append(result, ei)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
@@ -1755,14 +1964,16 @@ func (p *HL7Parser) parseXONList(val any) []*XON {
 		if xon := p.parseXON(v); xon != nil {
 			return []*XON{xon}
 		}
-	case []any:
+	case []string:
 		result := make([]*XON, 0, len(v))
 		for _, item := range v {
 			if xon := p.parseXON(item); xon != nil {
 				result = append(result, xon)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }
@@ -3736,14 +3947,16 @@ func (p *HL7Parser) parseXCNList(val any) []*XCN {
 		if xcn := p.parseXCN(v); xcn != nil {
 			return []*XCN{xcn}
 		}
-	case []any:
+	case []string:
 		result := make([]*XCN, 0, len(v))
 		for _, item := range v {
 			if xcn := p.parseXCN(item); xcn != nil {
 				result = append(result, xcn)
 			}
 		}
-		return result
+		if len(result) > 0 {
+			return result
+		}
 	}
 	return nil
 }

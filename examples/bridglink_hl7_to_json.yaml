@@ -1,0 +1,31 @@
+version: "1.0"
+metadata:
+  name: hl7-to-json-sample
+connectors:
+  hl7_inbox:
+    protocol: hl7
+    format: hl7
+    config:
+      file: ./examples/data/hl7_sample.hl7
+  json_out:
+    protocol: json
+    format: json
+    config:
+      file: ./examples/data/hl7_output.json
+pipelines:
+  - id: hl7_to_json
+    name: hl7_to_json
+    source: hl7_inbox
+    destinations:
+      - json_out
+    parsers:
+      - name: hl7
+        options:
+          input_field: raw_message
+          json_field: payload_json
+          xml_field: payload_xml
+          segments_field: hl7_segments
+          message_type_field: hl7_message_type
+          control_id_field: hl7_control_id
+          timestamp_field: hl7_timestamp
+    transforms: []

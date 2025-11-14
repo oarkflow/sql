@@ -25,6 +25,15 @@ tables "sample" {
     normalize_schema: {
         id =          "serial"
 		name =        "string"
-		description = "string"
+            description = "string"
+            created_on =  "timestamp"
+    }
+    transformers "format-created-on" {
+        type: "field_formatter"
+        options = {
+            fields = {
+                created_on_iso = "transform(created_on, \"YYYY-MM-DD\", \"MM/DD/YYYY\", \"YYYY-MM-DD\")"
+            }
+        }
     }
 }

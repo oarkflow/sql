@@ -9,6 +9,7 @@ A powerful ETL (Extract, Transform, Load) tool for data processing with both CLI
 - **Web Interface**: Server mode with a web dashboard for job monitoring
 - **Real-time Metrics**: Detailed metrics including WorkerActivities tracking
 - **Graceful Shutdown**: Proper signal handling for clean shutdowns
+- **BridgLink Pipelines**: Describe complex source → parser → transform → destination workflows using YAML/JSON/BCL, including out-of-the-box HL7 → XML/JSON conversions.
 
 ## Installation
 
@@ -17,6 +18,30 @@ go build -o etl ./cmd/cli
 ```
 
 ## Usage
+
+### BridgLink HL7 Pipelines
+
+The BridgLink manager compiles high-level pipeline definitions into ETL jobs. A sample configuration is provided at `examples/bridglink_hl7_to_json.yaml`, which ingests HL7 messages from `examples/data/hl7_sample.hl7`, converts them to JSON/XML, and writes the payload to `examples/data/hl7_output.json`.
+
+Programmatic execution:
+
+```go
+cfg, err := config.LoadBridgLinkConfig("examples/bridglink_hl7_to_json.yaml")
+if err != nil {
+  log.Fatal(err)
+}
+
+manager, err := bridglink.NewManager(cfg, etl.NewManager())
+if err != nil {
+  log.Fatal(err)
+}
+
+if _, err := manager.RunPipeline(context.Background(), "hl7_to_json"); err != nil {
+  log.Fatal(err)
+}
+```
+
+The configuration supports multiple connectors, routing rules, and transformation chains. HL7 transformers emit JSON, XML, typed structures, and metadata fields that downstream destinations can leverage. HTTP/webhook destinations can be declared using the `protocol: http` connector.
 
 ### Synchronous ETL Execution
 
@@ -183,6 +208,35 @@ tables:
 }
 ```
 
+## Field Formatting Transformers
+
+Table mappings can declare formatting pipelines inside the existing `transformers` block using the new `field_formatter` type. Each entry exposes a per-field mini DSL where you can chain operations with `|`—for example, convert a date into a canonical format and then upper-case it.
+
+```bcl
+tables "users" {
+  transformers = [{
+    name: "format-dates"
+    type: "field_formatter"
+    options = {
+      fields = {
+        created_on_iso = "transform(created_on, \"YYYY-MM-DD\", \"DDMMYYYY\")|default(\"1970-01-01\")"
+        user_code      = "copy(user_id)|prefix(\"USR-\")|uppercase()"
+      }
+    }
+  }]
+}
+```
+
+Available operations today:
+
+- `transform(srcField, outputPattern, inputPattern...)` – parse a value (supporting multiple input formats) and emit it using a Moment-style pattern.
+- `copy(field)` / `set(value)` – seed the pipeline from another field or literal.
+- `default(value)` – fallback when the current value is empty.
+- `uppercase()`, `lowercase()`, `trim()` – string utilities.
+- `prefix(value)`, `suffix(value)` and `replace(old, new)` – adjust text after formatting.
+
+You can combine as many steps as needed; the pipeline runs sequentially for every record before the destination loaders execute.
+
 ## Job Statuses
 
 - **pending**: Job is queued and waiting to be processed
@@ -207,6 +261,9 @@ Each completed job provides detailed metrics:
 ## Examples
 
 See the `examples/` directory for sample configurations and usage examples.
+
+- `config_csv_to_json.bcl` – reads CSV input and writes JSON output while exercising the field formatter transformer.
+- `config_hl7_to_json.bcl` – streams HL7 messages from `data/hl7_sample.hl7`, runs the built-in HL7 transformer, and writes enriched JSON records to `data/hl7_messages.json`.
 
 ## Development
 

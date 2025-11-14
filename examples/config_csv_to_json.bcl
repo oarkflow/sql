@@ -1,0 +1,37 @@
+sources "events-csv" {
+    type: "csv"
+    key: "events-csv"
+    file: "./data/sample_events.csv"
+}
+
+destinations "events-json" {
+    type: "json"
+    key: "events-json"
+    format: "json"
+    file: "./data/sample_events_output.json"
+}
+
+tables "events" {
+    new_name: "./data/sample_events_output.json"
+    migrate: true
+    clone_source: true
+    batch_size: 100
+    destination_key: "events-json"
+    mapping = {
+        event_id = "event_id"
+        event_name = "event_name"
+        event_date_raw = "event_date"
+        event_date_iso = "event_date"
+        event_status = "event_status"
+    }
+    transformers "format-events" {
+        type: "field_formatter"
+        options = {
+            fields = {
+                event_name = "trim(event_name)|uppercase()"
+                event_date_iso = "transform(event_date_raw, \"YYYY-MM-DD\", \"DDMMYYYY\")"
+                event_status = "uppercase(event_status)"
+            }
+        }
+    }
+}

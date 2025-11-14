@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	etlCfg, err := config.Load("config.bcl")
+	etlCfg, err := config.Load("config_csv_to_json.bcl")
 	if err != nil {
 		log.Fatalf("Config load error: %v", err)
 	}

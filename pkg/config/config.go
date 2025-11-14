@@ -15,20 +15,21 @@ import (
 )
 
 type DataConfig struct {
-	Key           string `yaml:"key" json:"key"`
-	Type          string `yaml:"type" json:"type"`
-	Host          string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port          int    `yaml:"port,omitempty" json:"port,omitempty"`
-	Driver        string `yaml:"driver,omitempty" json:"driver,omitempty"`
-	Username      string `yaml:"username,omitempty" json:"username,omitempty"`
-	Password      string `yaml:"password,omitempty" json:"password,omitempty"`
-	Database      string `yaml:"database,omitempty" json:"database,omitempty"`
-	File          string `yaml:"file,omitempty" json:"file,omitempty"`
-	DisableLogger bool   `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
-	Table         string `yaml:"table" json:"table"`
-	Source        string `yaml:"source" json:"source"`
-	Format        string `yaml:"format" json:"format"`
-	DataPath      string `yaml:"data_path,omitempty" json:"data_path,omitempty"`
+	Key           string         `yaml:"key" json:"key"`
+	Type          string         `yaml:"type" json:"type"`
+	Host          string         `yaml:"host,omitempty" json:"host,omitempty"`
+	Port          int            `yaml:"port,omitempty" json:"port,omitempty"`
+	Driver        string         `yaml:"driver,omitempty" json:"driver,omitempty"`
+	Username      string         `yaml:"username,omitempty" json:"username,omitempty"`
+	Password      string         `yaml:"password,omitempty" json:"password,omitempty"`
+	Database      string         `yaml:"database,omitempty" json:"database,omitempty"`
+	File          string         `yaml:"file,omitempty" json:"file,omitempty"`
+	DisableLogger bool           `yaml:"disablelogger,omitempty" json:"disablelogger,omitempty"`
+	Table         string         `yaml:"table" json:"table"`
+	Source        string         `yaml:"source" json:"source"`
+	Format        string         `yaml:"format" json:"format"`
+	DataPath      string         `yaml:"data_path,omitempty" json:"data_path,omitempty"`
+	Settings      map[string]any `yaml:"settings,omitempty" json:"settings,omitempty"`
 }
 
 func ToDatabaseConfig(dc squealx.Config) DataConfig {
@@ -56,29 +57,36 @@ func (dc DataConfig) ToSquealxConfig() squealx.Config {
 }
 
 type TableMapping struct {
-	OldName             string            `yaml:"old_name" json:"old_name"`
-	NewName             string            `yaml:"new_name" json:"new_name"`
-	Migrate             bool              `yaml:"migrate" json:"migrate"`
-	CloneSource         bool              `yaml:"clone_source" json:"clone_source"`
-	BatchSize           int               `yaml:"batch_size" json:"batch_size"`
-	SkipStoreError      bool              `yaml:"skip_store_error" json:"skip_store_error"`
-	UpdateSequence      bool              `yaml:"update_sequence" json:"update_sequence"`
-	TruncateDestination bool              `yaml:"truncate_destination" json:"truncate_destination"`
-	Mapping             map[string]string `yaml:"mapping" json:"mapping"`
-	Query               string            `yaml:"query,omitempty" json:"query,omitempty"`
-	KeyValueTable       bool              `yaml:"key_value_table,omitempty" json:"key_value_table,omitempty"`
-	KeyField            string            `yaml:"key_field,omitempty" json:"key_field,omitempty"`
-	ValueField          string            `yaml:"value_field,omitempty" json:"value_field,omitempty"`
-	ExtraValues         map[string]any    `yaml:"extra_values,omitempty" json:"extra_values,omitempty"`
-	IncludeFields       []string          `yaml:"include_fields,omitempty" json:"include_fields,omitempty"`
-	ExcludeFields       []string          `yaml:"exclude_fields,omitempty" json:"exclude_fields,omitempty"`
-	AutoCreateTable     bool              `yaml:"auto_create_table,omitempty" json:"auto_create_table,omitempty"`
-	Update              bool              `yaml:"update" json:"update"`
-	Delete              bool              `yaml:"delete" json:"delete"`
-	Aggregator          *AggregatorConfig `yaml:"aggregator" json:"aggregator"`
-	NormalizeSchema     map[string]string `yaml:"normalize_schema" json:"normalize_schema"`
-	DestinationKey      string            `yaml:"destination_key,omitempty" json:"destination_key,omitempty"`
-	EnableBatch         bool              `yaml:"enable_batch" json:"enable_batch"`
+	OldName             string              `yaml:"old_name" json:"old_name"`
+	NewName             string              `yaml:"new_name" json:"new_name"`
+	Migrate             bool                `yaml:"migrate" json:"migrate"`
+	CloneSource         bool                `yaml:"clone_source" json:"clone_source"`
+	BatchSize           int                 `yaml:"batch_size" json:"batch_size"`
+	SkipStoreError      bool                `yaml:"skip_store_error" json:"skip_store_error"`
+	UpdateSequence      bool                `yaml:"update_sequence" json:"update_sequence"`
+	TruncateDestination bool                `yaml:"truncate_destination" json:"truncate_destination"`
+	Mapping             map[string]string   `yaml:"mapping" json:"mapping"`
+	Query               string              `yaml:"query,omitempty" json:"query,omitempty"`
+	KeyValueTable       bool                `yaml:"key_value_table,omitempty" json:"key_value_table,omitempty"`
+	KeyField            string              `yaml:"key_field,omitempty" json:"key_field,omitempty"`
+	ValueField          string              `yaml:"value_field,omitempty" json:"value_field,omitempty"`
+	ExtraValues         map[string]any      `yaml:"extra_values,omitempty" json:"extra_values,omitempty"`
+	IncludeFields       []string            `yaml:"include_fields,omitempty" json:"include_fields,omitempty"`
+	ExcludeFields       []string            `yaml:"exclude_fields,omitempty" json:"exclude_fields,omitempty"`
+	AutoCreateTable     bool                `yaml:"auto_create_table,omitempty" json:"auto_create_table,omitempty"`
+	Update              bool                `yaml:"update" json:"update"`
+	Delete              bool                `yaml:"delete" json:"delete"`
+	Aggregator          *AggregatorConfig   `yaml:"aggregator" json:"aggregator"`
+	NormalizeSchema     map[string]string   `yaml:"normalize_schema" json:"normalize_schema"`
+	DestinationKey      string              `yaml:"destination_key,omitempty" json:"destination_key,omitempty"`
+	EnableBatch         bool                `yaml:"enable_batch" json:"enable_batch"`
+	Transformers        []TransformerConfig `yaml:"transformers,omitempty" json:"transformers,omitempty"`
+}
+
+type TransformerConfig struct {
+	Name    string         `yaml:"name" json:"name"`
+	Type    string         `yaml:"type" json:"type"`
+	Options map[string]any `yaml:"options" json:"options"`
 }
 
 type Checkpoint struct {

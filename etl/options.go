@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/adapters/fileadapter"
+	"github.com/oarkflow/sql/pkg/adapters/hl7adapter"
 	"github.com/oarkflow/sql/pkg/adapters/ioadapter"
+	"github.com/oarkflow/sql/pkg/adapters/restadapter"
 	"github.com/oarkflow/sql/pkg/adapters/serviceadapter"
 	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
@@ -37,22 +41,32 @@ func WithPipelineConfig(pc *PipelineConfig) Option {
 
 func NewSource(sourceType string, sourceDB *squealx.DB, sourceFile, sourceTable, sourceQuery, format string) (contracts.Source, error) {
 	var src contracts.Source
-	if utils2.IsSQLType(sourceType) {
+	lowerType := strings.ToLower(sourceType)
+	if utils2.IsSQLType(lowerType) {
 		if sourceDB == nil {
 			return nil, fmt.Errorf("source database is nil")
 		}
 		src = sqladapter.NewSource(sourceDB, sourceTable, sourceQuery)
-	} else if sourceType == "csv" || sourceType == "json" {
+	} else if lowerType == "csv" || lowerType == "json" {
 		fileSrc := sourceTable
 		if fileSrc == "" {
 			fileSrc = sourceFile
 		}
 		src = fileadapter.New(fileSrc, "source", false)
-	} else if sourceType == "stdin" {
+	} else if lowerType == "stdin" {
 		return ioadapter.NewSource(os.Stdin, format), nil
-	} else if sourceType == "service" {
+	} else if lowerType == "service" {
 		// Service type requires integration manager - this will be handled by WithServiceSource
 		return nil, fmt.Errorf("service type must be used with WithServiceSource option")
+	} else if lowerType == "hl7" || lowerType == "hl7_file" {
+		fileSrc := sourceTable
+		if fileSrc == "" {
+			fileSrc = sourceFile
+		}
+		if fileSrc == "" {
+			return nil, fmt.Errorf("hl7 source requires file path")
+		}
+		src = hl7adapter.NewFileSource(fileSrc)
 	} else {
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}
@@ -99,7 +113,8 @@ func selectDestination(dests []config.DataConfig, tm config.TableMapping) (confi
 func WithDestination(dest config.DataConfig, destDB *squealx.DB, cfg config.TableMapping) Option {
 	return func(e *ETL) error {
 		var destination contracts.Loader
-		if utils2.IsSQLType(dest.Type) {
+		lowerType := strings.ToLower(dest.Type)
+		if utils2.IsSQLType(lowerType) {
 			if destDB == nil {
 				dbConfig := dest.ToSquealxConfig()
 				db, _, err := connection.FromConfig(dbConfig)
@@ -109,18 +124,75 @@ func WithDestination(dest config.DataConfig, destDB *squealx.DB, cfg config.Tabl
 				destDB = db
 			}
 			destination = sqladapter.NewLoader(destDB, dest.Type, dest.Driver, cfg, cfg.NormalizeSchema)
-		} else if dest.Type == "csv" || dest.Type == "json" {
+		} else if lowerType == "csv" || lowerType == "json" {
 			fileLoader := cfg.NewName
 			if fileLoader == "" {
 				fileLoader = dest.File
+			}
+			if fileLoader == "" {
+				fileLoader = dest.DataPath
+			}
+			if fileLoader == "" {
+				fileLoader = dest.Source
+			}
+			if fileLoader == "" {
+				return fmt.Errorf("file destination requires file/path/source for key %s", dest.Key)
 			}
 			appendMode := true
 			if cfg.TruncateDestination {
 				appendMode = false
 			}
 			destination = fileadapter.New(fileLoader, "loader", appendMode)
-		} else if dest.Type == "stdout" {
+		} else if lowerType == "stdout" {
 			destination = ioadapter.NewLoader(os.Stdout, dest.Format)
+		} else if lowerType == "http" || lowerType == "webhook" || lowerType == "rest" {
+			restCfg := dest
+			if dest.Settings != nil {
+				settingsCopy := make(map[string]any, len(dest.Settings))
+				for k, v := range dest.Settings {
+					if strings.EqualFold(k, "timeout_ms") {
+						switch tv := v.(type) {
+						case string:
+							settingsCopy[k] = tv
+						case fmt.Stringer:
+							settingsCopy[k] = tv.String()
+						case int:
+							settingsCopy[k] = strconv.Itoa(tv)
+						case int64:
+							settingsCopy[k] = strconv.FormatInt(tv, 10)
+						case float64:
+							settingsCopy[k] = strconv.FormatInt(int64(tv), 10)
+						default:
+							settingsCopy[k] = fmt.Sprintf("%v", tv)
+						}
+					} else {
+						settingsCopy[k] = v
+					}
+				}
+				restCfg.Settings = settingsCopy
+			} else {
+				restCfg.Settings = map[string]any{}
+			}
+			if _, ok := restCfg.Settings["content_type"]; !ok && dest.Format != "" {
+				restCfg.Settings["content_type"] = dest.Format
+			}
+			endpoint := restCfg.Source
+			if endpoint == "" {
+				if urlVal, ok := restCfg.Settings["url"].(string); ok && urlVal != "" {
+					endpoint = urlVal
+				}
+			}
+			if endpoint == "" {
+				endpoint = restCfg.DataPath
+			}
+			if endpoint == "" {
+				endpoint = restCfg.File
+			}
+			if endpoint == "" {
+				return fmt.Errorf("rest destination requires source/url via source/path/file")
+			}
+			restCfg.Source = endpoint
+			destination = restadapter.NewLoader(restCfg)
 		} else {
 			return fmt.Errorf("unsupported destination type: %s", dest.Type)
 		}

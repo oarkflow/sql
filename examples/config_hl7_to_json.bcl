@@ -1,0 +1,54 @@
+sources "hl7-file" {
+    type: "hl7"
+    key: "hl7-file"
+    file: "./data/hl7_sample.hl7"
+}
+
+destinations "hl7-json" {
+    type: "json"
+    key: "hl7-json"
+    format: "json"
+    file: "./data/hl7_messages.json"
+}
+
+checkpoint = {
+    file = "./data/hl7_checkpoint.txt"
+    field = "hl7_control_id"
+}
+
+worker_count = 2
+buffer = 50
+
+tables "hl7_messages" {
+    new_name: "./data/hl7_messages.json"
+    migrate: true
+    clone_source: true
+    batch_size: 50
+    truncate_destination: true
+    destination_key: "hl7-json"
+    mapping = {
+        control_id = "hl7_control_id"
+        message_type = "hl7_message_type"
+        timestamp = "hl7_timestamp"
+        raw_message = "raw_message"
+        hl7_json = "hl7_json"
+        hl7_xml = "hl7_xml"
+        hl7_json_typed = "hl7_json_typed"
+        hl7_xml_typed = "hl7_xml_typed"
+    }
+    transformers "hl7-parser" {
+        type: "hl7"
+        options = {
+            input_field = "raw_message"
+            json_field = "hl7_json"
+            xml_field = "hl7_xml"
+            segments_field = "hl7_segments"
+            typed_field = "hl7_document"
+            typed_json_field = "hl7_json_typed"
+            typed_xml_field = "hl7_xml_typed"
+            message_type_field = "hl7_message_type"
+            control_id_field = "hl7_control_id"
+            timestamp_field = "hl7_timestamp"
+        }
+    }
+}
