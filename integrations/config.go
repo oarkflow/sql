@@ -39,6 +39,10 @@ func (is *Manager) AddCredential(c Credential) error {
 	return is.credentials.AddCredential(c)
 }
 
+func (is *Manager) DeleteCredential(key string) error {
+	return is.credentials.DeleteCredential(key)
+}
+
 func (is *Manager) UpdateService(c Service) error {
 	return is.services.UpdateService(c)
 }

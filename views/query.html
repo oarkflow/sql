@@ -95,6 +95,18 @@
                                     <option value="">Saved Queries</option>
                                 </select>
                             </div>
+                            <div class="flex items-center space-x-2">
+                                <button id="renameSavedQueryBtn"
+                                    class="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md text-gray-500 cursor-not-allowed"
+                                    disabled>
+                                    Rename
+                                </button>
+                                <button id="deleteSavedQueryBtn"
+                                    class="px-3 py-2 text-sm bg-white border border-gray-300 rounded-md text-gray-500 cursor-not-allowed"
+                                    disabled>
+                                    Delete
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Query Editor -->
@@ -252,13 +264,17 @@
         let queryHistory = [];
         let performanceChart = null;
         let currentResults = null;
+        let savedQueryOptions = [];
+        let isApplyingSavedQuery = false;
 
         // DOM elements
         const formatBtn = document.getElementById('formatBtn');
         const validateBtn = document.getElementById('validateBtn');
         const executeBtn = document.getElementById('executeBtn');
         const integrationSelect = document.getElementById('integrationSelect');
-        const savedQueries = document.getElementById('savedQueries');
+        const savedQuerySelect = document.getElementById('savedQueries');
+        const renameSavedQueryBtn = document.getElementById('renameSavedQueryBtn');
+        const deleteSavedQueryBtn = document.getElementById('deleteSavedQueryBtn');
         const resultsTab = document.getElementById('resultsTab');
         const explainTab = document.getElementById('explainTab');
         const historyTab = document.getElementById('historyTab');
@@ -334,6 +350,12 @@
                     suggestOnTriggerCharacters: true,
                     quickSuggestions: true,
                     parameterHints: { enabled: true }
+                });
+
+                queryEditor.onDidChangeModelContent(() => {
+                    if (!isApplyingSavedQuery && savedQuerySelect) {
+                        savedQuerySelect.value = '';
+                    }
                 });
 
                 // Add keyboard shortcuts
@@ -548,6 +570,184 @@
             queryEditor.focus();
         }
 
+        async function loadSavedQueryOptions(selectedId = '') {
+            try {
+                const response = await fetch('/api/query/save');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch saved queries');
+                }
+                savedQueryOptions = await response.json();
+                renderSavedQueryOptions(selectedId);
+            } catch (error) {
+                console.error('Failed to load saved queries:', error);
+            }
+        }
+
+        function renderSavedQueryOptions(selectedId = '') {
+            if (!savedQuerySelect) return;
+            savedQuerySelect.innerHTML = '<option value="">Saved Queries</option>';
+            savedQueryOptions.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.id;
+                option.textContent = item.name || 'Untitled Query';
+                savedQuerySelect.appendChild(option);
+            });
+            if (selectedId) {
+                savedQuerySelect.value = selectedId;
+            } else {
+                savedQuerySelect.value = '';
+            }
+            updateSavedQueryActionState();
+        }
+
+        function applySavedQuerySelection(queryId) {
+            const selected = savedQueryOptions.find(item => item.id === queryId);
+            if (!selected) return;
+
+            if (queryEditor) {
+                isApplyingSavedQuery = true;
+                queryEditor.setValue(selected.query);
+                isApplyingSavedQuery = false;
+            }
+
+            if (selected.integration) {
+                integrationSelect.value = selected.integration;
+                integrationSelect.dispatchEvent(new Event('change'));
+            }
+
+            if (savedQuerySelect) {
+                savedQuerySelect.value = selected.id;
+            }
+
+            updateSavedQueryActionState();
+        }
+
+        function updateSavedQueryActionState() {
+            const hasSelection = Boolean(savedQuerySelect && savedQuerySelect.value);
+            [renameSavedQueryBtn, deleteSavedQueryBtn].forEach(btn => {
+                if (!btn) return;
+                btn.disabled = !hasSelection;
+                btn.classList.toggle('cursor-not-allowed', !hasSelection);
+                btn.classList.toggle('text-gray-500', !hasSelection);
+                btn.classList.toggle('text-gray-700', hasSelection);
+                btn.classList.toggle('border-gray-400', hasSelection);
+                btn.classList.toggle('border-gray-300', !hasSelection);
+                btn.classList.toggle('hover:bg-gray-50', hasSelection);
+            });
+        }
+
+        async function saveQuery() {
+            if (!queryEditor) return;
+
+            const query = queryEditor.getValue();
+            if (!query.trim()) {
+                showStatus('Query cannot be empty', 'error');
+                return;
+            }
+
+            const name = prompt('Enter a name for this query:');
+            if (!name) return;
+
+            try {
+                const response = await fetch('/api/query/save', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        name,
+                        query,
+                        integration: integrationSelect.value
+                    })
+                });
+
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Failed to save query');
+                }
+
+                showStatus('Query saved successfully', 'success');
+                const savedId = payload.id || '';
+                await loadSavedQueryOptions(savedId);
+                if (savedId) {
+                    applySavedQuerySelection(savedId);
+                }
+            } catch (error) {
+                console.error('Failed to save query:', error);
+                showStatus('Failed to save query', 'error');
+            }
+        }
+
+        async function renameSavedQuery() {
+            if (!savedQuerySelect || !savedQuerySelect.value) return;
+            const selectedId = savedQuerySelect.value;
+            const existing = savedQueryOptions.find(item => item.id === selectedId);
+            const currentName = existing?.name || 'Untitled Query';
+            const newName = prompt('Enter a new name for this query:', currentName);
+            if (newName === null) {
+                return;
+            }
+            if (!newName.trim()) {
+                showStatus('Query name cannot be empty', 'error');
+                return;
+            }
+            if (newName.trim() === currentName.trim()) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/query/save/${selectedId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name: newName.trim() })
+                });
+
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Failed to rename query');
+                }
+
+                showStatus('Query renamed successfully', 'success');
+                await loadSavedQueryOptions(selectedId);
+            } catch (error) {
+                console.error('Failed to rename query:', error);
+                showStatus('Failed to rename query', 'error');
+            }
+        }
+
+        async function deleteSavedQuery() {
+            if (!savedQuerySelect || !savedQuerySelect.value) return;
+            const selectedId = savedQuerySelect.value;
+            const existing = savedQueryOptions.find(item => item.id === selectedId);
+            const name = existing?.name || 'this query';
+            if (!confirm(`Delete ${name}? This cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/query/save/${selectedId}`, {
+                    method: 'DELETE'
+                });
+
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Failed to delete query');
+                }
+
+                showStatus('Saved query deleted', 'success');
+                await loadSavedQueryOptions();
+                if (savedQuerySelect) {
+                    savedQuerySelect.value = '';
+                }
+                updateSavedQueryActionState();
+            } catch (error) {
+                console.error('Failed to delete query:', error);
+                showStatus('Failed to delete query', 'error');
+            }
+        }
+
         // Execute query
         async function executeQuery() {
             if (!queryEditor) return;
@@ -570,12 +770,17 @@
                 updateQueryStatus('Running');
 
                 const startTime = Date.now();
+                const savedQueryId = savedQuerySelect ? savedQuerySelect.value : '';
+                const payload = { query, integration };
+                if (savedQueryId) {
+                    payload.savedQueryId = savedQueryId;
+                }
                 const response = await fetch('/api/query', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ query })
+                    body: JSON.stringify(payload)
                 });
 
                 const executionTime = Date.now() - startTime;
@@ -593,8 +798,7 @@
                     // Render results
                     renderResults(result);
 
-                    // Add to history
-                    addToHistory(query, integration, result, executionTime);
+                    await loadQueryHistory();
 
                     // Update performance chart
                     updatePerformanceChart(executionTime);
@@ -604,6 +808,7 @@
                     const error = await response.json();
                     showStatus(`Query failed: ${error.error}`, 'error');
                     updateQueryStatus('Error');
+                    await loadQueryHistory();
                 }
             } catch (error) {
                 console.error('Failed to execute query:', error);
@@ -644,28 +849,6 @@
             resultsTable.innerHTML = html;
         }
 
-        // Add to history
-        function addToHistory(query, integration, result, executionTime) {
-            const historyItem = {
-                id: Date.now(),
-                query,
-                integration,
-                timestamp: new Date().toISOString(),
-                rowCount: result.rowCount,
-                executionTime,
-                success: result.rowCount !== undefined
-            };
-
-            queryHistory.unshift(historyItem);
-
-            // Keep only last 50 items
-            if (queryHistory.length > 50) {
-                queryHistory = queryHistory.slice(0, 50);
-            }
-
-            renderHistory();
-        }
-
         // Render history
         function renderHistory() {
             const historyList = document.getElementById('historyList');
@@ -679,16 +862,21 @@
             queryHistory.forEach(item => {
                 const statusColor = item.success ? 'text-green-600' : 'text-red-600';
                 const statusIcon = item.success ? 'check-circle' : 'x-circle';
+                const integrationLabel = item.integration || 'Unknown Integration';
+                const rowCount = typeof item.rowCount === 'number' ? item.rowCount : 0;
+                const execTime = typeof item.executionTime === 'number' ? item.executionTime : 0;
+                const timestamp = item.timestamp ? new Date(item.timestamp).toLocaleString() : '';
+                const title = item.name || (item.query ? (item.query.length > 50 ? `${item.query.substring(0, 50)}...` : item.query) : 'Query');
 
                 html += `
                     <div class="border border-gray-200 rounded-lg p-3 hover:bg-gray-50 cursor-pointer"
-                         onclick="loadFromHistory(${item.id})">
+                         onclick="loadFromHistory('${item.id}')">
                         <div class="flex items-center justify-between mb-1">
-                            <span class="text-sm font-medium text-gray-800 truncate">${item.query.substring(0, 50)}...</span>
+                            <span class="text-sm font-medium text-gray-800 truncate">${title}</span>
                             <i data-lucide="${statusIcon}" class="w-4 h-4 ${statusColor}"></i>
                         </div>
                         <div class="text-xs text-gray-500">
-                            ${item.integration} | ${item.rowCount} rows | ${item.executionTime}ms | ${new Date(item.timestamp).toLocaleString()}
+                            ${integrationLabel} | ${rowCount} rows | ${execTime}ms | ${timestamp}
                         </div>
                     </div>
                 `;
@@ -698,15 +886,37 @@
             lucide.createIcons();
         }
 
+        async function loadQueryHistory() {
+            try {
+                const response = await fetch('/api/query/history');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch history');
+                }
+                queryHistory = await response.json();
+                renderHistory();
+            } catch (error) {
+                console.error('Failed to load query history:', error);
+            }
+        }
+
         // Load from history
         function loadFromHistory(id) {
             const item = queryHistory.find(h => h.id === id);
             if (!item) return;
 
             if (queryEditor) {
+                isApplyingSavedQuery = true;
                 queryEditor.setValue(item.query);
+                isApplyingSavedQuery = false;
             }
-            integrationSelect.value = item.integration;
+            integrationSelect.value = item.integration || '';
+            if (item.integration) {
+                integrationSelect.dispatchEvent(new Event('change'));
+            }
+
+            if (savedQuerySelect) {
+                savedQuerySelect.value = item.savedQueryId || '';
+            }
 
             // Switch to results tab
             resultsTab.click();
@@ -915,6 +1125,28 @@
             }
         });
 
+        if (savedQuerySelect) {
+            savedQuerySelect.addEventListener('change', () => {
+                const selectedId = savedQuerySelect.value;
+                updateSavedQueryActionState();
+                if (selectedId) {
+                    applySavedQuerySelection(selectedId);
+                }
+            });
+        }
+
+        if (renameSavedQueryBtn) {
+            renameSavedQueryBtn.addEventListener('click', () => {
+                renameSavedQuery();
+            });
+        }
+
+        if (deleteSavedQueryBtn) {
+            deleteSavedQueryBtn.addEventListener('click', () => {
+                deleteSavedQuery();
+            });
+        }
+
         // Tab switching
         resultsTab.addEventListener('click', () => {
             resultsTab.classList.add('border-orange-500', 'text-orange-600');
@@ -972,30 +1204,34 @@
             resultsPanel.classList.add('hidden');
             explainPanel.classList.add('hidden');
 
-            renderHistory();
+            loadQueryHistory();
         });
 
         document.getElementById('exportCsvBtn').addEventListener('click', () => exportResults('csv'));
         document.getElementById('exportJsonBtn').addEventListener('click', () => exportResults('json'));
 
-        document.getElementById('clearHistoryBtn').addEventListener('click', () => {
-            if (confirm('Are you sure you want to clear query history?')) {
+        document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
+            if (!confirm('Are you sure you want to clear query history?')) {
+                return;
+            }
+            try {
+                const response = await fetch('/api/query/history', {
+                    method: 'DELETE'
+                });
+                if (!response.ok) {
+                    throw new Error('Failed to clear history');
+                }
                 queryHistory = [];
                 renderHistory();
                 showStatus('Query history cleared', 'success');
+            } catch (error) {
+                console.error('Failed to clear history:', error);
+                showStatus('Failed to clear query history', 'error');
             }
         });
 
         document.getElementById('saveQueryBtn').addEventListener('click', () => {
-            if (!queryEditor) return;
-
-            const query = queryEditor.getValue();
-            const name = prompt('Enter a name for this query:');
-
-            if (name && query.trim()) {
-                // Mock save
-                showStatus('Query saved successfully', 'success');
-            }
+            saveQuery();
         });
 
         document.getElementById('shareQueryBtn').addEventListener('click', () => {
@@ -1018,6 +1254,8 @@
         // Initialize
         initPerformanceChart();
         renderHistory();
+        loadSavedQueryOptions();
+        loadQueryHistory();
     </script>
 </body>
 

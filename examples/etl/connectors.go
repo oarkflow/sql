@@ -187,7 +187,7 @@ func (s *HL7MLLPSource) generateACK(hl7Message string) string {
 	timestamp := time.Now().Format("20060102150405")
 
 	// Build ACK message
-	ack := fmt.Sprintf("MSH%s%s%s%s%s%s%s%s%s%s%s%sACK%s%s%sAL%s2.5",
+	ack := fmt.Sprintf("MSH%s%s%s%s%s%s%s%s%s%s%s%s%sACK%s%s%sAL%s2.5",
 		fieldSep, encodingChars, fieldSep,
 		receivingApp, fieldSep, receivingFacility, fieldSep,
 		sendingApp, fieldSep, sendingFacility, fieldSep,

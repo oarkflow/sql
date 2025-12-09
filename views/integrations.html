@@ -13,15 +13,13 @@
 <body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
     <div class="container mx-auto px-4 py-8">
         <div class="max-w-7xl mx-auto">
-            <!-- Header -->
             <div class="text-center mb-8">
                 <h1 class="text-4xl font-bold text-gray-900 mb-2">Integration Management</h1>
                 <p class="text-lg text-gray-600">Configure and manage data integrations</p>
             </div>
 
-            <!-- Navigation -->
             <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
-                <div class="flex flex-wrap justify-center space-x-4">
+                <div class="flex flex-wrap justify-center gap-4">
                     <a href="/"
                         class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition flex items-center">
                         <i data-lucide="home" class="w-4 h-4 mr-2"></i>
@@ -51,7 +49,6 @@
             </div>
 
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <!-- Integration List -->
                 <div class="lg:col-span-2">
                     <div class="bg-white rounded-xl shadow-lg p-6">
                         <div class="flex items-center justify-between mb-4">
@@ -66,7 +63,6 @@
                             </button>
                         </div>
 
-                        <!-- Filter and Search -->
                         <div class="mb-4 flex flex-col sm:flex-row gap-4">
                             <div class="flex-1">
                                 <input type="text" id="searchInput" placeholder="Search integrations..."
@@ -75,21 +71,14 @@
                             <select id="typeFilter"
                                 class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 <option value="">All Types</option>
-                                <option value="api">API</option>
-                                <option value="database">Database</option>
-                                <option value="file">File</option>
-                                <option value="message">Message Queue</option>
-                                <option value="notification">Notification</option>
                             </select>
                         </div>
 
                         <div id="integrationsList" class="space-y-4 max-h-96 overflow-y-auto">
-                            <!-- Integrations will be populated here -->
                         </div>
                     </div>
                 </div>
 
-                <!-- Integration Form -->
                 <div class="lg:col-span-1">
                     <div class="bg-white rounded-xl shadow-lg p-6">
                         <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
@@ -111,11 +100,6 @@
                                 <select id="integrationType" required
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                                     <option value="">Select Type</option>
-                                    <option value="api">API</option>
-                                    <option value="database">Database</option>
-                                    <option value="file">File</option>
-                                    <option value="message">Message Queue</option>
-                                    <option value="notification">Notification</option>
                                 </select>
                             </div>
 
@@ -144,10 +128,7 @@
                                         <option value="oauth2">OAuth 2.0</option>
                                     </select>
                                 </div>
-
-                                <div id="credentialFields" class="space-y-2">
-                                    <!-- Credential fields will be dynamically added -->
-                                </div>
+                                <div id="credentialFields" class="space-y-2"></div>
                             </div>
 
                             <div>
@@ -172,7 +153,6 @@
                 </div>
             </div>
 
-            <!-- Status Messages -->
             <div id="statusMessage" class="mt-8 hidden">
                 <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
                     <div class="flex items-center">
@@ -185,16 +165,21 @@
     </div>
 
     <script>
-        // Initialize Lucide icons
         lucide.createIcons();
 
-        // Global variables
         let integrations = [];
         let configEditor;
+        let oauthProviders = [];
+        let oauthPollHandle = null;
+        let currentOAuthState = null;
+        let oauthPopup = null;
 
-        // DOM elements
         const integrationsList = document.getElementById('integrationsList');
         const integrationForm = document.getElementById('integrationForm');
+        const integrationIdInput = document.getElementById('integrationId');
+        const integrationNameInput = document.getElementById('integrationName');
+        const integrationTypeSelect = document.getElementById('integrationType');
+        const integrationDescriptionInput = document.getElementById('integrationDescription');
         const addIntegrationBtn = document.getElementById('addIntegrationBtn');
         const testBtn = document.getElementById('testBtn');
         const searchInput = document.getElementById('searchInput');
@@ -206,7 +191,67 @@
         const statusMessage = document.getElementById('statusMessage');
         const statusText = document.getElementById('statusText');
 
-        // Initialize Monaco Editor
+        const SERVICE_TYPES = [
+            { value: 'rest', label: 'REST / HTTP API', icon: 'globe' },
+            { value: 'graphql', label: 'GraphQL API', icon: 'code-2' },
+            { value: 'soap', label: 'SOAP Service', icon: 'file-code' },
+            { value: 'grpc', label: 'gRPC Service', icon: 'share-2' },
+            { value: 'database', label: 'Database', icon: 'database' },
+            { value: 'smtp', label: 'SMTP Email', icon: 'mail' },
+            { value: 'smpp', label: 'SMPP Messaging', icon: 'message-circle' },
+            { value: 'kafka', label: 'Kafka', icon: 'radio' },
+            { value: 'mqtt', label: 'MQTT', icon: 'rss' },
+            { value: 'ftp', label: 'FTP', icon: 'upload-cloud' },
+            { value: 'sftp', label: 'SFTP', icon: 'shield' },
+            { value: 'push', label: 'Push Notification', icon: 'bell' },
+            { value: 'slack', label: 'Slack', icon: 'slack' },
+            { value: 'custom_tcp', label: 'Custom TCP', icon: 'server' },
+            { value: 'voip', label: 'VoIP', icon: 'phone-call' },
+            { value: 'webcrawler', label: 'Web Crawler', icon: 'bug' }
+        ];
+
+        function populateServiceTypeOptions() {
+            if (!integrationTypeSelect || !typeFilter) {
+                return;
+            }
+            SERVICE_TYPES.forEach(({ value, label }) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                integrationTypeSelect.appendChild(option);
+
+                const filterOption = document.createElement('option');
+                filterOption.value = value;
+                filterOption.textContent = label;
+                typeFilter.appendChild(filterOption);
+            });
+        }
+
+        function capitalize(word) {
+            if (!word) {
+                return '';
+            }
+            return word.charAt(0).toUpperCase() + word.slice(1);
+        }
+
+        function getTypeMeta(type) {
+            const normalized = (type || '').toLowerCase();
+            const meta = SERVICE_TYPES.find((item) => item.value === normalized);
+            if (meta) {
+                return meta;
+            }
+            const fallbackLabel = normalized
+                ? normalized.split(/[-_]/).map((part) => capitalize(part)).join(' ')
+                : 'Unknown';
+            return {
+                value: normalized,
+                label: fallbackLabel,
+                icon: 'plug'
+            };
+        }
+
+        populateServiceTypeOptions();
+
         require.config({ paths: { vs: 'https://unpkg.com/monaco-editor@0.44.0/min/vs' } });
         require(['vs/editor/editor.main'], function () {
             configEditor = monaco.editor.create(document.getElementById('configEditor'), {
@@ -219,11 +264,14 @@
             });
         });
 
-        // Load integrations
         async function loadIntegrations() {
             try {
                 const response = await fetch('/api/integrations');
-                integrations = await response.json();
+                const payload = await response.json();
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Failed to load integrations');
+                }
+                integrations = payload;
                 renderIntegrations();
             } catch (error) {
                 console.error('Failed to load integrations:', error);
@@ -231,15 +279,16 @@
             }
         }
 
-        // Render integrations list
         function renderIntegrations() {
             const searchTerm = searchInput.value.toLowerCase();
             const typeValue = typeFilter.value;
 
-            const filteredIntegrations = integrations.filter(integration => {
-                const matchesSearch = integration.name.toLowerCase().includes(searchTerm) ||
-                    integration.description.toLowerCase().includes(searchTerm);
-                const matchesType = !typeValue || integration.type === typeValue;
+            const filteredIntegrations = integrations.filter((integration) => {
+                const name = (integration.name || '').toLowerCase();
+                const description = (integration.description || '').toLowerCase();
+                const type = (integration.type || '').toLowerCase();
+                const matchesSearch = name.includes(searchTerm) || description.includes(searchTerm);
+                const matchesType = !typeValue || type === typeValue;
                 return matchesSearch && matchesType;
             });
 
@@ -248,44 +297,44 @@
                 return;
             }
 
-            integrationsList.innerHTML = filteredIntegrations.map(integration => createIntegrationElement(integration)).join('');
+            integrationsList.innerHTML = filteredIntegrations.map(createIntegrationElement).join('');
             lucide.createIcons();
         }
 
-        // Create integration element
         function createIntegrationElement(integration) {
             const statusColor = getStatusColor(integration.status);
-            const typeIcon = getTypeIcon(integration.type);
+            const typeMeta = getTypeMeta(integration.type);
+            const description = integration.description || 'No description provided';
+            const createdLabel = integration.createdAt ? new Date(integration.createdAt).toLocaleDateString() : 'N/A';
+            const statusLabel = integration.status || 'pending';
+            const displayName = integration.name || 'Unnamed Integration';
 
             return `
                 <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition duration-200">
                     <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center">
-                            <i data-lucide="${typeIcon}" class="w-5 h-5 mr-2 text-gray-600"></i>
-                            <span class="font-semibold text-gray-800">${integration.name}</span>
+                            <i data-lucide="${typeMeta.icon}" class="w-5 h-5 mr-2 text-gray-600"></i>
+                            <span class="font-semibold text-gray-800">${displayName}</span>
                         </div>
                         <span class="px-2 py-1 rounded-full text-xs font-medium ${statusColor}">
-                            ${integration.status}
+                            ${statusLabel}
                         </span>
                     </div>
                     <div class="text-sm text-gray-600 mb-2">
-                        ${integration.description}
+                        ${description}
                     </div>
                     <div class="flex items-center justify-between">
                         <div class="text-xs text-gray-500">
-                            Type: ${integration.type} | Created: ${new Date(integration.createdAt).toLocaleDateString()}
+                            Type: ${typeMeta.label} | Created: ${createdLabel}
                         </div>
                         <div class="flex space-x-2">
-                            <button onclick="editIntegration('${integration.id}')"
-                                class="text-blue-600 hover:text-blue-800">
+                            <button onclick="editIntegration('${integration.id}')" class="text-blue-600 hover:text-blue-800">
                                 <i data-lucide="edit" class="w-4 h-4"></i>
                             </button>
-                            <button onclick="testIntegration('${integration.id}')"
-                                class="text-green-600 hover:text-green-800">
+                            <button onclick="testIntegration('${integration.id}')" class="text-green-600 hover:text-green-800">
                                 <i data-lucide="play" class="w-4 h-4"></i>
                             </button>
-                            <button onclick="deleteIntegration('${integration.id}')"
-                                class="text-red-600 hover:text-red-800">
+                            <button onclick="deleteIntegration('${integration.id}')" class="text-red-600 hover:text-red-800">
                                 <i data-lucide="trash-2" class="w-4 h-4"></i>
                             </button>
                         </div>
@@ -294,50 +343,42 @@
             `;
         }
 
-        // Get status color
         function getStatusColor(status) {
-            switch (status) {
-                case 'connected': return 'bg-green-100 text-green-800';
-                case 'disconnected': return 'bg-red-100 text-red-800';
-                case 'pending': return 'bg-yellow-100 text-yellow-800';
-                default: return 'bg-gray-100 text-gray-800';
+            switch ((status || '').toLowerCase()) {
+                case 'connected':
+                    return 'bg-green-100 text-green-800';
+                case 'disconnected':
+                    return 'bg-red-100 text-red-800';
+                case 'pending':
+                    return 'bg-yellow-100 text-yellow-800';
+                default:
+                    return 'bg-gray-100 text-gray-800';
             }
         }
 
-        // Get type icon
-        function getTypeIcon(type) {
-            switch (type) {
-                case 'api': return 'globe';
-                case 'database': return 'database';
-                case 'file': return 'file-text';
-                case 'message': return 'message-square';
-                case 'notification': return 'bell';
-                default: return 'plug';
-            }
-        }
-
-        // Edit integration
         async function editIntegration(id) {
             try {
                 const response = await fetch(`/api/integrations/${id}`);
                 const integration = await response.json();
 
-                document.getElementById('integrationId').value = integration.id;
-                document.getElementById('integrationName').value = integration.name;
-                document.getElementById('integrationType').value = integration.type;
-                document.getElementById('integrationDescription').value = integration.description;
+                integrationIdInput.value = integration.id;
+                integrationNameInput.value = integration.name;
+                integrationTypeSelect.value = integration.type;
+                integrationDescriptionInput.value = integration.description || '';
                 requireAuth.checked = integration.requireAuth;
 
                 if (integration.requireAuth) {
                     credentialSection.classList.remove('hidden');
                     updateCredentialFields();
+                } else {
+                    credentialSection.classList.add('hidden');
+                    credentialFields.innerHTML = '';
                 }
 
                 if (configEditor) {
                     configEditor.setValue(JSON.stringify(integration.config, null, 2));
                 }
 
-                // Scroll to form
                 integrationForm.scrollIntoView({ behavior: 'smooth' });
             } catch (error) {
                 console.error('Failed to load integration:', error);
@@ -345,7 +386,6 @@
             }
         }
 
-        // Test integration
         async function testIntegration(id) {
             try {
                 showStatus('Testing integration...', 'info');
@@ -363,7 +403,6 @@
             }
         }
 
-        // Delete integration
         async function deleteIntegration(id) {
             if (!confirm('Are you sure you want to delete this integration?')) {
                 return;
@@ -384,7 +423,6 @@
             }
         }
 
-        // Update credential fields based on type
         function updateCredentialFields() {
             const type = credentialType.value;
             let fieldsHTML = '';
@@ -412,76 +450,477 @@
                     break;
                 case 'oauth2':
                     fieldsHTML = `
-                        <input type="text" id="clientId" placeholder="Client ID"
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="clientSecret" placeholder="Client Secret"
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="tokenUrl" placeholder="Token URL"
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Provider Template</label>
+                                <select id="oauthProvider"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    <option value="">Custom Provider</option>
+                                </select>
+                                <p class="text-xs text-gray-500 mt-1">Use presets for Google, GitHub, Facebook, or define your own endpoints.</p>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input type="text" id="clientId" placeholder="Client ID"
+                                    class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <input type="text" id="clientSecret" placeholder="Client Secret"
+                                    class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Authorization URL</label>
+                                <input type="text" id="oauthAuthUrl" placeholder="https://provider.com/oauth/authorize"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Token URL</label>
+                                <input type="text" id="oauthTokenUrl" placeholder="https://provider.com/oauth/token"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Scopes</label>
+                                <input type="text" id="oauthScopes" placeholder="space separated scopes"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Redirect URI</label>
+                                <input type="text" id="oauthRedirectUri" placeholder="https://your-host/oauth/callback"
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <p class="text-xs text-gray-500 mt-1">Must match the redirect configured with the provider.</p>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <button type="button" id="oauthConnectBtn"
+                                    class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-md transition duration-200">
+                                    Connect &amp; Authorize
+                                </button>
+                                <span id="oauthStatus" class="text-sm text-gray-500">Not connected</span>
+                            </div>
+                            <input type="hidden" id="oauthAccessToken">
+                            <input type="hidden" id="oauthRefreshToken">
+                            <input type="hidden" id="oauthGrantedScope">
+                            <input type="hidden" id="oauthExpiresAt">
+                            <input type="hidden" id="oauthProviderName">
+                        </div>
                     `;
                     break;
+                default:
+                    fieldsHTML = '';
             }
 
             credentialFields.innerHTML = fieldsHTML;
+
+            if (type === 'oauth2') {
+                setupOAuthFields();
+            } else {
+                resetOAuthState();
+            }
         }
 
-        // Show status message
-        function showStatus(message, type) {
-            statusText.textContent = message;
-            statusMessage.className = 'mt-8';
+        function fillOAuthProviderOptions(selectEl) {
+            if (!selectEl) {
+                return;
+            }
+            const currentValue = selectEl.value;
+            selectEl.innerHTML = '';
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = 'Custom Provider';
+            selectEl.appendChild(defaultOption);
+            oauthProviders.forEach((provider) => {
+                const option = document.createElement('option');
+                option.value = provider.name;
+                option.textContent = provider.displayName;
+                if (currentValue && provider.name === currentValue) {
+                    option.selected = true;
+                }
+                selectEl.appendChild(option);
+            });
+        }
 
-            if (type === 'error') {
-                statusMessage.innerHTML = `
-                    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded">
-                        <div class="flex items-center">
-                            <i data-lucide="alert-circle" class="w-5 h-5 mr-2"></i>
-                            <span>${message}</span>
-                        </div>
-                    </div>
-                `;
-            } else if (type === 'success') {
-                statusMessage.innerHTML = `
-                    <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded">
-                        <div class="flex items-center">
-                            <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i>
-                            <span>${message}</span>
-                        </div>
-                    </div>
-                `;
-            } else {
-                statusMessage.innerHTML = `
-                    <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded">
-                        <div class="flex items-center">
-                            <i data-lucide="info" class="w-5 h-5 mr-2"></i>
-                            <span>${message}</span>
-                        </div>
-                    </div>
-                `;
+        function setupOAuthFields() {
+            const providerSelect = document.getElementById('oauthProvider');
+            fillOAuthProviderOptions(providerSelect);
+            if (providerSelect) {
+                providerSelect.addEventListener('change', () => applyOAuthTemplate(providerSelect.value));
+            }
+            const redirectInput = document.getElementById('oauthRedirectUri');
+            if (redirectInput && !redirectInput.value) {
+                redirectInput.value = `${window.location.origin}/oauth/callback`;
+            }
+            const connectBtn = document.getElementById('oauthConnectBtn');
+            if (connectBtn) {
+                connectBtn.addEventListener('click', startOAuthFlow);
+            }
+            updateOAuthStatus('Not connected', 'idle');
+        }
+
+        function applyOAuthTemplate(name) {
+            resetOAuthState();
+            if (!name) {
+                return;
+            }
+            const provider = oauthProviders.find((tpl) => tpl.name === name);
+            if (!provider) {
+                return;
+            }
+            const authInput = document.getElementById('oauthAuthUrl');
+            const tokenInput = document.getElementById('oauthTokenUrl');
+            const scopeInput = document.getElementById('oauthScopes');
+            if (authInput) {
+                authInput.value = provider.authUrl || '';
+            }
+            if (tokenInput) {
+                tokenInput.value = provider.tokenUrl || '';
+            }
+            if (scopeInput && !scopeInput.value) {
+                scopeInput.value = provider.scope || '';
+            }
+            const providerHidden = document.getElementById('oauthProviderName');
+            if (providerHidden) {
+                providerHidden.value = provider.name;
+            }
+        }
+
+        function resetOAuthState() {
+            if (oauthPollHandle) {
+                clearInterval(oauthPollHandle);
+                oauthPollHandle = null;
+            }
+            currentOAuthState = null;
+            if (oauthPopup && !oauthPopup.closed) {
+                oauthPopup.close();
+            }
+            ['oauthAccessToken', 'oauthRefreshToken', 'oauthGrantedScope', 'oauthExpiresAt', 'oauthProviderName'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.value = '';
+                }
+            });
+            updateOAuthStatus('Not connected', 'idle');
+        }
+
+        function updateOAuthStatus(message, tone = 'idle') {
+            const statusEl = document.getElementById('oauthStatus');
+            if (!statusEl) {
+                return;
+            }
+            const palette = {
+                idle: 'text-gray-500',
+                pending: 'text-yellow-600',
+                success: 'text-green-600',
+                error: 'text-red-600'
+            };
+            statusEl.textContent = message;
+            statusEl.className = `text-sm ${palette[tone] || palette.idle}`;
+        }
+
+        async function loadOAuthProviders() {
+            try {
+                const response = await fetch('/api/oauth/providers');
+                if (!response.ok) {
+                    throw new Error('failed to load OAuth providers');
+                }
+                oauthProviders = await response.json();
+                fillOAuthProviderOptions(document.getElementById('oauthProvider'));
+            } catch (error) {
+                console.warn('Unable to fetch OAuth providers', error);
+                oauthProviders = [];
+            }
+        }
+
+        async function startOAuthFlow() {
+            const providerSelect = document.getElementById('oauthProvider');
+            const clientIdInput = document.getElementById('clientId');
+            const clientSecretInput = document.getElementById('clientSecret');
+            const authUrlInput = document.getElementById('oauthAuthUrl');
+            const tokenUrlInput = document.getElementById('oauthTokenUrl');
+            const scopeInput = document.getElementById('oauthScopes');
+            const redirectInput = document.getElementById('oauthRedirectUri');
+
+            if (!clientIdInput || !authUrlInput || !tokenUrlInput) {
+                showStatus('OAuth fields missing from form', 'error');
+                return;
             }
 
-            lucide.createIcons();
+            const clientId = clientIdInput.value.trim();
+            if (!clientId) {
+                showStatus('Client ID is required for OAuth', 'error');
+                return;
+            }
 
-            setTimeout(() => {
-                statusMessage.className = 'mt-8 hidden';
-            }, 5000);
+            const payload = {
+                provider: providerSelect ? providerSelect.value : '',
+                clientId,
+                clientSecret: clientSecretInput ? clientSecretInput.value.trim() : '',
+                authUrl: authUrlInput.value.trim(),
+                tokenUrl: tokenUrlInput.value.trim(),
+                scope: scopeInput ? scopeInput.value.trim() : '',
+                redirectUrl: redirectInput ? redirectInput.value.trim() : ''
+            };
+
+            if (!payload.authUrl || !payload.tokenUrl) {
+                showStatus('Auth URL and Token URL are required', 'error');
+                return;
+            }
+
+            resetOAuthState();
+            updateOAuthStatus('Opening OAuth window...', 'pending');
+
+            try {
+                const response = await fetch('/api/oauth/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorBody = await response.json();
+                    throw new Error(errorBody.error || 'failed to start OAuth flow');
+                }
+
+                const data = await response.json();
+                currentOAuthState = data.state;
+                oauthPopup = window.open(
+                    data.authorizationUrl,
+                    'oauthPopup',
+                    'width=520,height=720,menubar=no,toolbar=no,location=yes,status=no'
+                );
+                updateOAuthStatus('Waiting for provider authorization...', 'pending');
+                beginOAuthPolling(data.state);
+            } catch (error) {
+                console.error('Failed to start OAuth flow', error);
+                updateOAuthStatus('OAuth start failed', 'error');
+                showStatus(`OAuth start failed: ${error.message}`, 'error');
+            }
         }
 
-        // Event listeners
-        addIntegrationBtn.addEventListener('click', () => {
-            integrationForm.reset();
-            document.getElementById('integrationId').value = '';
+        function beginOAuthPolling(state) {
+            if (!state) {
+                return;
+            }
+            oauthPollHandle = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/oauth/session/${state}`);
+                    if (response.status === 202) {
+                        updateOAuthStatus('Waiting for user confirmation...', 'pending');
+                        return;
+                    }
+                    if (!response.ok) {
+                        const errorBody = await response.json();
+                        updateOAuthStatus('OAuth session failed', 'error');
+                        showStatus(errorBody.error || 'OAuth session error', 'error');
+                        clearInterval(oauthPollHandle);
+                        oauthPollHandle = null;
+                        return;
+                    }
+                    const data = await response.json();
+                    handleOAuthSuccess(data);
+                } catch (error) {
+                    console.error('OAuth polling error', error);
+                    updateOAuthStatus('OAuth polling error', 'error');
+                    if (oauthPollHandle) {
+                        clearInterval(oauthPollHandle);
+                        oauthPollHandle = null;
+                    }
+                }
+            }, 2000);
+        }
+
+        function handleOAuthSuccess(data) {
+            if (oauthPollHandle) {
+                clearInterval(oauthPollHandle);
+                oauthPollHandle = null;
+            }
+            if (oauthPopup && !oauthPopup.closed) {
+                oauthPopup.close();
+            }
+            const accessToken = document.getElementById('oauthAccessToken');
+            const refreshToken = document.getElementById('oauthRefreshToken');
+            const grantedScope = document.getElementById('oauthGrantedScope');
+            const expiresAt = document.getElementById('oauthExpiresAt');
+            const providerHidden = document.getElementById('oauthProviderName');
+            const scopeInput = document.getElementById('oauthScopes');
+
+            if (accessToken) {
+                accessToken.value = data.accessToken || '';
+            }
+            if (refreshToken) {
+                refreshToken.value = data.refreshToken || '';
+            }
+            if (grantedScope) {
+                grantedScope.value = data.scope || '';
+            }
+            if (scopeInput && data.scope) {
+                scopeInput.value = data.scope;
+            }
+            if (expiresAt) {
+                expiresAt.value = data.expiresAt || '';
+            }
+            if (providerHidden && data.provider) {
+                providerHidden.value = data.provider;
+            }
+            updateOAuthStatus('Connected via OAuth', 'success');
+            showStatus('OAuth authorization completed', 'success');
+        }
+
+        function parseConfigEditor() {
+            if (!configEditor) {
+                return {};
+            }
+            const raw = configEditor.getValue();
+            if (!raw || !raw.trim()) {
+                return {};
+            }
+            try {
+                return JSON.parse(raw);
+            } catch (error) {
+                throw new Error('Configuration JSON is invalid');
+            }
+        }
+
+        function collectCredentialPayload() {
+            if (!requireAuth.checked) {
+                return null;
+            }
+            const type = credentialType.value;
+            if (!type) {
+                throw new Error('Select a credential type');
+            }
+            const getValue = (id, trim = true) => {
+                const el = document.getElementById(id);
+                if (!el) {
+                    return '';
+                }
+                return trim ? el.value.trim() : el.value;
+            };
+            switch (type) {
+                case 'api_key':
+                    return {
+                        type,
+                        token: getValue('apiKey')
+                    };
+                case 'bearer':
+                    return {
+                        type,
+                        token: getValue('bearerToken')
+                    };
+                case 'basic':
+                    return {
+                        type,
+                        username: getValue('username'),
+                        password: getValue('password', false)
+                    };
+                case 'oauth2':
+                    return {
+                        type,
+                        clientId: getValue('clientId'),
+                        clientSecret: getValue('clientSecret'),
+                        authUrl: getValue('oauthAuthUrl'),
+                        tokenUrl: getValue('oauthTokenUrl'),
+                        scope: getValue('oauthScopes'),
+                        redirectUrl: getValue('oauthRedirectUri'),
+                        accessToken: getValue('oauthAccessToken'),
+                        refreshToken: getValue('oauthRefreshToken'),
+                        expiresAt: getValue('oauthExpiresAt')
+                    };
+                default:
+                    throw new Error('Unsupported credential type');
+            }
+        }
+
+        function buildIntegrationPayload() {
+            const config = parseConfigEditor();
+            const credential = collectCredentialPayload();
+            return {
+                name: integrationNameInput.value.trim(),
+                type: integrationTypeSelect.value,
+                description: integrationDescriptionInput.value.trim(),
+                config,
+                requireAuth: requireAuth.checked,
+                credential
+            };
+        }
+
+        function resetForm() {
+            integrationIdInput.value = '';
+            integrationNameInput.value = '';
+            integrationTypeSelect.value = '';
+            integrationDescriptionInput.value = '';
+            requireAuth.checked = false;
+            credentialType.value = '';
             credentialSection.classList.add('hidden');
+            credentialFields.innerHTML = '';
             if (configEditor) {
                 configEditor.setValue('{\n  \n}');
             }
-            integrationForm.scrollIntoView({ behavior: 'smooth' });
+            resetOAuthState();
+            hideStatus();
+        }
+
+        function hideStatus() {
+            if (statusMessage) {
+                statusMessage.classList.add('hidden');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            if (!statusMessage) {
+                return;
+            }
+            const inner = statusMessage.querySelector('div');
+            const palette = {
+                info: 'bg-blue-100 border-blue-500 text-blue-700',
+                success: 'bg-green-100 border-green-500 text-green-700',
+                error: 'bg-red-100 border-red-500 text-red-700'
+            };
+            statusText.textContent = message;
+            inner.className = `border-l-4 p-4 rounded ${palette[type] || palette.info}`;
+            statusMessage.classList.remove('hidden');
+            setTimeout(() => {
+                statusMessage.classList.add('hidden');
+            }, 6000);
+        }
+
+        integrationForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            try {
+                const payload = buildIntegrationPayload();
+                if (!payload.name || !payload.type) {
+                    showStatus('Name and Type are required', 'error');
+                    return;
+                }
+                const id = integrationIdInput.value;
+                const method = id ? 'PUT' : 'POST';
+                const url = id ? `/api/integrations/${id}` : '/api/integrations';
+                const response = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to save integration');
+                }
+                showStatus('Integration saved successfully', 'success');
+                resetForm();
+                await loadIntegrations();
+            } catch (error) {
+                console.error('Failed to save integration', error);
+                showStatus(error.message, 'error');
+            }
+        });
+
+        addIntegrationBtn.addEventListener('click', () => {
+            resetForm();
+            integrationNameInput.focus();
         });
 
         requireAuth.addEventListener('change', () => {
             if (requireAuth.checked) {
                 credentialSection.classList.remove('hidden');
+                updateCredentialFields();
             } else {
                 credentialSection.classList.add('hidden');
+                credentialFields.innerHTML = '';
+                resetOAuthState();
             }
         });
 
@@ -490,105 +929,20 @@
         searchInput.addEventListener('input', renderIntegrations);
         typeFilter.addEventListener('change', renderIntegrations);
 
-        integrationForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const id = document.getElementById('integrationId').value;
-            const name = document.getElementById('integrationName').value;
-            const type = document.getElementById('integrationType').value;
-            const description = document.getElementById('integrationDescription').value;
-            const requiresAuth = requireAuth.checked;
-
-            let config = {};
-            try {
-                if (configEditor) {
-                    config = JSON.parse(configEditor.getValue());
-                }
-            } catch (error) {
-                showStatus('Invalid JSON configuration', 'error');
-                return;
-            }
-
-            const integrationData = {
-                name,
-                type,
-                description,
-                config,
-                requireAuth: requiresAuth
-            };
-
-            // Add credentials if required
-            if (requiresAuth) {
-                const credType = credentialType.value;
-                if (!credType) {
-                    showStatus('Please select a credential type', 'error');
-                    return;
-                }
-
-                integrationData.credential = {
-                    type: credType
-                };
-
-                switch (credType) {
-                    case 'api_key':
-                        integrationData.credential.key = document.getElementById('apiKey').value;
-                        break;
-                    case 'bearer':
-                        integrationData.credential.token = document.getElementById('bearerToken').value;
-                        break;
-                    case 'basic':
-                        integrationData.credential.username = document.getElementById('username').value;
-                        integrationData.credential.password = document.getElementById('password').value;
-                        break;
-                    case 'oauth2':
-                        integrationData.credential.clientId = document.getElementById('clientId').value;
-                        integrationData.credential.clientSecret = document.getElementById('clientSecret').value;
-                        integrationData.credential.tokenUrl = document.getElementById('tokenUrl').value;
-                        break;
-                }
-            }
-
-            try {
-                const url = id ? `/api/integrations/${id}` : '/api/integrations';
-                const method = id ? 'PUT' : 'POST';
-                const response = await fetch(url, {
-                    method,
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(integrationData)
-                });
-
-                if (response.ok) {
-                    showStatus(`Integration ${id ? 'updated' : 'created'} successfully`, 'success');
-                    integrationForm.reset();
-                    document.getElementById('integrationId').value = '';
-                    credentialSection.classList.add('hidden');
-                    if (configEditor) {
-                        configEditor.setValue('{\n  \n}');
-                    }
-                    loadIntegrations();
-                } else {
-                    const result = await response.json();
-                    showStatus(`Failed to ${id ? 'update' : 'create'} integration: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                console.error('Failed to save integration:', error);
-                showStatus('Failed to save integration', 'error');
+        testBtn.addEventListener('click', () => {
+            const id = integrationIdInput.value;
+            if (id) {
+                testIntegration(id);
+            } else {
+                showStatus('Select an integration to test', 'info');
             }
         });
 
-        testBtn.addEventListener('click', async () => {
-            const id = document.getElementById('integrationId').value;
-            if (!id) {
-                showStatus('Please save the integration first', 'error');
-                return;
-            }
-            await testIntegration(id);
-        });
+        async function init() {
+            await Promise.all([loadIntegrations(), loadOAuthProviders()]);
+        }
 
-        // Load integrations on page load
-        loadIntegrations();
+        init();
     </script>
 </body>
 
