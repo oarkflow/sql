@@ -1,0 +1,13 @@
+[
+  {"ClientID":"1","ClientName":"Alice","SignupDate":"2024-01-10"},
+  {"ClientID":"4","ClientName":"Alex","SignupDate":"2024-01-20"},
+  {"ClientID":"2","ClientName":"Bob","SignupDate":"2023-12-15"},
+  {"ClientID":"5","ClientName":"Charlie","SignupDate":"2024-01-05"},
+  {"ClientID":"6","ClientName":"Aaron","SignupDate":"2024-03-01"},
+  {"ClientID":"8","ClientName":"Ben","SignupDate":"2024-02-10"},
+  {"ClientID":"3","ClientName":"Anna","SignupDate":"2024-02-05"},
+  {"ClientID":"11","ClientName":"Angela","SignupDate":"2024-02-18"},
+  {"ClientID":"7","ClientName":"Amy","SignupDate":"2024-01-25"},
+  {"ClientID":"10","ClientName":"Angela","SignupDate":"2024-01-18"},
+  {"ClientID":"9","ClientName":"Andrew","SignupDate":"2024-01-15"}
+]

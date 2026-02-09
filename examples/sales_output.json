@@ -1,0 +1,5 @@
+[
+  {"amount":"25.50","date":"2023-12-16","transaction_id":"102","user_id":"2"},
+  {"amount":"50.00","date":"2024-01-11","transaction_id":"101","user_id":"1"},
+  {"amount":"100.00","date":"2024-01-12","transaction_id":"103","user_id":"1"}
+]

@@ -100,17 +100,50 @@ type Deduplication struct {
 }
 
 type Config struct {
-	Source          DataConfig     `yaml:"source" json:"source"`
-	Sources         []DataConfig   `yaml:"sources" json:"sources"`
-	Destinations    []DataConfig   `yaml:"destinations" json:"destinations"`
-	Lookups         []DataConfig   `yaml:"lookups" json:"lookups"`
-	Tables          []TableMapping `yaml:"tables" json:"tables"`
-	WorkerCount     int            `json:"worker_count" yaml:"worker_count"`
-	Buffer          int            `json:"buffer" yaml:"buffer"`
-	DistributedMode bool           `json:"distributed_mode" yaml:"distributed_mode"`
-	StreamingMode   bool           `json:"streaming_mode" yaml:"streaming_mode"`
-	Checkpoint      Checkpoint     `json:"checkpoints" yaml:"checkpoints"`
-	Deduplication   Deduplication  `json:"deduplication" yaml:"deduplication"`
+	ID              string           `yaml:"id,omitempty" json:"id,omitempty"`
+	Dependencies    []string         `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
+	Triggers        []TriggerConfig  `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Quality         QualityConfig    `yaml:"quality,omitempty" json:"quality,omitempty"`
+	Source          DataConfig       `yaml:"source" json:"source"`
+	Sources         []DataConfig     `yaml:"sources" json:"sources"`
+	Destinations    []DataConfig     `yaml:"destinations" json:"destinations"`
+	Lookups         []DataConfig     `yaml:"lookups" json:"lookups"`
+	Tables          []TableMapping   `yaml:"tables" json:"tables"`
+	WorkerCount     int              `json:"worker_count" yaml:"worker_count"`
+	Buffer          int              `json:"buffer" yaml:"buffer"`
+	DistributedMode bool             `json:"distributed_mode" yaml:"distributed_mode"`
+	StreamingMode   bool             `json:"streaming_mode" yaml:"streaming_mode"`
+	Checkpoint      Checkpoint       `json:"checkpoints" yaml:"checkpoints"`
+	Deduplication   Deduplication    `json:"deduplication" yaml:"deduplication"`
+}
+
+type TriggerConfig struct {
+	Type    string         `yaml:"type" json:"type"`
+	Options map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+}
+
+type QualityConfig struct {
+	Rules           []QualityRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+	CircuitBreaker  *CircuitBreakerConfig `yaml:"circuit_breaker,omitempty" json:"circuit_breaker,omitempty"`
+	SchemaRegistry  *SchemaRegistryConfig `yaml:"schema_registry,omitempty" json:"schema_registry,omitempty"`
+}
+
+type QualityRule struct {
+	Field       string `yaml:"field" json:"field"`
+	Rule        string `yaml:"rule" json:"rule"` // NotNull, Unique, Regex...
+	Args        []any  `yaml:"args,omitempty" json:"args,omitempty"`
+	WarnOnly    bool   `yaml:"warn_only,omitempty" json:"warn_only,omitempty"`
+}
+
+type CircuitBreakerConfig struct {
+	ErrorThreshold  float64 `yaml:"error_threshold" json:"error_threshold"` // Percentage 0-100
+	MinRecordCount  int     `yaml:"min_record_count" json:"min_record_count"`
+}
+
+type SchemaRegistryConfig struct {
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	Enforce       bool   `yaml:"enforce" json:"enforce"` // If true, fail on drift
+	RegistryURL   string `yaml:"registry_url,omitempty" json:"registry_url,omitempty"`
 }
 
 type AggregationDefinition struct {

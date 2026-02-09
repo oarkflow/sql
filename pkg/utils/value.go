@@ -12,6 +12,10 @@ import (
 	"github.com/oarkflow/expr"
 )
 
+func ToFloat64(val any) (float64, error) {
+	return convert.ToFloat64(val)
+}
+
 func NormalizeRecord(rec Record, schema map[string]string) (Record, error) {
 	for field, targetType := range schema {
 		if val, ok := rec[field]; ok {

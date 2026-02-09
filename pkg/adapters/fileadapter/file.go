@@ -28,6 +28,7 @@ type Adapter struct {
 
 func New(fileName, mode string, appendMode bool) *Adapter {
 	extension := strings.TrimPrefix(filepath.Ext(fileName), ".")
+	fmt.Printf("[DEBUG] Adapter New: filename='%s', extension='%s'\n", fileName, extension)
 	return &Adapter{
 		Filename:        fileName,
 		extension:       extension,

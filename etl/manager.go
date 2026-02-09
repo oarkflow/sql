@@ -257,7 +257,6 @@ func (m *Manager) Prepare(cfg *config.Config, options ...Option) ([]string, erro
 		if len(tableCfg.Mapping) > 0 {
 			mapperList = append(mapperList, mappers.NewFieldMapper(tableCfg.Mapping))
 		}
-		mapperList = append(mapperList, &mappers.LowercaseMapper{})
 		opts = append(opts, WithMappers(mapperList...))
 		if tableCfg.Aggregator != nil {
 			aggTransformer := transformers.NewAggregatorTransformer(
