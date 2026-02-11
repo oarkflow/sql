@@ -10,11 +10,13 @@ import (
 
 type Service struct {
 	Name          string      `json:"name"`
+	Description   string      `json:"description"`
 	Type          ServiceType `json:"type"`
 	Config        any         `json:"config"`
 	RequireAuth   bool        `json:"require_auth"`
 	CredentialKey string      `json:"credential_key"`
 	Enabled       bool        `json:"enabled"`
+	Status        string      `json:"status"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 }

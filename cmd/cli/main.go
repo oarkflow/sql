@@ -56,6 +56,16 @@ func main() {
 						Value: "1.0.0",
 						Usage: "Server version",
 					},
+					&cli.StringFlag{
+						Name:  "database-path",
+						Value: "./data/app.db",
+						Usage: "Path to the control-plane SQLite database",
+					},
+					&cli.StringFlag{
+						Name:    "encryption-key",
+						Usage:   "Key used to encrypt sensitive credential payloads",
+						EnvVars: []string{"APP_ENCRYPTION_KEY"},
+					},
 					&cli.BoolFlag{
 						Name:  "enable-mocks",
 						Value: false,
@@ -81,6 +91,16 @@ func main() {
 								Name:  "host",
 								Value: "localhost",
 								Usage: "Host to bind the server to",
+							},
+							&cli.StringFlag{
+								Name:  "database-path",
+								Value: "./data/app.db",
+								Usage: "Path to the control-plane SQLite database",
+							},
+							&cli.StringFlag{
+								Name:    "encryption-key",
+								Usage:   "Key used to encrypt sensitive credential payloads",
+								EnvVars: []string{"APP_ENCRYPTION_KEY"},
 							},
 						},
 						Action: startRunnerServer,
@@ -248,16 +268,23 @@ func startServer(c *cli.Context) error {
 	staticPath := c.String("static-path")
 	version := c.String("version")
 	enableMocks := c.Bool("enable-mocks")
+	dbPath := c.String("database-path")
+	encryptionKey := c.String("encryption-key")
 
 	fmt.Printf("Starting ETL server on port %s\n", port)
 
 	srvConfig := server.Config{
-		Version:     version,
-		StaticPath:  staticPath,
-		EnableMocks: enableMocks,
+		Version:       version,
+		StaticPath:    staticPath,
+		EnableMocks:   enableMocks,
+		DatabasePath:  dbPath,
+		EncryptionKey: encryptionKey,
 	}
 
-	srv := server.NewServer(srvConfig)
+	srv, err := server.NewServer(srvConfig)
+	if err != nil {
+		return err
+	}
 	addr := ":" + port
 
 	// Set up signal handling for graceful shutdown
@@ -301,16 +328,23 @@ func startServer(c *cli.Context) error {
 func startRunnerServer(c *cli.Context) error {
 	port := c.String("port")
 	host := c.String("host")
+	dbPath := c.String("database-path")
+	encryptionKey := c.String("encryption-key")
 
 	fmt.Printf("Starting ETL server with runner capabilities on %s:%s\n", host, port)
 
 	srvConfig := server.Config{
-		Version:     "1.0.0",
-		StaticPath:  "./views",
-		EnableMocks: false,
+		Version:       "1.0.0",
+		StaticPath:    "./views",
+		EnableMocks:   false,
+		DatabasePath:  dbPath,
+		EncryptionKey: encryptionKey,
 	}
 
-	srv := server.NewServer(srvConfig)
+	srv, err := server.NewServer(srvConfig)
+	if err != nil {
+		return err
+	}
 	addr := host + ":" + port
 
 	// Set up signal handling for graceful shutdown

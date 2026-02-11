@@ -41,6 +41,10 @@ func (is *Manager) AddCredential(c Credential) error {
 	return is.credentials.AddCredential(c)
 }
 
+func (is *Manager) DeleteCredential(key string) error {
+	return is.credentials.DeleteCredential(key)
+}
+
 func (is *Manager) UpdateService(c Service) error {
 	is.m.Lock()
 	if db, ok := is.dbConnections[c.Name]; ok {

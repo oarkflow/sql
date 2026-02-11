@@ -81,6 +81,7 @@ type OAuth2Credential struct {
 	AuthURL      string    `json:"auth_url"`
 	TokenURL     string    `json:"token_url"`
 	Scope        string    `json:"scope"`
+	RedirectURL  string    `json:"redirect_url"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`

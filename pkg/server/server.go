@@ -2,33 +2,50 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/google/uuid"
 	"github.com/oarkflow/sql"
 	"github.com/oarkflow/sql/etl"
 	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/config"
+	"github.com/oarkflow/sql/pkg/storage"
 )
 
 type Config struct {
-	Version     string
-	StaticPath  string
-	EnableMocks bool
+	Version       string
+	StaticPath    string
+	EnableMocks   bool
+	DatabasePath  string
+	EncryptionKey string
 }
 
 type Server struct {
 	app                *fiber.App
 	etlManager         *etl.Manager
 	integrationManager *integrations.Manager
+	store              *storage.Store
 	executions         []ExecutionSummary
 	configurations     []StoredConfiguration
 	config             Config
+	oauthSessions      map[string]*oauthSession
+	oauthMu            sync.Mutex
 }
 
 type StoredConfiguration struct {
@@ -71,7 +88,9 @@ type WorkerActivity struct {
 }
 
 type QueryRequest struct {
-	Query string `json:"query"`
+	Query        string `json:"query"`
+	Integration  string `json:"integration,omitempty"`
+	SavedQueryID string `json:"savedQueryId,omitempty"`
 }
 
 type QueryResponse struct {
@@ -92,20 +111,474 @@ type SchemaResponse struct {
 	Columns map[string][]string `json:"columns"`
 }
 
-type SavedQuery struct {
-	ID        string `json:"id"`
-	Query     string `json:"query"`
-	Name      string `json:"name,omitempty"`
-	Timestamp string `json:"timestamp"`
-	Success   bool   `json:"success"`
+type QueryHistoryEntry struct {
+	ID            string  `json:"id"`
+	SavedQueryID  string  `json:"savedQueryId,omitempty"`
+	Query         string  `json:"query"`
+	Name          string  `json:"name,omitempty"`
+	Integration   string  `json:"integration,omitempty"`
+	Timestamp     string  `json:"timestamp"`
+	RowCount      int     `json:"rowCount"`
+	ExecutionTime float64 `json:"executionTime"`
+	Success       bool    `json:"success"`
+	Error         string  `json:"error,omitempty"`
 }
+
+type SavedQuerySummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Integration string `json:"integration,omitempty"`
+	Query       string `json:"query"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+type OAuthProviderTemplate struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	AuthURL     string `json:"authUrl"`
+	TokenURL    string `json:"tokenUrl"`
+	Scope       string `json:"scope"`
+	DocsURL     string `json:"docsUrl,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+}
+
+type oauthTokenPayload struct {
+	AccessToken  string    `json:"accessToken"`
+	RefreshToken string    `json:"refreshToken"`
+	TokenType    string    `json:"tokenType"`
+	Scope        string    `json:"scope"`
+	ExpiresIn    int       `json:"expiresIn"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+}
+
+type oauthSession struct {
+	Provider     string
+	ClientID     string
+	ClientSecret string
+	AuthURL      string
+	TokenURL     string
+	Scope        string
+	RedirectURL  string
+	CodeVerifier string
+	CreatedAt    time.Time
+	Token        *oauthTokenPayload
+}
+
+const oauthSessionTTL = 10 * time.Minute
 
 type ExecuteConfigRequest struct {
 	Config string `json:"config"`
 	Type   string `json:"type"` // "bcl", "yaml", "json"
 }
 
-func NewServer(cfg Config) *Server {
+type integrationPayload struct {
+	Name        string             `json:"name"`
+	Type        string             `json:"type"`
+	Description string             `json:"description"`
+	Config      map[string]any     `json:"config"`
+	RequireAuth bool               `json:"requireAuth"`
+	Credential  *credentialPayload `json:"credential"`
+}
+
+type credentialPayload struct {
+	Type         string `json:"type"`
+	Key          string `json:"key"`
+	Token        string `json:"token"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	AuthURL      string `json:"authUrl"`
+	TokenURL     string `json:"tokenUrl"`
+	Scope        string `json:"scope"`
+	RedirectURL  string `json:"redirectUrl"`
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresAt    string `json:"expiresAt"`
+}
+
+type oauthStartRequest struct {
+	Provider     string `json:"provider"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	AuthURL      string `json:"authUrl"`
+	TokenURL     string `json:"tokenUrl"`
+	Scope        string `json:"scope"`
+	RedirectURL  string `json:"redirectUrl"`
+}
+
+type integrationResponse struct {
+	ID            string                   `json:"id"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description,omitempty"`
+	Type          integrations.ServiceType `json:"type"`
+	Status        string                   `json:"status"`
+	RequireAuth   bool                     `json:"requireAuth"`
+	CredentialKey string                   `json:"credentialKey,omitempty"`
+	Config        any                      `json:"config"`
+	CreatedAt     time.Time                `json:"createdAt"`
+	UpdatedAt     time.Time                `json:"updatedAt"`
+}
+
+func newIntegrationResponse(svc integrations.Service) integrationResponse {
+	return integrationResponse{
+		ID:            svc.Name,
+		Name:          svc.Name,
+		Description:   svc.Description,
+		Type:          svc.Type,
+		Status:        defaultStatus(svc.Status),
+		RequireAuth:   svc.RequireAuth,
+		CredentialKey: svc.CredentialKey,
+		Config:        svc.Config,
+		CreatedAt:     svc.CreatedAt,
+		UpdatedAt:     svc.UpdatedAt,
+	}
+}
+
+func defaultStatus(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return "pending"
+	}
+	return status
+}
+
+func defaultOAuthProviders() []OAuthProviderTemplate {
+	return []OAuthProviderTemplate{
+		{
+			Name:        "google",
+			DisplayName: "Google Workspace",
+			AuthURL:     "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:    "https://oauth2.googleapis.com/token",
+			Scope:       "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+			DocsURL:     "https://developers.google.com/identity/protocols/oauth2",
+			Icon:        "mail",
+		},
+		{
+			Name:        "github",
+			DisplayName: "GitHub",
+			AuthURL:     "https://github.com/login/oauth/authorize",
+			TokenURL:    "https://github.com/login/oauth/access_token",
+			Scope:       "repo read:user user:email",
+			DocsURL:     "https://docs.github.com/apps/building-oauth-apps/authorizing-oauth-apps",
+			Icon:        "github",
+		},
+		{
+			Name:        "facebook",
+			DisplayName: "Facebook",
+			AuthURL:     "https://www.facebook.com/v18.0/dialog/oauth",
+			TokenURL:    "https://graph.facebook.com/v18.0/oauth/access_token",
+			Scope:       "public_profile email",
+			DocsURL:     "https://developers.facebook.com/docs/facebook-login/",
+			Icon:        "facebook",
+		},
+	}
+}
+
+func findOAuthProviderTemplate(name string) (OAuthProviderTemplate, bool) {
+	for _, tpl := range defaultOAuthProviders() {
+		if tpl.Name == strings.ToLower(name) {
+			return tpl, true
+		}
+	}
+	return OAuthProviderTemplate{}, false
+}
+
+func randomState() string {
+	return uuid.NewString()
+}
+
+func generateCodeVerifier() (string, error) {
+	const length = 64
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
+	bytesBuf := make([]byte, length)
+	if _, err := rand.Read(bytesBuf); err != nil {
+		return "", err
+	}
+	runes := make([]byte, length)
+	for i, b := range bytesBuf {
+		runes[i] = charset[int(b)%len(charset)]
+	}
+	return string(runes), nil
+}
+
+func codeChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (s *Server) saveOAuthSession(state string, session *oauthSession) {
+	s.oauthMu.Lock()
+	s.oauthSessions[state] = session
+	s.oauthMu.Unlock()
+}
+
+func (s *Server) getOAuthSession(state string) (*oauthSession, bool) {
+	s.oauthMu.Lock()
+	defer s.oauthMu.Unlock()
+	sess, ok := s.oauthSessions[state]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(sess.CreatedAt) > oauthSessionTTL {
+		delete(s.oauthSessions, state)
+		return nil, false
+	}
+	return sess, true
+}
+
+func (s *Server) storeOAuthToken(state string, token *oauthTokenPayload) {
+	s.oauthMu.Lock()
+	if sess, ok := s.oauthSessions[state]; ok {
+		sess.Token = token
+	}
+	s.oauthMu.Unlock()
+}
+
+func (s *Server) popOAuthSession(state string) (*oauthSession, bool) {
+	s.oauthMu.Lock()
+	sess, ok := s.oauthSessions[state]
+	if ok {
+		delete(s.oauthSessions, state)
+	}
+	s.oauthMu.Unlock()
+	return sess, ok
+}
+
+func parseExpiresIn(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case string:
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+func exchangeOAuthCode(sess *oauthSession, code string) (*oauthTokenPayload, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("client_id", sess.ClientID)
+	if strings.TrimSpace(sess.ClientSecret) != "" {
+		form.Set("client_secret", sess.ClientSecret)
+	}
+	form.Set("redirect_uri", sess.RedirectURL)
+	form.Set("code_verifier", sess.CodeVerifier)
+	request, err := http.NewRequest(http.MethodPost, sess.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("token endpoint returned %s: %s", resp.Status, string(body))
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	accessToken, _ := raw["access_token"].(string)
+	if strings.TrimSpace(accessToken) == "" {
+		return nil, errors.New("token response missing access_token")
+	}
+	refreshToken, _ := raw["refresh_token"].(string)
+	if refreshToken == "" {
+		refreshToken, _ = raw["refreshToken"].(string)
+	}
+	scope := sess.Scope
+	if v, ok := raw["scope"].(string); ok && strings.TrimSpace(v) != "" {
+		scope = v
+	}
+	expiresIn := parseExpiresIn(raw["expires_in"])
+	tokenType, _ := raw["token_type"].(string)
+	token := &oauthTokenPayload{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		Scope:        scope,
+		TokenType:    tokenType,
+		ExpiresIn:    expiresIn,
+	}
+	if expiresIn > 0 {
+		token.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+	} else {
+		token.ExpiresAt = time.Now().Add(90 * time.Minute)
+	}
+	return token, nil
+}
+
+func (p *credentialPayload) hasSecret() bool {
+	if p == nil {
+		return false
+	}
+	return strings.TrimSpace(p.Key) != "" || strings.TrimSpace(p.Token) != "" ||
+		(strings.TrimSpace(p.Username) != "" && strings.TrimSpace(p.Password) != "") ||
+		(strings.TrimSpace(p.ClientID) != "" && strings.TrimSpace(p.ClientSecret) != "") ||
+		strings.TrimSpace(p.AccessToken) != "" || strings.TrimSpace(p.RefreshToken) != ""
+}
+
+func (p *credentialPayload) credentialType() integrations.CredentialType {
+	if p == nil {
+		return ""
+	}
+	return integrations.CredentialType(strings.ToLower(strings.TrimSpace(p.Type)))
+}
+
+func normalizeIntegrationName(name string) string {
+	return strings.TrimSpace(name)
+}
+
+func (s *Server) serviceFromPayload(payload integrationPayload, existing *integrations.Service) (integrations.Service, *integrations.Credential, error) {
+	svc := integrations.Service{}
+	if existing != nil {
+		svc = *existing
+	} else {
+		svc.CreatedAt = time.Now().UTC()
+		svc.Enabled = true
+	}
+
+	if name := normalizeIntegrationName(payload.Name); name != "" {
+		svc.Name = name
+	}
+	if strings.TrimSpace(svc.Name) == "" {
+		return svc, nil, errors.New("integration name is required")
+	}
+	if payload.Description != "" || existing == nil {
+		svc.Description = strings.TrimSpace(payload.Description)
+	}
+	if payload.Type != "" {
+		svc.Type = integrations.ServiceType(strings.ToLower(strings.TrimSpace(payload.Type)))
+	}
+	if svc.Type == "" {
+		return svc, nil, errors.New("integration type is required")
+	}
+	if payload.Config != nil {
+		svc.Config = payload.Config
+	}
+	if svc.Config == nil {
+		svc.Config = map[string]any{}
+	}
+	if svc.Status == "" {
+		svc.Status = "pending"
+	}
+
+	svc.RequireAuth = payload.RequireAuth
+	var cred *integrations.Credential
+	if svc.RequireAuth {
+		if payload.Credential != nil && payload.Credential.hasSecret() {
+			credential, err := s.buildCredential(svc.Name, payload.Credential, existing)
+			if err != nil {
+				return svc, nil, err
+			}
+			cred = credential
+			svc.CredentialKey = credential.Key
+		} else if existing == nil || existing.CredentialKey == "" {
+			return svc, nil, errors.New("credential details are required for authenticated integrations")
+		}
+	} else {
+		svc.CredentialKey = ""
+	}
+
+	if err := integrations.UnmarshalService(&svc); err != nil {
+		return svc, nil, err
+	}
+
+	return svc, cred, nil
+}
+
+func (s *Server) buildCredential(serviceName string, payload *credentialPayload, existing *integrations.Service) (*integrations.Credential, error) {
+	typeValue := payload.credentialType()
+	if typeValue == "" {
+		return nil, errors.New("credential type is required")
+	}
+	key := fmt.Sprintf("%s-credential", serviceName)
+	if existing != nil && existing.CredentialKey != "" {
+		key = existing.CredentialKey
+	}
+	now := time.Now().UTC()
+	cred := &integrations.Credential{
+		Key:         key,
+		Type:        typeValue,
+		Description: fmt.Sprintf("Credential for %s", serviceName),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	switch typeValue {
+	case integrations.CredentialTypeAPIKey:
+		if strings.TrimSpace(payload.Key) == "" {
+			return nil, errors.New("api key value is required")
+		}
+		cred.Data = integrations.APIKeyCredential{Key: payload.Key}
+	case integrations.CredentialTypeBearer:
+		if strings.TrimSpace(payload.Token) == "" {
+			return nil, errors.New("bearer token is required")
+		}
+		cred.Data = integrations.BearerCredential{Token: payload.Token}
+	case integrations.CredentialTypeBasicAuth:
+		if strings.TrimSpace(payload.Username) == "" || strings.TrimSpace(payload.Password) == "" {
+			return nil, errors.New("username and password are required for basic auth")
+		}
+		cred.Data = integrations.BasicAuthCredential{Username: payload.Username, Password: payload.Password}
+	case integrations.CredentialTypeOAuth2:
+		if strings.TrimSpace(payload.ClientID) == "" {
+			return nil, errors.New("client id is required for oauth2")
+		}
+		if strings.TrimSpace(payload.TokenURL) == "" {
+			return nil, errors.New("token url is required for oauth2")
+		}
+		if strings.TrimSpace(payload.AccessToken) == "" {
+			return nil, errors.New("access token is required for oauth2")
+		}
+		if strings.TrimSpace(payload.RefreshToken) == "" {
+			return nil, errors.New("refresh token is required for oauth2")
+		}
+		expiresAt := time.Now().Add(1 * time.Hour)
+		if strings.TrimSpace(payload.ExpiresAt) != "" {
+			if parsed, err := time.Parse(time.RFC3339, payload.ExpiresAt); err == nil {
+				expiresAt = parsed
+			}
+		}
+		cred.Data = &integrations.OAuth2Credential{
+			ClientID:     payload.ClientID,
+			ClientSecret: payload.ClientSecret,
+			AuthURL:      payload.AuthURL,
+			TokenURL:     payload.TokenURL,
+			Scope:        payload.Scope,
+			RedirectURL:  payload.RedirectURL,
+			AccessToken:  payload.AccessToken,
+			RefreshToken: payload.RefreshToken,
+			ExpiresAt:    expiresAt,
+		}
+	default:
+		return nil, fmt.Errorf("unsupported credential type: %s", payload.Type)
+	}
+
+	return cred, nil
+}
+
+func NewServer(cfg Config) (*Server, error) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
@@ -122,17 +595,59 @@ func NewServer(cfg Config) *Server {
 	etlManager := etl.NewManager()
 	integrationManager := integrations.New()
 
+	store, err := storage.New(storage.Config{
+		Path:          cfg.DatabasePath,
+		EncryptionKey: cfg.EncryptionKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	server := &Server{
 		app:                app,
 		etlManager:         etlManager,
 		integrationManager: integrationManager,
+		store:              store,
 		executions:         []ExecutionSummary{},
 		configurations:     []StoredConfiguration{},
 		config:             cfg,
+		oauthSessions:      make(map[string]*oauthSession),
+	}
+
+	if err := server.bootstrap(context.Background()); err != nil {
+		store.Close()
+		return nil, err
 	}
 
 	server.setupRoutes()
-	return server
+	return server, nil
+}
+
+func (s *Server) bootstrap(ctx context.Context) error {
+	creds, err := s.store.ListCredentials(ctx)
+	if err != nil {
+		return err
+	}
+	for _, cred := range creds {
+		if err := s.integrationManager.AddCredential(cred); err != nil {
+			if err := s.integrationManager.UpdateCredential(cred); err != nil {
+				return err
+			}
+		}
+	}
+
+	services, err := s.store.ListIntegrations(ctx)
+	if err != nil {
+		return err
+	}
+	for _, svc := range services {
+		if err := s.integrationManager.AddService(svc); err != nil {
+			if err := s.integrationManager.UpdateService(svc); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) setupRoutes() {
@@ -146,10 +661,20 @@ func (s *Server) setupRoutes() {
 	s.app.Post("/api/query", s.executeQueryHandler)
 	s.app.Post("/api/query/validate", s.validateQueryHandler)
 	s.app.Get("/api/query/history", s.getQueryHistoryHandler)
+	s.app.Delete("/api/query/history", s.clearQueryHistoryHandler)
 	s.app.Post("/api/query/save", s.saveQueryHandler)
+	s.app.Get("/api/query/save", s.listSavedQueriesHandler)
+	s.app.Put("/api/query/save/:id", s.updateSavedQueryHandler)
+	s.app.Delete("/api/query/save/:id", s.deleteSavedQueryHandler)
 
 	// Schema endpoints
 	s.app.Get("/api/schema/:integration", s.getSchemaHandler)
+
+	// OAuth endpoints
+	s.app.Get("/api/oauth/providers", s.listOAuthProvidersHandler)
+	s.app.Post("/api/oauth/start", s.startOAuthHandler)
+	s.app.Get("/api/oauth/session/:state", s.getOAuthSessionHandler)
+	s.app.Get("/oauth/callback", s.oauthCallbackHandler)
 
 	// Integration endpoints
 	s.app.Get("/api/integrations", s.getIntegrationsHandler)
@@ -252,11 +777,24 @@ func (s *Server) executeQueryHandler(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Query cannot be empty"})
 	}
 
+	ctx := context.Background()
 	start := time.Now()
-	records, err := sql.Query(context.Background(), req.Query)
-	executionTime := time.Since(start).Seconds()
+	records, err := sql.Query(ctx, req.Query)
+	executionTime := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
+		if s.store != nil {
+			if _, histErr := s.store.RecordQueryHistory(ctx, storage.QueryHistoryRecord{
+				QueryID:       req.SavedQueryID,
+				Query:         req.Query,
+				Integration:   req.Integration,
+				ExecutionTime: executionTime,
+				Success:       false,
+				Error:         err.Error(),
+			}); histErr != nil {
+				log.Printf("failed to record query error: %v", histErr)
+			}
+		}
 		return c.Status(400).JSON(fiber.Map{
 			"error":         err.Error(),
 			"executionTime": executionTime,
@@ -288,6 +826,19 @@ func (s *Server) executeQueryHandler(c *fiber.Ctx) error {
 		Rows:          rows,
 		RowCount:      len(rows),
 		ExecutionTime: executionTime,
+	}
+
+	if s.store != nil {
+		if _, histErr := s.store.RecordQueryHistory(ctx, storage.QueryHistoryRecord{
+			QueryID:       req.SavedQueryID,
+			Query:         req.Query,
+			Integration:   req.Integration,
+			RowCount:      response.RowCount,
+			ExecutionTime: executionTime,
+			Success:       true,
+		}); histErr != nil {
+			log.Printf("failed to record query history: %v", histErr)
+		}
 	}
 
 	return c.JSON(response)
@@ -344,150 +895,424 @@ func (s *Server) getSchemaHandler(c *fiber.Ctx) error {
 	return c.JSON(schema)
 }
 
-func (s *Server) getIntegrationsHandler(c *fiber.Ctx) error {
-	if !s.config.EnableMocks {
-		return c.JSON([]map[string]interface{}{})
-	}
-	// Return mock integrations
-	integrations := []map[string]interface{}{
-		{
-			"id":          "1",
-			"name":        "users.csv",
-			"type":        "file",
-			"status":      "connected",
-			"description": "User data CSV file",
-			"config":      map[string]interface{}{"path": "/data/users.csv", "format": "csv"},
-			"createdAt":   "2025-09-15T10:30:00Z",
-			"lastUsed":    "2025-09-28T14:20:00Z",
-		},
-		{
-			"id":          "2",
-			"name":        "PostgreSQL DB",
-			"type":        "database",
-			"status":      "connected",
-			"description": "Production database",
-			"config":      map[string]interface{}{"host": "localhost", "port": 5432, "database": "prod_db"},
-			"createdAt":   "2025-09-10T08:00:00Z",
-			"lastUsed":    "2025-09-29T09:15:00Z",
-		},
-	}
+func (s *Server) listOAuthProvidersHandler(c *fiber.Ctx) error {
+	return c.JSON(defaultOAuthProviders())
+}
 
-	return c.JSON(integrations)
+func (s *Server) startOAuthHandler(c *fiber.Ctx) error {
+	var req oauthStartRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+	if tpl, ok := findOAuthProviderTemplate(req.Provider); ok {
+		if strings.TrimSpace(req.AuthURL) == "" {
+			req.AuthURL = tpl.AuthURL
+		}
+		if strings.TrimSpace(req.TokenURL) == "" {
+			req.TokenURL = tpl.TokenURL
+		}
+		if strings.TrimSpace(req.Scope) == "" {
+			req.Scope = tpl.Scope
+		}
+	}
+	if strings.TrimSpace(req.RedirectURL) == "" {
+		req.RedirectURL = fmt.Sprintf("%s://%s/oauth/callback", c.Protocol(), c.Hostname())
+	}
+	if strings.TrimSpace(req.ClientID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "clientId is required"})
+	}
+	if strings.TrimSpace(req.AuthURL) == "" || strings.TrimSpace(req.TokenURL) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "authUrl and tokenUrl are required"})
+	}
+	verifier, err := generateCodeVerifier()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate PKCE verifier"})
+	}
+	challenge := codeChallenge(verifier)
+	state := randomState()
+	session := &oauthSession{
+		Provider:     strings.ToLower(strings.TrimSpace(req.Provider)),
+		ClientID:     req.ClientID,
+		ClientSecret: req.ClientSecret,
+		AuthURL:      req.AuthURL,
+		TokenURL:     req.TokenURL,
+		Scope:        strings.TrimSpace(req.Scope),
+		RedirectURL:  req.RedirectURL,
+		CodeVerifier: verifier,
+		CreatedAt:    time.Now(),
+	}
+	s.saveOAuthSession(state, session)
+	authURL, err := url.Parse(req.AuthURL)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid authUrl"})
+	}
+	query := authURL.Query()
+	query.Set("response_type", "code")
+	query.Set("client_id", req.ClientID)
+	query.Set("redirect_uri", req.RedirectURL)
+	if session.Scope != "" {
+		query.Set("scope", session.Scope)
+	}
+	query.Set("state", state)
+	query.Set("access_type", "offline")
+	query.Set("prompt", "consent")
+	query.Set("code_challenge_method", "S256")
+	query.Set("code_challenge", challenge)
+	authURL.RawQuery = query.Encode()
+
+	return c.JSON(fiber.Map{
+		"state":            state,
+		"authorizationUrl": authURL.String(),
+		"redirectUrl":      req.RedirectURL,
+	})
+}
+
+func (s *Server) getOAuthSessionHandler(c *fiber.Ctx) error {
+	state := c.Params("state")
+	if strings.TrimSpace(state) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing state"})
+	}
+	s.oauthMu.Lock()
+	sess, ok := s.oauthSessions[state]
+	if !ok {
+		s.oauthMu.Unlock()
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "oauth session not found"})
+	}
+	if time.Since(sess.CreatedAt) > oauthSessionTTL {
+		delete(s.oauthSessions, state)
+		s.oauthMu.Unlock()
+		return c.Status(fiber.StatusGone).JSON(fiber.Map{"error": "oauth session expired"})
+	}
+	if sess.Token == nil {
+		s.oauthMu.Unlock()
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"status": "pending"})
+	}
+	token := *sess.Token
+	delete(s.oauthSessions, state)
+	s.oauthMu.Unlock()
+	expiresAt := token.ExpiresAt.Format(time.RFC3339)
+	return c.JSON(fiber.Map{
+		"provider":     sess.Provider,
+		"accessToken":  token.AccessToken,
+		"refreshToken": token.RefreshToken,
+		"tokenType":    token.TokenType,
+		"scope":        token.Scope,
+		"expiresIn":    token.ExpiresIn,
+		"expiresAt":    expiresAt,
+	})
+}
+
+func (s *Server) oauthCallbackHandler(c *fiber.Ctx) error {
+	state := c.Query("state")
+	if strings.TrimSpace(state) == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("Missing OAuth state")
+	}
+	if errMsg := c.Query("error"); errMsg != "" {
+		s.popOAuthSession(state)
+		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("Authentication failed: %s", errMsg))
+	}
+	code := c.Query("code")
+	if strings.TrimSpace(code) == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("Missing authorization code")
+	}
+	sess, ok := s.getOAuthSession(state)
+	if !ok {
+		return c.Status(fiber.StatusBadRequest).SendString("OAuth session expired or invalid")
+	}
+	token, err := exchangeOAuthCode(sess, code)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).SendString(fmt.Sprintf("Failed to exchange authorization code: %v", err))
+	}
+	s.storeOAuthToken(state, token)
+	return c.SendString("<html><body><div style='font-family: sans-serif; text-align:center; padding:40px;'>Authentication complete. You can close this window.</div><script>setTimeout(function(){ window.close(); }, 1500);</script></body></html>")
+}
+
+func (s *Server) getIntegrationsHandler(c *fiber.Ctx) error {
+	services, err := s.store.ListIntegrations(context.Background())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list integrations"})
+	}
+	responses := make([]integrationResponse, len(services))
+	for i, svc := range services {
+		responses[i] = newIntegrationResponse(svc)
+	}
+	return c.JSON(responses)
 }
 
 func (s *Server) getIntegrationHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
-	// Mock implementation
-	return c.JSON(map[string]interface{}{
-		"id":          id,
-		"name":        "Mock Integration",
-		"type":        "database",
-		"status":      "connected",
-		"description": "Mock integration",
-	})
+	name := c.Params("id")
+	svc, err := s.store.GetIntegration(context.Background(), name)
+	if err != nil {
+		if errors.Is(err, storage.ErrIntegrationNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "integration not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load integration"})
+	}
+	return c.JSON(newIntegrationResponse(svc))
 }
 
 func (s *Server) createIntegrationHandler(c *fiber.Ctx) error {
-	var integration map[string]interface{}
-	if err := c.BodyParser(&integration); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	var payload integrationPayload
+	if err := c.BodyParser(&payload); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
-	// Mock implementation
-	integration["id"] = "new-id"
-	integration["createdAt"] = time.Now().Format(time.RFC3339)
-
-	return c.Status(201).JSON(integration)
+	svc, cred, err := s.serviceFromPayload(payload, nil)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	ctx := context.Background()
+	if cred != nil {
+		if err := s.store.UpsertCredential(ctx, *cred); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store credential"})
+		}
+		if err := s.integrationManager.UpdateCredential(*cred); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to register credential"})
+		}
+	}
+	if err := s.store.CreateIntegration(ctx, svc); err != nil {
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "unique") {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "integration name already exists"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to persist integration"})
+	}
+	saved, err := s.store.GetIntegration(ctx, svc.Name)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to reload integration"})
+	}
+	if err := s.integrationManager.AddService(saved); err != nil {
+		if err := s.integrationManager.UpdateService(saved); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to register integration"})
+		}
+	}
+	return c.Status(fiber.StatusCreated).JSON(newIntegrationResponse(saved))
 }
 
 func (s *Server) updateIntegrationHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
-	var updates map[string]interface{}
-	if err := c.BodyParser(&updates); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	name := c.Params("id")
+	ctx := context.Background()
+	existing, err := s.store.GetIntegration(ctx, name)
+	if err != nil {
+		if errors.Is(err, storage.ErrIntegrationNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "integration not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load integration"})
 	}
-
-	// Mock implementation
-	return c.JSON(map[string]interface{}{
-		"id":      id,
-		"message": "Integration updated successfully",
-	})
+	var payload integrationPayload
+	if err := c.BodyParser(&payload); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+	if payload.Name != "" && normalizeIntegrationName(payload.Name) != existing.Name {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "renaming integrations is not supported yet"})
+	}
+	payload.Name = existing.Name
+	svc, cred, err := s.serviceFromPayload(payload, &existing)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if cred != nil {
+		if err := s.store.UpsertCredential(ctx, *cred); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to store credential"})
+		}
+		if err := s.integrationManager.UpdateCredential(*cred); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to register credential"})
+		}
+	}
+	if !svc.RequireAuth && existing.RequireAuth && existing.CredentialKey != "" {
+		_ = s.store.DeleteCredential(ctx, existing.CredentialKey)
+		_ = s.integrationManager.DeleteCredential(existing.CredentialKey)
+	}
+	if err := s.store.UpdateIntegration(ctx, svc); err != nil {
+		if errors.Is(err, storage.ErrIntegrationNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "integration not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update integration"})
+	}
+	saved, err := s.store.GetIntegration(ctx, svc.Name)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to reload integration"})
+	}
+	if err := s.integrationManager.UpdateService(saved); err != nil {
+		if err := s.integrationManager.AddService(saved); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to register integration"})
+		}
+	}
+	return c.JSON(newIntegrationResponse(saved))
 }
 
 func (s *Server) deleteIntegrationHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
-	// Mock implementation
-	return c.JSON(map[string]interface{}{
-		"id":      id,
-		"message": "Integration deleted successfully",
-	})
+	name := c.Params("id")
+	ctx := context.Background()
+	svc, err := s.store.GetIntegration(ctx, name)
+	if err != nil {
+		if errors.Is(err, storage.ErrIntegrationNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "integration not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load integration"})
+	}
+	if err := s.store.DeleteIntegration(ctx, name); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete integration"})
+	}
+	if svc.CredentialKey != "" {
+		_ = s.store.DeleteCredential(ctx, svc.CredentialKey)
+		_ = s.integrationManager.DeleteCredential(svc.CredentialKey)
+	}
+	_ = s.integrationManager.DeleteService(name)
+	return c.JSON(fiber.Map{"id": name, "message": "integration deleted successfully"})
 }
 
 // Placeholder implementations for other endpoints
 func (s *Server) getQueryHistoryHandler(c *fiber.Ctx) error {
-	if !s.config.EnableMocks {
-		return c.JSON([]SavedQuery{})
-	}
-	history := []SavedQuery{
-		{
-			ID:        "1",
-			Query:     "SELECT * FROM read_file('users.csv') LIMIT 10",
-			Name:      "User Data Query",
-			Timestamp: "2025-01-21T10:00:00Z",
-			Success:   true,
-		},
-		{
-			ID:        "2",
-			Query:     "SELECT name, email FROM read_file('customers.csv') WHERE status = 'active'",
-			Name:      "Active Customers",
-			Timestamp: "2025-01-21T09:30:00Z",
-			Success:   true,
-		},
-		{
-			ID:        "3",
-			Query:     "SELECT COUNT(*) as total FROM read_file('orders.csv')",
-			Name:      "Order Count",
-			Timestamp: "2025-01-21T09:15:00Z",
-			Success:   true,
-		},
-		{
-			ID:        "4",
-			Query:     "SELECT * FROM invalid_table",
-			Name:      "Failed Query",
-			Timestamp: "2025-01-21T08:45:00Z",
-			Success:   false,
-		},
+	ctx := context.Background()
+	records, err := s.store.ListQueryHistory(ctx, 50)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load query history"})
 	}
 
-	// Add execution time data for each query
-	queries := make([]map[string]interface{}, len(history))
-	for i, query := range history {
-		queries[i] = map[string]interface{}{
-			"id":            query.ID,
-			"query":         query.Query,
-			"name":          query.Name,
-			"timestamp":     query.Timestamp,
-			"success":       query.Success,
-			"rowCount":      (time.Now().Unix() + int64(i*100)) % 1000,
-			"executionTime": (time.Now().Unix() + int64(i*50)) % 500,
+	history := make([]QueryHistoryEntry, len(records))
+	for i, rec := range records {
+		history[i] = QueryHistoryEntry{
+			ID:            rec.ID,
+			SavedQueryID:  rec.QueryID,
+			Query:         rec.Query,
+			Name:          rec.Name,
+			Integration:   rec.Integration,
+			Timestamp:     rec.CreatedAt.Format(time.RFC3339),
+			RowCount:      rec.RowCount,
+			ExecutionTime: rec.ExecutionTime,
+			Success:       rec.Success,
+			Error:         rec.Error,
 		}
 	}
 
-	return c.JSON(queries)
+	return c.JSON(history)
+}
+
+func (s *Server) clearQueryHistoryHandler(c *fiber.Ctx) error {
+	if err := s.store.ClearQueryHistory(context.Background()); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to clear query history"})
+	}
+	return c.JSON(fiber.Map{"message": "query history cleared"})
 }
 
 func (s *Server) saveQueryHandler(c *fiber.Ctx) error {
 	var req struct {
-		Query string `json:"query"`
-		Name  string `json:"name,omitempty"`
+		Query       string `json:"query"`
+		Name        string `json:"name,omitempty"`
+		Integration string `json:"integration,omitempty"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	return c.JSON(map[string]interface{}{
-		"id": "saved-query-id",
+	if strings.TrimSpace(req.Query) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Query cannot be empty"})
+	}
+
+	rec, err := s.store.SaveQuery(context.Background(), req.Name, req.Query, req.Integration)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to save query"})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(SavedQuerySummary{
+		ID:          rec.ID,
+		Name:        rec.Name,
+		Integration: rec.Integration,
+		Query:       rec.Query,
+		CreatedAt:   rec.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   rec.UpdatedAt.Format(time.RFC3339),
 	})
+}
+
+func (s *Server) listSavedQueriesHandler(c *fiber.Ctx) error {
+	records, err := s.store.ListSavedQueries(context.Background())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list saved queries"})
+	}
+
+	resp := make([]SavedQuerySummary, len(records))
+	for i, rec := range records {
+		resp[i] = SavedQuerySummary{
+			ID:          rec.ID,
+			Name:        rec.Name,
+			Integration: rec.Integration,
+			Query:       rec.Query,
+			CreatedAt:   rec.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   rec.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+	return c.JSON(resp)
+}
+
+func (s *Server) updateSavedQueryHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if strings.TrimSpace(id) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing query id"})
+	}
+
+	var req struct {
+		Name        *string `json:"name"`
+		Query       *string `json:"query"`
+		Integration *string `json:"integration"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	ctx := context.Background()
+	rec, err := s.store.GetSavedQuery(ctx, id)
+	if err != nil {
+		if errors.Is(err, storage.ErrSavedQueryNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "saved query not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load saved query"})
+	}
+
+	if req.Name != nil {
+		rec.Name = *req.Name
+	}
+	if req.Query != nil {
+		rec.Query = *req.Query
+	}
+	if req.Integration != nil {
+		rec.Integration = *req.Integration
+	}
+
+	if strings.TrimSpace(rec.Query) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "query cannot be empty"})
+	}
+
+	updated, err := s.store.UpdateSavedQuery(ctx, rec)
+	if err != nil {
+		if errors.Is(err, storage.ErrSavedQueryNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "saved query not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update saved query"})
+	}
+
+	return c.JSON(SavedQuerySummary{
+		ID:          updated.ID,
+		Name:        updated.Name,
+		Integration: updated.Integration,
+		Query:       updated.Query,
+		CreatedAt:   updated.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   updated.UpdatedAt.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) deleteSavedQueryHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if strings.TrimSpace(id) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing query id"})
+	}
+	if err := s.store.DeleteSavedQuery(context.Background(), id); err != nil {
+		if errors.Is(err, storage.ErrSavedQueryNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "saved query not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete saved query"})
+	}
+	return c.JSON(fiber.Map{"id": id, "message": "saved query deleted"})
 }
 
 func (s *Server) getPipelinesHandler(c *fiber.Ctx) error {
@@ -971,19 +1796,38 @@ func (s *Server) testAdapterHandler(c *fiber.Ctx) error {
 }
 
 func (s *Server) testIntegrationHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
-	// Mock implementation - simulate test
-	time.Sleep(2 * time.Second)
-	return c.JSON(map[string]interface{}{
-		"id":      id,
-		"status":  "success",
-		"message": "Integration test completed successfully",
-		"metrics": map[string]interface{}{
-			"latency":     "250ms",
-			"status":      "connected",
-			"lastChecked": time.Now().Format(time.RFC3339),
-		},
-	})
+	name := c.Params("id")
+	svc, err := s.integrationManager.GetService(name)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "integration not found"})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	switch svc.Type {
+	case integrations.ServiceTypeAPI:
+		resp, err := s.integrationManager.ExecuteAPIRequest(ctx, svc.Name, nil)
+		if err != nil {
+			_ = s.store.UpdateIntegrationStatus(context.Background(), svc.Name, "error")
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		_ = s.store.UpdateIntegrationStatus(context.Background(), svc.Name, "connected")
+		return c.JSON(fiber.Map{
+			"id":      svc.Name,
+			"status":  "success",
+			"message": "HTTP endpoint responded successfully",
+			"metrics": fiber.Map{
+				"latency":     "unknown",
+				"status":      "connected",
+				"lastChecked": time.Now().Format(time.RFC3339),
+			},
+		})
+	default:
+		return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": "testing not implemented for this integration type"})
+	}
 }
 
 // Real-time updates endpoint for polling
@@ -1204,5 +2048,10 @@ func (s *Server) Start(addr string) error {
 
 func (s *Server) Shutdown() error {
 	log.Println("Shutting down API server gracefully")
-	return s.app.Shutdown()
+	appErr := s.app.Shutdown()
+	storeErr := s.store.Close()
+	if appErr != nil {
+		return appErr
+	}
+	return storeErr
 }

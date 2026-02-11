@@ -114,6 +114,10 @@ func (is *Manager) GetService(service string) (Service, error) {
 	return is.services.GetService(service)
 }
 
+func (is *Manager) DeleteService(service string) error {
+	return is.services.DeleteService(service)
+}
+
 func (is *Manager) AddCB(name string, cb *CircuitBreaker) {
 	is.Lock()
 	defer is.Unlock()
