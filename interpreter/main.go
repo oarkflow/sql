@@ -1704,6 +1704,22 @@ var builtins = map[string]*Builtin{
 	},
 	"exec": {
 		Fn: func(args ...Object) Object {
+			// Whitelist of allowed commands for security
+			allowedCommands := map[string]bool{
+				"echo":   true,
+				"date":   true,
+				"ls":     true,
+				"pwd":    true,
+				"cat":    true,
+				"grep":   true,
+				"wc":     true,
+				"head":   true,
+				"tail":   true,
+				"whoami": true,
+				"sort":   true,
+				"uniq":   true,
+			}
+
 			if len(args) < 1 {
 				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=at least 1", len(args))}
 			}
@@ -1712,6 +1728,11 @@ var builtins = map[string]*Builtin{
 			}
 
 			cmdName := args[0].(*String).Value
+
+			if !allowedCommands[cmdName] {
+				return &String{Value: fmt.Sprintf("ERROR: command '%s' is not in the allowed whitelist", cmdName)}
+			}
+
 			cmdArgs := []string{}
 
 			for i := 1; i < len(args); i++ {
