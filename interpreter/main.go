@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -30,6 +33,8 @@ const (
 	TOKEN_ELSE
 	TOKEN_WHILE
 	TOKEN_FOR
+	TOKEN_BREAK
+	TOKEN_CONTINUE
 	TOKEN_FUNCTION
 	TOKEN_RETURN
 	TOKEN_PRINT
@@ -60,6 +65,7 @@ const (
 	TOKEN_RBRACKET
 	TOKEN_COMMA
 	TOKEN_SEMICOLON
+	TOKEN_COLON
 
 	TOKEN_EOF
 	TOKEN_ILLEGAL
@@ -262,6 +268,8 @@ func (l *Lexer) NextToken() Token {
 		tok = Token{Type: TOKEN_COMMA, Literal: string(l.ch)}
 	case ';':
 		tok = Token{Type: TOKEN_SEMICOLON, Literal: string(l.ch)}
+	case ':':
+		tok = Token{Type: TOKEN_COLON, Literal: string(l.ch)}
 	case '"':
 		tok.Type = TOKEN_STRING
 		tok.Literal = l.readString()
@@ -301,6 +309,8 @@ func lookupIdent(ident string) TokenType {
 		"else":     TOKEN_ELSE,
 		"while":    TOKEN_WHILE,
 		"for":      TOKEN_FOR,
+		"break":    TOKEN_BREAK,
+		"continue": TOKEN_CONTINUE,
 		"function": TOKEN_FUNCTION,
 		"return":   TOKEN_RETURN,
 		"print":    TOKEN_PRINT,
@@ -390,6 +400,23 @@ func (al *ArrayLiteral) String() string {
 		out.WriteString(el.String())
 	}
 	out.WriteString("]")
+	return out.String()
+}
+
+type HashLiteral struct {
+	Pairs map[Expression]Expression
+}
+
+func (hl *HashLiteral) expressionNode() {}
+func (hl *HashLiteral) String() string {
+	var out strings.Builder
+	pairs := []string{}
+	for key, value := range hl.Pairs {
+		pairs = append(pairs, key.String()+":"+value.String())
+	}
+	out.WriteString("{")
+	out.WriteString(strings.Join(pairs, ", "))
+	out.WriteString("}")
 	return out.String()
 }
 
@@ -507,6 +534,16 @@ func (rs *ReturnStatement) String() string {
 	return "return;"
 }
 
+type BreakStatement struct{}
+
+func (bs *BreakStatement) statementNode() {}
+func (bs *BreakStatement) String() string { return "break;" }
+
+type ContinueStatement struct{}
+
+func (cs *ContinueStatement) statementNode() {}
+func (cs *ContinueStatement) String() string { return "continue;" }
+
 type ExpressionStatement struct {
 	Expression Expression
 }
@@ -543,6 +580,33 @@ type WhileStatement struct {
 func (ws *WhileStatement) statementNode() {}
 func (ws *WhileStatement) String() string {
 	return fmt.Sprintf("while (%s) %s", ws.Condition.String(), ws.Body.String())
+}
+
+type ForStatement struct {
+	Init      Statement
+	Condition Expression
+	Post      Statement
+	Body      *BlockStatement
+}
+
+func (fs *ForStatement) statementNode() {}
+func (fs *ForStatement) String() string {
+	var out strings.Builder
+	out.WriteString("for (")
+	if fs.Init != nil {
+		out.WriteString(fs.Init.String())
+	} else {
+		out.WriteString(";")
+	}
+	if fs.Condition != nil {
+		out.WriteString(" " + fs.Condition.String() + ";")
+	}
+	if fs.Post != nil {
+		out.WriteString(" " + fs.Post.String())
+	}
+	out.WriteString(") ")
+	out.WriteString(fs.Body.String())
+	return out.String()
 }
 
 type PrintStatement struct {
@@ -625,6 +689,12 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseReturnStatement()
 	case TOKEN_WHILE:
 		return p.parseWhileStatement()
+	case TOKEN_FOR:
+		return p.parseForStatement()
+	case TOKEN_BREAK:
+		return p.parseBreakStatement()
+	case TOKEN_CONTINUE:
+		return p.parseContinueStatement()
 	case TOKEN_PRINT:
 		return p.parsePrintStatement()
 	default:
@@ -694,6 +764,75 @@ func (p *Parser) parseWhileStatement() *WhileStatement {
 
 	stmt.Body = p.parseBlockStatement()
 
+	return stmt
+}
+
+func (p *Parser) parseForStatement() *ForStatement {
+	stmt := &ForStatement{}
+
+	if !p.expectPeek(TOKEN_LPAREN) {
+		return nil
+	}
+
+	p.nextToken() // Consume (
+
+	// Parse Init
+	if !p.curTokenIs(TOKEN_SEMICOLON) {
+		stmt.Init = p.parseStatement()
+		// If Init was parsed (Let/ExprStatement), it typically consumes the semicolon.
+		// So curToken is now ';'.
+		// We need to move past it to get to Condition.
+		if p.curTokenIs(TOKEN_SEMICOLON) {
+			p.nextToken()
+		}
+	} else {
+		// Empty init
+		p.nextToken() // Consume ;
+	}
+
+	// Parse Condition
+	if !p.curTokenIs(TOKEN_SEMICOLON) {
+		stmt.Condition = p.parseExpression(LOWEST)
+	}
+	if !p.expectPeek(TOKEN_SEMICOLON) {
+		return nil
+	}
+
+	// Parse Post - allow parsing but don't require it
+	if !p.peekTokenIs(TOKEN_RPAREN) {
+		p.nextToken()
+		exp := p.parseExpression(LOWEST)
+		stmt.Post = &ExpressionStatement{Expression: exp}
+	}
+
+	if !p.expectPeek(TOKEN_RPAREN) {
+		return nil
+	}
+
+	if !p.expectPeek(TOKEN_LBRACE) {
+		return nil
+	}
+
+	stmt.Body = p.parseBlockStatement()
+
+	return stmt
+}
+
+func (p *Parser) parseBreakStatement() *BreakStatement {
+	stmt := &BreakStatement{}
+	p.nextToken() // consume break
+	if p.peekTokenIs(TOKEN_SEMICOLON) {
+		p.nextToken()
+	}
+	return stmt
+}
+
+func (p *Parser) parseContinueStatement() *ContinueStatement {
+	stmt := &ContinueStatement{}
+	p.nextToken() // consume continue
+	if p.peekTokenIs(TOKEN_SEMICOLON) {
+		p.nextToken()
+	}
 	return stmt
 }
 
@@ -831,6 +970,8 @@ func (p *Parser) prefixParseFn() func() Expression {
 		return p.parseFunctionLiteral
 	case TOKEN_LBRACKET:
 		return p.parseArrayLiteral
+	case TOKEN_LBRACE:
+		return p.parseHashLiteral
 	}
 	return nil
 }
@@ -929,6 +1070,34 @@ func (p *Parser) parseExpressionList(end TokenType) []Expression {
 	}
 
 	return list
+}
+
+func (p *Parser) parseHashLiteral() Expression {
+	hash := &HashLiteral{Pairs: make(map[Expression]Expression)}
+
+	for !p.peekTokenIs(TOKEN_RBRACE) {
+		p.nextToken()
+		key := p.parseExpression(LOWEST)
+
+		if !p.expectPeek(TOKEN_COLON) {
+			return nil
+		}
+
+		p.nextToken()
+		value := p.parseExpression(LOWEST)
+
+		hash.Pairs[key] = value
+
+		if !p.peekTokenIs(TOKEN_RBRACE) && !p.expectPeek(TOKEN_COMMA) {
+			return nil
+		}
+	}
+
+	if !p.expectPeek(TOKEN_RBRACE) {
+		return nil
+	}
+
+	return hash
 }
 
 func (p *Parser) parsePrefixExpression() Expression {
@@ -1074,9 +1243,12 @@ const (
 	STRING_OBJ
 	NULL_OBJ
 	RETURN_VALUE_OBJ
+	BREAK_OBJ
+	CONTINUE_OBJ
 	FUNCTION_OBJ
 	BUILTIN_OBJ
 	ARRAY_OBJ
+	HASH_OBJ
 )
 
 func (ot ObjectType) String() string {
@@ -1091,12 +1263,18 @@ func (ot ObjectType) String() string {
 		return "NULL"
 	case RETURN_VALUE_OBJ:
 		return "RETURN_VALUE"
+	case BREAK_OBJ:
+		return "BREAK"
+	case CONTINUE_OBJ:
+		return "CONTINUE"
 	case FUNCTION_OBJ:
 		return "FUNCTION"
 	case BUILTIN_OBJ:
 		return "BUILTIN"
 	case ARRAY_OBJ:
 		return "ARRAY"
+	case HASH_OBJ:
+		return "HASH"
 	default:
 		return "UNKNOWN"
 	}
@@ -1139,6 +1317,16 @@ type ReturnValue struct {
 
 func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
 func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
+
+type Break struct{}
+
+func (b *Break) Type() ObjectType { return BREAK_OBJ }
+func (b *Break) Inspect() string  { return "break" }
+
+type Continue struct{}
+
+func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
+func (c *Continue) Inspect() string  { return "continue" }
 
 type Function struct {
 	Parameters []*Identifier
@@ -1189,6 +1377,59 @@ type Builtin struct {
 func (b *Builtin) Type() ObjectType { return BUILTIN_OBJ }
 func (b *Builtin) Inspect() string  { return "builtin function" }
 
+type HashKey struct {
+	Type  ObjectType
+	Value uint64
+}
+
+type Hashable interface {
+	HashKey() HashKey
+}
+
+func (b *Boolean) HashKey() HashKey {
+	var value uint64
+	if b.Value {
+		value = 1
+	} else {
+		value = 0
+	}
+	return HashKey{Type: b.Type(), Value: value}
+}
+
+func (i *Integer) HashKey() HashKey {
+	return HashKey{Type: i.Type(), Value: uint64(i.Value)}
+}
+
+func (s *String) HashKey() HashKey {
+	h := uint64(0)
+	for _, ch := range s.Value {
+		h = 31*h + uint64(ch)
+	}
+	return HashKey{Type: s.Type(), Value: h}
+}
+
+type HashPair struct {
+	Key   Object
+	Value Object
+}
+
+type Hash struct {
+	Pairs map[HashKey]HashPair
+}
+
+func (h *Hash) Type() ObjectType { return HASH_OBJ }
+func (h *Hash) Inspect() string {
+	var out strings.Builder
+	pairs := []string{}
+	for _, pair := range h.Pairs {
+		pairs = append(pairs, fmt.Sprintf("%s: %s", pair.Key.Inspect(), pair.Value.Inspect()))
+	}
+	out.WriteString("{")
+	out.WriteString(strings.Join(pairs, ", "))
+	out.WriteString("}")
+	return out.String()
+}
+
 // Environment
 type Environment struct {
 	store map[string]Object
@@ -1198,6 +1439,16 @@ type Environment struct {
 func NewEnvironment() *Environment {
 	s := make(map[string]Object)
 	return &Environment{store: s, outer: nil}
+}
+
+func NewGlobalEnvironment(args []string) *Environment {
+	env := NewEnvironment()
+	argsArray := &Array{Elements: []Object{}}
+	for _, arg := range args {
+		argsArray.Elements = append(argsArray.Elements, &String{Value: arg})
+	}
+	env.Set("ARGS", argsArray)
+	return env
 }
 
 func NewEnclosedEnvironment(outer *Environment) *Environment {
@@ -1234,6 +1485,8 @@ var (
 	TRUE  = &Boolean{Value: true}
 	FALSE = &Boolean{Value: false}
 	NULL  = &Null{}
+	BREAK = &Break{}
+	CONT  = &Continue{}
 )
 
 var builtins = map[string]*Builtin{
@@ -1248,9 +1501,380 @@ var builtins = map[string]*Builtin{
 				return &Integer{Value: int64(len(arg.Value))}
 			case *Array:
 				return &Integer{Value: int64(len(arg.Elements))}
+			case *Hash:
+				return &Integer{Value: int64(len(arg.Pairs))}
 			default:
 				return &String{Value: fmt.Sprintf("argument to `len` not supported, got %s", args[0].Type())}
 			}
+		},
+	},
+	"keys": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != HASH_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `keys` must be HASH, got %s", args[0].Type())}
+			}
+
+			hash := args[0].(*Hash)
+			elements := []Object{}
+			for _, pair := range hash.Pairs {
+				elements = append(elements, pair.Key)
+			}
+			return &Array{Elements: elements}
+		},
+	},
+	"type": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			return &String{Value: args[0].Type().String()}
+		},
+	},
+	"puts": {
+		Fn: func(args ...Object) Object {
+			for _, arg := range args {
+				fmt.Println(arg.Inspect())
+			}
+			return NULL
+		},
+	},
+	"upper": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `upper` must be STRING, got %s", args[0].Type())}
+			}
+			return &String{Value: strings.ToUpper(args[0].(*String).Value)}
+		},
+	},
+	"lower": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `lower` must be STRING, got %s", args[0].Type())}
+			}
+			return &String{Value: strings.ToLower(args[0].(*String).Value)}
+		},
+	},
+	"split": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 2 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ || args[1].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("arguments to `split` must be STRING, got %s and %s", args[0].Type(), args[1].Type())}
+			}
+			parts := strings.Split(args[0].(*String).Value, args[1].(*String).Value)
+			elements := make([]Object, len(parts))
+			for i, part := range parts {
+				elements[i] = &String{Value: part}
+			}
+			return &Array{Elements: elements}
+		},
+	},
+	"join": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 2 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args))}
+			}
+			if args[0].Type() != ARRAY_OBJ {
+				return &String{Value: fmt.Sprintf("first argument to `join` must be ARRAY, got %s", args[0].Type())}
+			}
+			if args[1].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("second argument to `join` must be STRING, got %s", args[1].Type())}
+			}
+
+			arr := args[0].(*Array)
+			sep := args[1].(*String).Value
+
+			parts := make([]string, len(arr.Elements))
+			for i, el := range arr.Elements {
+				parts[i] = el.Inspect()
+				if el.Type() == STRING_OBJ {
+					parts[i] = el.(*String).Value
+				}
+			}
+
+			return &String{Value: strings.Join(parts, sep)}
+		},
+	},
+	"read_file": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `read_file` must be STRING, got %s", args[0].Type())}
+			}
+
+			path := args[0].(*String).Value
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+			}
+			return &String{Value: string(content)}
+		},
+	},
+	"write_file": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 2 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ || args[1].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("arguments to `write_file` must be STRING, got %s and %s", args[0].Type(), args[1].Type())}
+			}
+
+			path := args[0].(*String).Value
+			content := args[1].(*String).Value
+			err := os.WriteFile(path, []byte(content), 0644)
+			if err != nil {
+				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+			}
+			return TRUE // success
+		},
+	},
+	"file_exists": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `file_exists` must be STRING, got %s", args[0].Type())}
+			}
+			_, err := os.Stat(args[0].(*String).Value)
+			return nativeBoolToBooleanObject(!os.IsNotExist(err))
+		},
+	},
+	"remove_file": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `remove_file` must be STRING, got %s", args[0].Type())}
+			}
+			err := os.Remove(args[0].(*String).Value)
+			if err != nil {
+				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+			}
+			return TRUE
+		},
+	},
+	"os_env": {
+		Fn: func(args ...Object) Object {
+			var key, val string
+			if len(args) == 1 {
+				if args[0].Type() != STRING_OBJ {
+					return &String{Value: fmt.Sprintf("argument to `os_env` must be STRING, got %s", args[0].Type())}
+				}
+				key = args[0].(*String).Value
+				return &String{Value: os.Getenv(key)}
+			} else if len(args) == 2 {
+				if args[0].Type() != STRING_OBJ || args[1].Type() != STRING_OBJ {
+					return &String{Value: fmt.Sprintf("arguments to `os_env` must be STRING, got %s and %s", args[0].Type(), args[1].Type())}
+				}
+				key = args[0].(*String).Value
+				val = args[1].(*String).Value
+				os.Setenv(key, val)
+				return NULL
+			} else {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1 or 2", len(args))}
+			}
+		},
+	},
+	"exit": {
+		Fn: func(args ...Object) Object {
+			code := 0
+			if len(args) == 1 {
+				if args[0].Type() != INTEGER_OBJ {
+					return &String{Value: fmt.Sprintf("argument to `exit` must be INTEGER, got %s", args[0].Type())}
+				}
+				code = int(args[0].(*Integer).Value)
+			}
+			os.Exit(code)
+			return NULL
+		},
+	},
+	"exec": {
+		Fn: func(args ...Object) Object {
+			if len(args) < 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=at least 1", len(args))}
+			}
+			if args[0].Type() != STRING_OBJ {
+				return &String{Value: fmt.Sprintf("command must be STRING, got %s", args[0].Type())}
+			}
+
+			cmdName := args[0].(*String).Value
+			cmdArgs := []string{}
+
+			for i := 1; i < len(args); i++ {
+				if args[i].Type() != STRING_OBJ {
+					return &String{Value: fmt.Sprintf("exec argument %d must be STRING, got %s", i, args[i].Type())}
+				}
+				cmdArgs = append(cmdArgs, args[i].(*String).Value)
+			}
+
+			cmd := exec.Command(cmdName, cmdArgs...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return &String{Value: fmt.Sprintf("ERROR: %s\n%s", err, string(output))}
+			}
+			return &String{Value: string(output)}
+		},
+	},
+	"time": {
+		Fn: func(args ...Object) Object {
+			return &Integer{Value: time.Now().Unix()}
+		},
+	},
+	"sleep": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != INTEGER_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `sleep` must be INTEGER (ms), got %s", args[0].Type())}
+			}
+			ms := args[0].(*Integer).Value
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			return NULL
+		},
+	},
+	"to_int": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			switch arg := args[0].(type) {
+			case *Integer:
+				return arg
+			case *String:
+				val, err := strconv.ParseInt(arg.Value, 10, 64)
+				if err != nil {
+					return &String{Value: fmt.Sprintf("ERROR: could not convert %q to int", arg.Value)}
+				}
+				return &Integer{Value: val}
+			case *Boolean:
+				if arg.Value {
+					return &Integer{Value: 1}
+				}
+				return &Integer{Value: 0}
+			default:
+				return &String{Value: fmt.Sprintf("ERROR: cannot convert %s to int", arg.Type())}
+			}
+		},
+	},
+	"to_string": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			return &String{Value: args[0].Inspect()}
+		},
+	},
+	"input": {
+		Fn: func(args ...Object) Object {
+			if len(args) > 0 {
+				fmt.Print(args[0].Inspect())
+			}
+			reader := bufio.NewReader(os.Stdin)
+			text, _ := reader.ReadString('\n')
+			return &String{Value: strings.TrimSuffix(text, "\n")}
+		},
+	},
+	"random": {
+		Fn: func(args ...Object) Object {
+			max := int64(math.MaxInt64)
+			if len(args) > 0 {
+				if args[0].Type() != INTEGER_OBJ {
+					return &String{Value: fmt.Sprintf("argument to `random` must be INTEGER, got %s", args[0].Type())}
+				}
+				max = args[0].(*Integer).Value
+			}
+			return &Integer{Value: rand.Int63n(max)}
+		},
+	},
+	"abs": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != INTEGER_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `abs` must be INTEGER, got %s", args[0].Type())}
+			}
+			val := args[0].(*Integer).Value
+			if val < 0 {
+				return &Integer{Value: -val}
+			}
+			return &Integer{Value: val}
+		},
+	},
+	"pow": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 2 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args))}
+			}
+			if args[0].Type() != INTEGER_OBJ || args[1].Type() != INTEGER_OBJ {
+				return &String{Value: fmt.Sprintf("arguments to `pow` must be INTEGER, got %s and %s", args[0].Type(), args[1].Type())}
+			}
+			base := float64(args[0].(*Integer).Value)
+			exp := float64(args[1].(*Integer).Value)
+			return &Integer{Value: int64(math.Pow(base, exp))}
+		},
+	},
+	"sqrt": {
+		Fn: func(args ...Object) Object {
+			if len(args) != 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+			}
+			if args[0].Type() != INTEGER_OBJ {
+				return &String{Value: fmt.Sprintf("argument to `sqrt` must be INTEGER, got %s", args[0].Type())}
+			}
+			val := float64(args[0].(*Integer).Value)
+			return &Integer{Value: int64(math.Sqrt(val))}
+		},
+	},
+	"min": {
+		Fn: func(args ...Object) Object {
+			if len(args) < 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=at least 1", len(args))}
+			}
+			minVal := args[0].(*Integer).Value
+			for _, arg := range args {
+				if arg.Type() != INTEGER_OBJ {
+					return &String{Value: fmt.Sprintf("arguments to `min` must be INTEGER, got %s", arg.Type())}
+				}
+				val := arg.(*Integer).Value
+				if val < minVal {
+					minVal = val
+				}
+			}
+			return &Integer{Value: minVal}
+		},
+	},
+	"max": {
+		Fn: func(args ...Object) Object {
+			if len(args) < 1 {
+				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=at least 1", len(args))}
+			}
+			maxVal := args[0].(*Integer).Value
+			for _, arg := range args {
+				if arg.Type() != INTEGER_OBJ {
+					return &String{Value: fmt.Sprintf("arguments to `max` must be INTEGER, got %s", arg.Type())}
+				}
+				val := arg.(*Integer).Value
+				if val > maxVal {
+					maxVal = val
+				}
+			}
+			return &Integer{Value: maxVal}
 		},
 	},
 	"push": {
@@ -1298,6 +1922,9 @@ func Eval(node Node, env *Environment) Object {
 			return elements[0]
 		}
 		return &Array{Elements: elements}
+
+	case *HashLiteral:
+		return evalHashLiteral(node, env)
 
 	case *IndexExpression:
 		left := Eval(node.Left, env)
@@ -1349,12 +1976,21 @@ func Eval(node Node, env *Environment) Object {
 	case *WhileStatement:
 		return evalWhileStatement(node, env)
 
+	case *ForStatement:
+		return evalForStatement(node, env)
+
 	case *ReturnStatement:
 		val := Eval(node.ReturnValue, env)
 		if isError(val) {
 			return val
 		}
 		return &ReturnValue{Value: val}
+
+	case *BreakStatement:
+		return BREAK
+
+	case *ContinueStatement:
+		return CONT
 
 	case *LetStatement:
 		val := Eval(node.Value, env)
@@ -1423,7 +2059,7 @@ func evalBlockStatement(block *BlockStatement, env *Environment) Object {
 
 		if result != nil {
 			rt := result.Type()
-			if rt == RETURN_VALUE_OBJ {
+			if rt == RETURN_VALUE_OBJ || rt == BREAK_OBJ || rt == CONTINUE_OBJ {
 				return result
 			}
 			if rt == STRING_OBJ {
@@ -1534,13 +2170,19 @@ func evalIntegerInfixExpression(operator string, left, right Object) Object {
 }
 
 func evalStringInfixExpression(operator string, left, right Object) Object {
-	if operator != "+" {
-		return &String{Value: fmt.Sprintf("ERROR: unknown operator: %s %s %s", left.Type(), operator, right.Type())}
-	}
-
 	leftVal := left.(*String).Value
 	rightVal := right.(*String).Value
-	return &String{Value: leftVal + rightVal}
+
+	switch operator {
+	case "+":
+		return &String{Value: leftVal + rightVal}
+	case "==":
+		return nativeBoolToBooleanObject(leftVal == rightVal)
+	case "!=":
+		return nativeBoolToBooleanObject(leftVal != rightVal)
+	default:
+		return &String{Value: fmt.Sprintf("ERROR: unknown operator: %s %s %s", left.Type(), operator, right.Type())}
+	}
 }
 
 func evalIfExpression(ie *IfExpression, env *Environment) Object {
@@ -1585,8 +2227,81 @@ func evalWhileStatement(ws *WhileStatement, env *Environment) Object {
 			return result
 		}
 
-		if result != nil && result.Type() == RETURN_VALUE_OBJ {
+		if result != nil {
+			rt := result.Type()
+			if rt == RETURN_VALUE_OBJ {
+				return result
+			}
+			if rt == BREAK_OBJ {
+				result = NULL // Clear break object
+				break
+			}
+			if rt == CONTINUE_OBJ {
+				result = NULL // Clear continue object
+				continue
+			}
+		}
+	}
+
+	return result
+}
+
+func evalForStatement(fs *ForStatement, env *Environment) Object {
+	// 1. Init
+	if fs.Init != nil {
+		init := Eval(fs.Init, env)
+		if isError(init) {
+			return init
+		}
+	}
+
+	var result Object = NULL
+
+	for {
+		select {
+		case <-CancelCh:
+			return &String{Value: "ERROR: execution cancelled"}
+		default:
+		}
+
+		// 2. Condition (with support for Break/Continue)
+		if fs.Condition != nil {
+			condition := Eval(fs.Condition, env)
+			if isError(condition) {
+				return condition
+			}
+			if !isTruthy(condition) {
+				break
+			}
+		}
+
+		// 3. Body
+		result = Eval(fs.Body, env)
+		if isError(result) {
 			return result
+		}
+
+		if result != nil {
+			rt := result.Type()
+			if rt == RETURN_VALUE_OBJ {
+				return result
+			}
+			if rt == BREAK_OBJ {
+				result = NULL
+				break
+			}
+			if rt == CONTINUE_OBJ {
+				result = NULL
+				// Fallthrough to Post
+			}
+		}
+
+		// 4. Post
+		if fs.Post != nil {
+			post := Eval(fs.Post, env)
+			if isError(post) {
+				return post
+			}
 		}
 	}
 
@@ -1597,6 +2312,8 @@ func evalIndexExpression(left, index Object) Object {
 	switch {
 	case left.Type() == ARRAY_OBJ && index.Type() == INTEGER_OBJ:
 		return evalArrayIndexExpression(left, index)
+	case left.Type() == HASH_OBJ:
+		return evalHashIndexExpression(left, index)
 	default:
 		return &String{Value: fmt.Sprintf("ERROR: index operator not supported: %s", left.Type())}
 	}
@@ -1612,6 +2329,48 @@ func evalArrayIndexExpression(array, index Object) Object {
 	}
 
 	return arrayObject.Elements[idx]
+}
+
+func evalHashLiteral(node *HashLiteral, env *Environment) Object {
+	pairs := make(map[HashKey]HashPair)
+
+	for keyNode, valueNode := range node.Pairs {
+		key := Eval(keyNode, env)
+		if isError(key) {
+			return key
+		}
+
+		hashKey, ok := key.(Hashable)
+		if !ok {
+			return &String{Value: fmt.Sprintf("ERROR: unusable as hash key: %s", key.Type())}
+		}
+
+		value := Eval(valueNode, env)
+		if isError(value) {
+			return value
+		}
+
+		hashed := hashKey.HashKey()
+		pairs[hashed] = HashPair{Key: key, Value: value}
+	}
+
+	return &Hash{Pairs: pairs}
+}
+
+func evalHashIndexExpression(hash, index Object) Object {
+	hashObject := hash.(*Hash)
+
+	key, ok := index.(Hashable)
+	if !ok {
+		return &String{Value: fmt.Sprintf("ERROR: unusable as hash key: %s", index.Type())}
+	}
+
+	pair, ok := hashObject.Pairs[key.HashKey()]
+	if !ok {
+		return NULL
+	}
+
+	return pair.Value
 }
 
 func isTruthy(obj Object) bool {
@@ -1703,6 +2462,7 @@ func unwrapReturnValue(obj Object) Object {
 
 // REPL and Main
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	timeout := flag.Duration("timeout", 0, "Execution timeout (0 = no limit)")
 	flag.Parse()
 
@@ -1731,20 +2491,20 @@ func main() {
 
 	args := flag.Args()
 	if len(args) > 0 {
-		runFile(args[0])
+		runFile(args[0], args[1:])
 	} else {
 		runRepl()
 	}
 }
 
-func runFile(filename string) {
+func runFile(filename string, args []string) {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 		os.Exit(1)
 	}
 
-	env := NewEnvironment()
+	env := NewGlobalEnvironment(args)
 	l := NewLexer(string(content))
 	p := NewParser(l)
 	program := p.ParseProgram()
@@ -1757,11 +2517,19 @@ func runFile(filename string) {
 	}
 
 	evaluated := Eval(program, env)
-	if evaluated != nil && evaluated.Type() == STRING_OBJ {
-		strObj := evaluated.(*String)
-		if strings.HasPrefix(strObj.Value, "ERROR:") {
-			fmt.Println(strObj.Value)
-			os.Exit(1)
+	if evaluated != nil {
+		if evaluated.Type() == STRING_OBJ {
+			strObj := evaluated.(*String)
+			if strings.HasPrefix(strObj.Value, "ERROR:") {
+				fmt.Println(strObj.Value)
+				os.Exit(1)
+			}
+		} else if evaluated.Type() == RETURN_VALUE_OBJ {
+			// Check if return value is integer to use as exit code
+			val := evaluated.(*ReturnValue).Value
+			if val.Type() == INTEGER_OBJ {
+				os.Exit(int(val.(*Integer).Value))
+			}
 		}
 	}
 }
@@ -1773,7 +2541,7 @@ func runRepl() {
 	fmt.Println("Or run: go run interpreter.go <filename>")
 	fmt.Println()
 
-	env := NewEnvironment()
+	env := NewGlobalEnvironment([]string{})
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {

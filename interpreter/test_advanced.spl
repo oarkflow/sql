@@ -1,0 +1,31 @@
+print "Testing String Builtins";
+let str = "Hello,World,Split,Me";
+let parts = split(str, ",");
+puts(parts); // [Hello, World, Split, Me]
+
+let joined = join(parts, " - ");
+puts(joined); // Hello - World - Split - Me
+
+puts(upper("low")); // LOW
+puts(lower("UP")); // up
+
+print "Testing File I/O";
+let path = "test_io.txt";
+let content = "Hello File System!";
+write_file(path, content);
+let read = read_file(path);
+puts("Read content: " + read);
+
+if (read == content) {
+    puts("File I/O Success!");
+} else {
+    puts("File I/O Failed!");
+}
+
+print "Testing Map Helpers";
+let m = {"a": 1, "b": 2};
+puts("Keys:", keys(m));
+puts("Len:", len(m));
+puts("Type:", type(m));
+
+print "Done";

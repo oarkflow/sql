@@ -1,0 +1,51 @@
+print "Testing Hash Maps";
+
+let colors = {
+    "red": "#FF0000",
+    "green": "#00FF00",
+    "blue": "#0000FF",
+    1: "One",
+    true: "Truth"
+};
+
+print "Colors dictionary:";
+print colors;
+
+print "Accessing by key 'red':";
+print colors["red"];  // #FF0000
+
+print "Accessing by key 1:";
+print colors[1];  // One
+
+print "Accessing by key true:";
+print colors[true];  // Truth
+
+print "Accessing non-existent key:";
+print colors["yellow"];  // null
+
+print "Nested hashes:";
+let nested = {
+    "user": {
+        "name": "Sujit",
+        "age": 30
+    }
+};
+print nested["user"]["name"]; // Sujit
+
+print "Hash with function:";
+let operations = {
+    "add": function(x, y) { return x + y; }
+};
+print operations["add"](10, 20); // 30
+
+// Test assignment to hash key
+// Note: our current Assign parser only supports identifiers.
+// hash["key"] = val is an IndexAssignExpression.
+// We probably haven't implemented assignment to index expression yet.
+// Let's check main.go. AssignExpression takes an Identifier.
+// So languages usually support `ident[exp] = val`.
+// This requires parsing assignment with left side being generically 'Expression' (lvalue) or specific types.
+// My parser `parseAssignExpression` specifically casts to `*Identifier`.
+// So `colors["red"] = "new"` will fail parsing.
+
+print "Done";

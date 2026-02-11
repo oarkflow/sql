@@ -1,0 +1,44 @@
+print "Testing loops and control flow";
+
+print "1. For Loop (0 to 4)";
+for (let i = 0; i < 5; i = i + 1) {
+    print i;
+}
+
+print "2. For Loop with Break (stop at 2)";
+for (let i = 0; i < 5; i = i + 1) {
+    if (i == 2) {
+        break;
+    }
+    print i;
+}
+
+print "3. For Loop with Continue (skip 2)";
+for (let i = 0; i < 5; i = i + 1) {
+    if (i == 2) {
+        continue;
+    }
+    print i;
+}
+
+print "4. While Loop with Break (stop at 2)";
+let j = 0;
+while (j < 5) {
+    if (j == 2) {
+        break;
+    }
+    print j;
+    j = j + 1;
+}
+
+print "5. While Loop with Continue (skip 2)";
+j = 0;
+while (j < 5) {
+    j = j + 1;
+    if (j == 3) { // j is already incremented
+        continue;
+    }
+    print j;
+}
+
+print "Done";
