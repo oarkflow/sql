@@ -366,7 +366,10 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 					nextRecords = append(nextRecords, r)
 					continue
 				}
-				nextRecords = append(nextRecords, r2)
+				// Skip nil records (filtered out)
+				if r2 != nil {
+					nextRecords = append(nextRecords, r2)
+				}
 			}
 		}
 		records = nextRecords

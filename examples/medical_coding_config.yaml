@@ -1,0 +1,338 @@
+source:
+  type: csv
+  file: medical_coding_data.csv
+
+destinations:
+  - type: postgres
+    key: medical_db
+    host: localhost
+    port: 5432
+    username: postgres
+    password: postgres
+    database: medical_coding
+    driver: postgres
+
+checkpoint:
+  file: medical_coding_checkpoint.txt
+  field: encounter_id
+
+deduplication:
+  enabled: true
+  field: encounter_id
+
+worker_count: 2
+buffer: 100
+
+notifications:
+  on_success:
+    - type: email
+      recipients: ["admin@example.com"]
+      subject: "Medical Coding ETL Succeeded"
+  on_failure:
+    - type: webhook
+      url: "https://api.example.com/alerts"
+      method: "POST"
+    - type: email
+      recipients: ["admin@example.com", "oncall@example.com"]
+      subject: "Medical Coding ETL Failed"
+
+tables:
+  # Master encounter detail table
+  - new_name: tbl_encounter_detail
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      patient_id: patient_id
+      service_date: service_date
+      status: "eval.{{'LOADED'}}"
+    normalize_schema:
+      encounter_id: varchar(50)
+      patient_id: varchar(50)
+      service_date: date
+      status: varchar(20)
+
+  # CDI Event
+  - new_name: tbl_event_cdi
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      cdi_code: cdi_code
+      cdi_type: cdi_type
+    normalize_schema:
+      encounter_id: varchar(50)
+      cdi_code: varchar(50)
+      cdi_type: varchar(20)
+    transformers:
+      - name: filter_cdi
+        type: filter
+        options:
+          condition: "cdi_code != ''"
+
+  # CDI Pro Event
+  - new_name: tbl_event_cdi_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      cdi_code: cdi_code
+      pro_info: pro_info
+    normalize_schema:
+      encounter_id: varchar(50)
+      cdi_code: varchar(50)
+      pro_info: text
+    transformers:
+      - name: filter_cdi_pro
+        type: filter
+        options:
+          condition: "cdi_code != '' && pro_info != ''"
+
+  # CPT Facility Event
+  - new_name: tbl_event_cpt_fac
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      cpt_code: cpt_code
+      units: units
+      amount: amount
+    normalize_schema:
+      encounter_id: varchar(50)
+      cpt_code: varchar(50)
+      units: varchar(10)
+      amount: varchar(20)
+    transformers:
+      - name: filter_cpt_fac
+        type: filter
+        options:
+          condition: "cpt_code != ''"
+
+  # CPT Professional Event
+  - new_name: tbl_event_cpt_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      cpt_code: cpt_pro_code
+      units: units
+      amount: amount
+    normalize_schema:
+      encounter_id: varchar(50)
+      cpt_code: varchar(50)
+      units: varchar(10)
+      amount: varchar(20)
+    transformers:
+      - name: filter_cpt_pro
+        type: filter
+        options:
+          condition: "cpt_pro_code != ''"
+
+  # EM Facility Event
+  - new_name: tbl_event_em_fac
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      em_code: em_fac_code
+      level: em_fac_level
+    normalize_schema:
+      encounter_id: varchar(50)
+      em_code: varchar(50)
+      level: varchar(10)
+    transformers:
+      - name: filter_em_fac
+        type: filter
+        options:
+          condition: "em_fac_code != ''"
+
+  # EM Professional Event
+  - new_name: tbl_event_em_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      em_code: em_pro_code
+      level: em_pro_level
+    normalize_schema:
+      encounter_id: varchar(50)
+      em_code: varchar(50)
+      level: varchar(10)
+    transformers:
+      - name: filter_em_pro
+        type: filter
+        options:
+          condition: "em_pro_code != ''"
+
+  # HCPCS Facility Event
+  - new_name: tbl_event_hcpcs_fac
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      hcpcs_code: hcpcs_fac_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      hcpcs_code: varchar(50)
+    transformers:
+      - name: filter_hcpcs_fac
+        type: filter
+        options:
+          condition: "hcpcs_fac_code != ''"
+
+  # HCPCS Professional Event
+  - new_name: tbl_event_hcpcs_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      hcpcs_code: hcpcs_pro_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      hcpcs_code: varchar(50)
+    transformers:
+      - name: filter_hcpcs_pro
+        type: filter
+        options:
+          condition: "hcpcs_pro_code != ''"
+
+  # ICD10 DX Facility Event
+  - new_name: tbl_event_icd10_dx_fac
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      dx_code: dx_fac_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      dx_code: varchar(50)
+    transformers:
+      - name: filter_dx_fac
+        type: filter
+        options:
+          condition: "dx_fac_code != ''"
+
+  # ICD10 DX Professional Event
+  - new_name: tbl_event_icd10_dx_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      dx_code: dx_pro_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      dx_code: varchar(50)
+    transformers:
+      - name: filter_dx_pro
+        type: filter
+        options:
+          condition: "dx_pro_code != ''"
+
+  # PQRI Professional Event
+  - new_name: tbl_event_pqri_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      pqri_code: pqri_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      pqri_code: varchar(50)
+    transformers:
+      - name: filter_pqri
+        type: filter
+        options:
+          condition: "pqri_code != ''"
+
+  # PQRS Professional Event
+  - new_name: tbl_event_pqrs_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      pqrs_code: pqrs_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      pqrs_code: varchar(50)
+    transformers:
+      - name: filter_pqrs
+        type: filter
+        options:
+          condition: "pqrs_code != ''"
+
+  # Special Facility Event
+  - new_name: tbl_event_special_fac
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      special_code: special_fac_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      special_code: varchar(50)
+    transformers:
+      - name: filter_special_fac
+        type: filter
+        options:
+          condition: "special_fac_code != ''"
+
+  # Special Professional Event
+  - new_name: tbl_event_special_pro
+    migrate: true
+    batch_size: 100
+    auto_create_table: true
+    enable_batch: true
+    destination_key: medical_db
+    mapping:
+      encounter_id: encounter_id
+      special_code: special_pro_code
+    normalize_schema:
+      encounter_id: varchar(50)
+      special_code: varchar(50)
+    transformers:
+      - name: filter_special_pro
+        type: filter
+        options:
+          condition: "special_pro_code != ''"

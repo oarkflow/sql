@@ -24,6 +24,15 @@ func BuildTransformers(cfgs []config.TransformerConfig) ([]contracts.Transformer
 // BuildTransformer instantiates a transformer from config.
 func BuildTransformer(cfg config.TransformerConfig) (contracts.Transformer, error) {
 	switch strings.ToLower(cfg.Type) {
+	case "filter":
+		if cfg.Options == nil {
+			return nil, fmt.Errorf("filter transformer requires options")
+		}
+		condition, ok := cfg.Options["condition"].(string)
+		if !ok {
+			return nil, fmt.Errorf("filter transformer requires 'condition' option as string")
+		}
+		return NewFilterTransformer(cfg.Name, condition)
 	case "hl7", "hl7_to_json", "hl7_to_xml":
 		opts := HL7TransformerOptions{}
 		if cfg.Options != nil {

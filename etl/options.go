@@ -80,6 +80,13 @@ func WithSources(sources ...contracts.Source) Option {
 	}
 }
 
+func WithLoader(loader contracts.Loader) Option {
+	return func(e *ETL) error {
+		e.loaders = append(e.loaders, loader)
+		return nil
+	}
+}
+
 func WithSource(sourceType string, sourceDB *squealx.DB, sourceFile, sourceTable, sourceQuery, format string) Option {
 	return func(e *ETL) error {
 		src, err := NewSource(sourceType, sourceDB, sourceFile, sourceTable, sourceQuery, format)
