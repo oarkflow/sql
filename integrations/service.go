@@ -132,6 +132,47 @@ func (s *Service) UnmarshalJSON(data []byte) error {
 	default:
 		return fmt.Errorf("unknown service type: %s", s.Type)
 	}
+	if err := s.Validate(); err != nil {
+		return fmt.Errorf("service '%s': %w", s.Name, err)
+	}
+	return nil
+}
+
+func (s *Service) Validate() error {
+	switch cfg := s.Config.(type) {
+	case APIConfig:
+		return cfg.Validate()
+	case SMTPConfig:
+		return cfg.Validate()
+	case SMPPConfig:
+		return cfg.Validate()
+	case DatabaseConfig:
+		return cfg.Validate()
+	case GraphQLConfig:
+		return cfg.Validate()
+	case SOAPConfig:
+		return cfg.Validate()
+	case GRPCConfig:
+		return cfg.Validate()
+	case KafkaConfig:
+		return cfg.Validate()
+	case MQTTConfig:
+		return cfg.Validate()
+	case FTPConfig:
+		return cfg.Validate()
+	case SFTPConfig:
+		return cfg.Validate()
+	case PushConfig:
+		return cfg.Validate()
+	case SlackConfig:
+		return cfg.Validate()
+	case CustomTCPConfig:
+		return cfg.Validate()
+	case VoIPConfig:
+		return cfg.Validate()
+	case WebCrawlerConfig:
+		return cfg.Validate()
+	}
 	return nil
 }
 

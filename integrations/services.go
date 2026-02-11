@@ -3,6 +3,7 @@ package integrations
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/errors"
@@ -83,6 +84,7 @@ type OAuth2Credential struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	mu           sync.Mutex
 }
 
 // AuthHeader configurable auth header mapping.

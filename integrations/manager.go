@@ -34,6 +34,8 @@ type Manager struct {
 	credentials         CredentialStore
 	circuitBreakers     map[string]*CircuitBreaker
 	asyncClients        map[string]any
+	httpClients         map[string]*http.Client
+	dbConnections       map[string]*squealx.DB
 	asyncMu             sync.RWMutex
 	m                   sync.Mutex
 	logger              *log.Logger
@@ -66,6 +68,8 @@ func New(opts ...Options) *Manager {
 		credentials:     NewInMemoryCredentialStore(),
 		circuitBreakers: make(map[string]*CircuitBreaker),
 		asyncClients:    make(map[string]any),
+		httpClients:     make(map[string]*http.Client),
+		dbConnections:   make(map[string]*squealx.DB),
 		logger:          &log.DefaultLogger,
 	}
 	for _, opt := range opts {
@@ -290,8 +294,16 @@ func (is *Manager) ExecuteAPIRequest(ctx context.Context, serviceName string, bo
 			return nil, fmt.Errorf("unsupported credential type for API: %s", cred.Type)
 		}
 	}
-	client := getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
-	return client.Do(req)
+	client := is.getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
+	start := time.Now()
+	resp, err := client.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		is.logger.Error().Err(err).Str("service", serviceName).Dur("duration", duration).Msg("API request failed")
+		return nil, err
+	}
+	is.logger.Info().Str("service", serviceName).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("API request executed")
+	return resp, nil
 }
 
 // ExecuteAPIRequestWithRetry uses context-aware backoff.
@@ -332,7 +344,7 @@ func (is *Manager) ExecuteGraphQLRequest(ctx context.Context, serviceName string
 	if err != nil {
 		return nil, err
 	}
-	client := getHTTPClient(cfg.Timeout, false)
+	client := is.getHTTPClient(cfg.Timeout, false)
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -355,7 +367,7 @@ func (is *Manager) ExecuteSOAPRequest(ctx context.Context, serviceName string, x
 	if !ok {
 		return nil, errors.New("invalid SOAP configuration")
 	}
-	client := getHTTPClient(cfg.Timeout, false)
+	client := is.getHTTPClient(cfg.Timeout, false)
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.URL, bytes.NewReader(xmlBody))
 	if err != nil {
 		return nil, err
@@ -511,7 +523,7 @@ func (is *Manager) ExecuteSlackMessage(ctx context.Context, serviceName string, 
 	if err != nil {
 		return err
 	}
-	client := getHTTPClient(cfg.Timeout, false)
+	client := is.getHTTPClient(cfg.Timeout, false)
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.WebhookURL, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -627,13 +639,56 @@ func parseDuration(d string) time.Duration {
 	return dur
 }
 
-func getHTTPClient(timeout string, insecure bool) *http.Client {
-	return &http.Client{
+func (is *Manager) getHTTPClient(timeout string, insecure bool) *http.Client {
+	key := fmt.Sprintf("%s-%v", timeout, insecure)
+	is.asyncMu.RLock()
+	if client, ok := is.httpClients[key]; ok {
+		is.asyncMu.RUnlock()
+		return client
+	}
+	is.asyncMu.RUnlock()
+
+	is.asyncMu.Lock()
+	defer is.asyncMu.Unlock()
+	// Double check
+	if client, ok := is.httpClients[key]; ok {
+		return client
+	}
+
+	client := &http.Client{
 		Timeout: parseDuration(timeout),
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
+	is.httpClients[key] = client
+	return client
+}
+
+func (is *Manager) getDBConnection(serviceName string, cfg DatabaseConfig, username, password string) (*squealx.DB, error) {
+	is.m.Lock()
+	defer is.m.Unlock()
+	if db, ok := is.dbConnections[serviceName]; ok {
+		return db, nil
+	}
+	db, _, err := connection.FromConfig(squealx.Config{
+		Driver:      cfg.Driver,
+		Host:        cfg.Host,
+		Port:        cfg.Port,
+		Username:    username,
+		Password:    password,
+		Database:    cfg.Database,
+		MaxIdleCons: cfg.MaxIdleConns,
+		MaxOpenCons: cfg.MaxOpenConns,
+	})
+	if err != nil {
+		return nil, err
+	}
+	is.dbConnections[serviceName] = db
+	return db, nil
 }
 
 type SMSPayload struct {
@@ -1180,34 +1235,35 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 		username = credentials.Username
 		password = credentials.Password
 	}
-	db, _, err := connection.FromConfig(squealx.Config{
-		Driver:      cfg.Driver,
-		Host:        cfg.Host,
-		Port:        cfg.Port,
-		Username:    username,
-		Password:    password,
-		Database:    cfg.Database,
-		MaxIdleCons: cfg.MaxIdleConns,
-		MaxOpenCons: cfg.MaxOpenConns,
-	})
+	db, err := is.getDBConnection(serviceName, cfg, username, password)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
 	var dest []map[string]any
+	start := time.Now()
 	if len(args) > 0 {
-		err = db.Select(&dest, query, args...)
+		err = db.SelectContext(ctx, &dest, query, args...)
 	} else {
-		err = db.Select(&dest, query)
+		err = db.SelectContext(ctx, &dest, query)
 	}
+	duration := time.Since(start)
 	if err != nil {
+		is.logger.Error().Err(err).Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Msg("Database query failed")
 		return nil, err
 	}
-	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Str("query", query).Msg("Executing database query")
+	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int("rows", len(dest)).Msg("Database query executed")
 	return dest, nil
 }
 
 func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
+	auth.mu.Lock()
+	defer auth.mu.Unlock()
+
+	// Double-check validity after acquiring lock
+	if auth.AccessToken != "" && time.Until(auth.ExpiresAt) > time.Minute {
+		return nil
+	}
+
 	values := url.Values{}
 	values.Set("grant_type", "refresh_token")
 	values.Set("refresh_token", auth.RefreshToken)
@@ -1273,7 +1329,7 @@ func (is *Manager) HealthCheck(ctx context.Context) error {
 					errCh <- err
 					return
 				}
-				client := getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
+				client := is.getHTTPClient(cfg.Timeout, cfg.TLSInsecureSkipVerify)
 				resp, err := client.Do(req)
 				if resp != nil && resp.Body != nil {
 					resp.Body.Close()

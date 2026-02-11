@@ -1,0 +1,49 @@
+{
+	"services": [
+		{
+			"name": "demo_db",
+			"type": "database",
+			"enabled": true,
+			"config": {
+				"driver": "postgres",
+				"host": "${DB_HOST}",
+				"port": 5432,
+				"database": "demo_db",
+				"ssl_mode": "disable",
+				"connect_timeout": "5s",
+				"conn_max_lifetime": "5m"
+			},
+			"credential_key": "db_cred",
+			"require_auth": true
+		},
+		{
+			"name": "demo_api",
+			"type": "rest",
+			"enabled": true,
+			"config": {
+				"url": "https://httpbin.org/get",
+				"method": "GET",
+				"timeout": "5s"
+			},
+			"credential_key": "api_cred",
+			"require_auth": true
+		}
+	],
+	"credentials": [
+		{
+			"key": "db_cred",
+			"type": "database",
+			"data": {
+				"username": "${DB_USER}",
+				"password": "${DB_PASSWORD}"
+			}
+		},
+		{
+			"key": "api_cred",
+			"type": "bearer",
+			"data": {
+				"token": "${API_TOKEN}"
+			}
+		}
+	]
+}

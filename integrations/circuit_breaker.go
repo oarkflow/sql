@@ -20,6 +20,7 @@ type CircuitBreaker struct {
 	lastFailure  time.Time
 	openDuration time.Duration
 	lock         sync.Mutex
+	probeSent    bool
 }
 
 func NewCircuitBreaker(threshold int) *CircuitBreaker {
@@ -40,11 +41,16 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 	case Open:
 		if now.Sub(cb.lastFailure) > cb.openDuration {
 			cb.state = HalfOpen
+			cb.probeSent = false
 			return true
 		}
 		return false
 	case HalfOpen:
-		return true
+		if !cb.probeSent {
+			cb.probeSent = true
+			return true
+		}
+		return false
 	default:
 		return false
 	}
@@ -55,14 +61,16 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	defer cb.lock.Unlock()
 	cb.failureCount = 0
 	cb.state = Closed
+	cb.probeSent = false
 }
 
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.lock.Lock()
 	defer cb.lock.Unlock()
 	cb.failureCount++
-	if cb.failureCount >= cb.threshold {
+	if cb.failureCount >= cb.threshold || cb.state == HalfOpen {
 		cb.state = Open
 		cb.lastFailure = time.Now()
+		cb.probeSent = false // Reset for next cycle
 	}
 }
