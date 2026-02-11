@@ -251,6 +251,16 @@ func (dlq *DeadLetterQueue) GetQueueStats() map[string]any {
 	}
 }
 
+// GetAllRecords returns all records in the queue regardless of status
+func (dlq *DeadLetterQueue) GetAllRecords() []DeadLetterRecord {
+	dlq.mutex.RLock()
+	defer dlq.mutex.RUnlock()
+	// Return a copy to avoid race conditions
+	records := make([]DeadLetterRecord, len(dlq.queue))
+	copy(records, dlq.queue)
+	return records
+}
+
 // GetFailedRecords returns records that have permanently failed
 func (dlq *DeadLetterQueue) GetFailedRecords() []DeadLetterRecord {
 	dlq.mutex.RLock()

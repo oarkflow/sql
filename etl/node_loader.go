@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	
+
 	"github.com/dgraph-io/ristretto"
 	"github.com/oarkflow/transaction"
-	
+
 	"github.com/oarkflow/sql/pkg/adapters/sqladapter"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
@@ -50,6 +50,9 @@ type LoaderNode struct {
 	checkpointInterval time.Duration
 	lastCheckpointTime time.Time
 	deadLetterQueueCap int
+	dryRun             bool
+	dlq                *DeadLetterQueue
+	etlID              string
 }
 
 func (ln *LoaderNode) Process(ctx context.Context, in <-chan utils.Record, cfg config.TableMapping, args ...any) (<-chan utils.Record, error) {
@@ -177,6 +180,12 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.Ta
 				storeCtx = context.Background()
 			}
 			for _, loader := range ln.loaders {
+				if ln.dryRun {
+					log.Printf("[LoaderNode Worker %d] [DRY RUN] Would load batch of %d records to %T", index, len(batch), loader)
+					localLoaded += int64(len(batch))
+					atomic.AddInt64(&ln.metrics.Loaded, int64(len(batch)))
+					continue
+				}
 				if enableBatch {
 					if txnLoader, ok := loader.(contracts.Transactional); ok {
 						if err := txnLoader.Begin(storeCtx); err != nil {
@@ -201,26 +210,48 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.Ta
 							log.Printf("[LoaderNode Worker %d] Batch load error (transaction): %v", index, err)
 							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
-							ln.deadLetterLock.Lock()
-							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							if ln.dlq != nil {
+								for _, r := range batch {
+									metadata := map[string]any{
+										"etl_id": ln.etlID,
+										"stage":  "load",
+										"batch":  true,
+									}
+									ln.dlq.AddRecord(r, err.Error(), ln.NodeName, index, metadata)
+								}
 							} else {
-								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								ln.deadLetterLock.Lock()
+								if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+									ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+								} else {
+									log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								}
+								ln.deadLetterLock.Unlock()
 							}
-							ln.deadLetterLock.Unlock()
 							continue
 						}
 						if err := txnLoader.Commit(storeCtx); err != nil {
 							log.Printf("[LoaderNode Worker %d] Commit error: %v", index, err)
 							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
-							ln.deadLetterLock.Lock()
-							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							if ln.dlq != nil {
+								for _, r := range batch {
+									metadata := map[string]any{
+										"etl_id": ln.etlID,
+										"stage":  "load",
+										"batch":  true,
+									}
+									ln.dlq.AddRecord(r, err.Error(), ln.NodeName, index, metadata)
+								}
 							} else {
-								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								ln.deadLetterLock.Lock()
+								if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+									ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+								} else {
+									log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								}
+								ln.deadLetterLock.Unlock()
 							}
-							ln.deadLetterLock.Unlock()
 							continue
 						}
 					} else {
@@ -233,36 +264,68 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.Ta
 							log.Printf("[LoaderNode Worker %d] Batch load error: %v", index, err)
 							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
-							ln.deadLetterLock.Lock()
-							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-								ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+							if ln.dlq != nil {
+								for _, r := range batch {
+									metadata := map[string]any{
+										"etl_id": ln.etlID,
+										"stage":  "load",
+										"batch":  true,
+									}
+									ln.dlq.AddRecord(r, err.Error(), ln.NodeName, index, metadata)
+								}
 							} else {
-								log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								ln.deadLetterLock.Lock()
+								if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+									ln.deadLetterQueue = append(ln.deadLetterQueue, batch...)
+								} else {
+									log.Printf("Dead letter queue capacity reached; dropping failed batch")
+								}
+								ln.deadLetterLock.Unlock()
 							}
-							ln.deadLetterLock.Unlock()
 							continue
 						}
 					}
 				} else {
+					var batchSuccess int64
 					for _, rec := range batch {
 						err := loader.StoreSingle(storeCtx, rec)
 						if err != nil {
 							log.Printf("[LoaderNode Worker %d] Single record load error: %v", index, err)
 							localFailed++
 							atomic.AddInt64(&ln.metrics.Errors, 1)
-							ln.deadLetterLock.Lock()
-							if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
-								ln.deadLetterQueue = append(ln.deadLetterQueue, rec)
+							if ln.dlq != nil {
+								metadata := map[string]any{
+									"etl_id": ln.etlID,
+									"stage":  "load",
+									"batch":  false,
+								}
+								ln.dlq.AddRecord(rec, err.Error(), ln.NodeName, index, metadata)
 							} else {
-								log.Printf("Dead letter queue capacity reached; dropping failed record")
+								ln.deadLetterLock.Lock()
+								if len(ln.deadLetterQueue) < ln.deadLetterQueueCap {
+									ln.deadLetterQueue = append(ln.deadLetterQueue, rec)
+								} else {
+									log.Printf("Dead letter queue capacity reached; dropping failed record")
+								}
+								ln.deadLetterLock.Unlock()
 							}
-							ln.deadLetterLock.Unlock()
 							continue
 						}
+						// Count success per record
+						batchSuccess++
 					}
+                    // For single record processing, update loaded count based on success
+                    localLoaded += batchSuccess
+				    atomic.AddInt64(&ln.metrics.Loaded, batchSuccess)
+                    // Skip the batch increment below by subtracting or modifying logic
+                    // Easiest is to wrap the batch increment in "if enableBatch" but wait,
+                    // enableBatch check is inside the loop.
 				}
-				localLoaded += int64(len(batch))
-				atomic.AddInt64(&ln.metrics.Loaded, int64(len(batch)))
+
+                if enableBatch {
+				    localLoaded += int64(len(batch))
+				    atomic.AddInt64(&ln.metrics.Loaded, int64(len(batch)))
+                }
 				if ln.checkpointStore != nil && ln.checkpointFunc != nil {
 					cp := ln.checkpointFunc(batch[len(batch)-1])
 					now := time.Now()
@@ -270,13 +333,19 @@ func (ln *LoaderNode) loaderWorker(ctx context.Context, index int, cfg config.Ta
 					if now.Sub(ln.lastCheckpointTime) >= ln.checkpointInterval {
 						currentCp, _ := ln.lastCheckpoint.Load().(string)
 						if cp > currentCp {
-							if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
-								log.Printf("[LoaderNode Worker %d] Checkpoint error: %v", index, err)
-								localFailed++
-								atomic.AddInt64(&ln.metrics.Errors, 1)
-							} else {
+							if ln.dryRun {
+								log.Printf("[LoaderNode Worker %d] [DRY RUN] Would save checkpoint: %s", index, cp)
 								ln.lastCheckpoint.Store(cp)
 								ln.lastCheckpointTime = now
+							} else {
+								if err := ln.checkpointStore.SaveCheckpoint(context.Background(), cp); err != nil {
+									log.Printf("[LoaderNode Worker %d] Checkpoint error: %v", index, err)
+									localFailed++
+									atomic.AddInt64(&ln.metrics.Errors, 1)
+								} else {
+									ln.lastCheckpoint.Store(cp)
+									ln.lastCheckpointTime = now
+								}
 							}
 						}
 					}

@@ -2,11 +2,12 @@ package etl
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
-	
+
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/utils"
@@ -26,7 +27,9 @@ type TransformNode struct {
 	workerProgress     map[int]int64
 	NodeName           string
 	deadLetterQueue    chan utils.Record
+	dlq                *DeadLetterQueue
 	ctx                context.Context
+	etlID              string
 }
 
 func (tn *TransformNode) Process(ctx context.Context, in <-chan utils.Record, _ config.TableMapping, args ...any) (<-chan utils.Record, error) {
@@ -97,12 +100,37 @@ func (tn *TransformNode) transformWorker(ctx context.Context, index int) {
 					log.Printf("[TransformNode Worker %d] BeforeTransform hook error: %v", index, err)
 				}
 			}
-			transformed, err := applyTransformers(ctx, rec, tn.transformers, index, tn.metrics)
+			transformed, err := applyTransformers(ctx, rec, tn.transformers, index, tn.metrics, func(r utils.Record, err error) {
+				if tn.dlq != nil {
+					// Attempt to find a meaningful ID
+					metadata := make(map[string]any)
+					metadata["etl_id"] = tn.etlID
+					metadata["stage"] = "transform"
+					id := ""
+					for _, key := range []string{"id", "primary_key", "encounter_id", "ID", "uuid"} {
+						if v, ok := r[key]; ok {
+							id = fmt.Sprintf("%v", v)
+							break
+						}
+					}
+					if id != "" {
+						metadata["source_id"] = id
+					}
+					if pushErr := tn.dlq.AddRecord(r, err.Error(), tn.NodeName, index, metadata); pushErr != nil {
+						log.Printf("[TransformNode Worker %d] Failed to push to DLQ: %v", index, pushErr)
+					}
+				}
+			})
 			if err != nil {
 				log.Printf("[TransformNode Worker %d] Error: %v", index, err)
 				localFailed++
 				atomic.AddInt64(&tn.metrics.Errors, 1)
-				tn.deadLetterQueue <- rec
+				// Legacy DLQ channel (if still used)
+				select {
+				case tn.deadLetterQueue <- rec:
+				default:
+					log.Printf("[TransformNode] Dead letter queue channel full, dropping record")
+				}
 				continue
 			}
 			for _, r := range transformed {

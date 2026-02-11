@@ -32,6 +32,20 @@ func WithNormalizeSchema(schema map[string]string) Option {
 	}
 }
 
+func WithResumeStrategy(strategy ResumeStrategy) Option {
+	return func(e *ETL) error {
+		e.resumeStrategy = strategy
+		return nil
+	}
+}
+
+func WithDryRun(dryRun bool) Option {
+	return func(e *ETL) error {
+		e.dryRun = dryRun
+		return nil
+	}
+}
+
 func WithPipelineConfig(pc *PipelineConfig) Option {
 	return func(e *ETL) error {
 		e.pipelineConfig = pc

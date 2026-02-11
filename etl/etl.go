@@ -22,6 +22,14 @@ import (
 	"github.com/oarkflow/sql/pkg/utils"
 )
 
+type ResumeStrategy string
+
+const (
+	ResumeStrategyAsk    ResumeStrategy = "ask"
+	ResumeStrategyAlways ResumeStrategy = "always"
+	ResumeStrategyNever  ResumeStrategy = "never"
+)
+
 func init() {
 	expr.AddFunction("lookupIn", LookupInGlobal)
 }
@@ -125,6 +133,8 @@ type ETL struct {
 	dashboardPass      string
 	dedupEnabled       bool
 	dedupField         string
+	resumeStrategy     ResumeStrategy
+	dryRun             bool
 	Logger             *log.Logger
 	CreatedAt          time.Time
 	LastRunAt          time.Time
@@ -342,7 +352,7 @@ func applyMappers(ctx context.Context, rec utils.Record, mappers []contracts.Map
 	return rec, nil
 }
 
-func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int, metrics *Metrics) ([]utils.Record, error) {
+func applyTransformers(ctx context.Context, rec utils.Record, transformers []contracts.Transformer, workerID int, metrics *Metrics, errorHandler func(utils.Record, error)) ([]utils.Record, error) {
 	records := []utils.Record{rec}
 	for _, transformer := range transformers {
 		var nextRecords []utils.Record
@@ -352,7 +362,13 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 				if err != nil {
 					log.Printf("[Transformer Worker %d] MultiTransformer error: %v", workerID, err)
 					atomic.AddInt64(&metrics.Errors, 1)
-					nextRecords = append(nextRecords, r)
+					if errorHandler != nil {
+						errorHandler(r, err)
+					}
+					// Only keep original record if error handler handled it?
+					// Actually, if we DLQ it, we probably don't want to continue processing it (which nextRecords = append(nextRecords, r) would do in previous code)
+					// Previous code: nextRecords = append(nextRecords, r) on error.
+					// My previous edit removed that append.
 					continue
 				}
 				nextRecords = append(nextRecords, recs...)
@@ -363,7 +379,10 @@ func applyTransformers(ctx context.Context, rec utils.Record, transformers []con
 				if err != nil {
 					log.Printf("[Transformer Worker %d] Transformer error: %v", workerID, err)
 					atomic.AddInt64(&metrics.Errors, 1)
-					nextRecords = append(nextRecords, r)
+					if errorHandler != nil {
+						errorHandler(r, err)
+					}
+					// Skip processing for this record on error
 					continue
 				}
 				// Skip nil records (filtered out)
@@ -478,11 +497,20 @@ func (e *ETL) Run(ctx context.Context, args ...any) error {
 
 // confirmResume asks the user if they want to resume
 func (e *ETL) confirmResume() bool {
-	fmt.Print("Found resumable state. Do you want to resume the ETL job? (y/N): ")
-	var response string
-	fmt.Scanln(&response)
-	response = strings.ToLower(strings.TrimSpace(response))
-	return response == "y" || response == "yes"
+	switch e.resumeStrategy {
+	case ResumeStrategyAlways:
+		return true
+	case ResumeStrategyNever:
+		return false
+	case ResumeStrategyAsk:
+		fmt.Print("Found resumable state. Do you want to resume the ETL job? (y/N): ")
+		var response string
+		fmt.Scanln(&response) // Blocking
+		response = strings.ToLower(strings.TrimSpace(response))
+		return response == "y" || response == "yes"
+	default:
+		return false
+	}
 }
 
 // GetEnhancedMetrics returns comprehensive metrics including state information
@@ -590,7 +618,7 @@ func (e *ETL) GetDeadLetterRecords() []DeadLetterRecord {
 	if e.deadLetterQueue == nil {
 		return nil
 	}
-	return e.deadLetterQueue.GetFailedRecords()
+	return e.deadLetterQueue.GetAllRecords()
 }
 
 // GetStateInfo returns current state information
@@ -716,6 +744,8 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			eventBus:      e.eventBus,
 			metrics:       e.metrics,
 			Logger:        e.Logger,
+			dlq:           e.deadLetterQueue,
+			etlID:         e.ID,
 		},
 		"normalize": &NormalizeNode{
 			schema:      e.normalizeSchema,
@@ -741,7 +771,9 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			metrics:         e.metrics,
 			NodeName:        "transform",
 			deadLetterQueue: make(chan utils.Record, e.workerCount*2),
+			dlq:             e.deadLetterQueue,
 			ctx:             context.Background(),
+			etlID:           e.ID,
 		},
 		"load": &LoaderNode{
 			loaders:            e.loaders,
@@ -765,6 +797,9 @@ func (e *ETL) buildDefaultPipeline() *PipelineConfig {
 			checkpointInterval: e.checkpointInterval,
 			lastCheckpointTime: time.Now(),
 			deadLetterQueueCap: 1000,
+			dryRun:             e.dryRun,
+			dlq:                e.deadLetterQueue,
+			etlID:              e.ID,
 		},
 	}
 	edges := []dagEdge{

@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	
+
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/contracts"
 	"github.com/oarkflow/sql/pkg/utils"
@@ -20,6 +20,8 @@ type SourceNode struct {
 	eventBus      *EventBus
 	metrics       *Metrics
 	Logger        *log.Logger
+	dlq           *DeadLetterQueue
+	etlID         string
 }
 
 func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableCfg config.TableMapping, args ...any) (<-chan utils.Record, error) {
@@ -38,12 +40,18 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			if sn.validations != nil && sn.validations.ValidateBeforeExtract != nil {
 				if err := sn.validations.ValidateBeforeExtract(ctx); err != nil {
 					log.Printf("[SourceNode] ValidateBeforeExtract error: %v", err)
+					if sn.dlq != nil {
+						sn.dlq.AddRecord(nil, fmt.Sprintf("ValidateBeforeExtract error: %v", err), "source", 0, map[string]any{"etl_id": sn.etlID})
+					}
 					return
 				}
 			}
 			if sn.hooks != nil && sn.hooks.BeforeExtract != nil {
 				if err := sn.hooks.BeforeExtract(ctx); err != nil {
 					log.Printf("[SourceNode] BeforeExtract hook error: %v", err)
+					if sn.dlq != nil {
+						sn.dlq.AddRecord(nil, fmt.Sprintf("BeforeExtract hook error: %v", err), "source", 0, map[string]any{"etl_id": sn.etlID})
+					}
 					return
 				}
 			}
@@ -59,6 +67,9 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			ch, err := source.Extract(ctx, opts...)
 			if err != nil {
 				log.Printf("Source extraction error: %v", err)
+				if sn.dlq != nil {
+					sn.dlq.AddRecord(nil, fmt.Sprintf("Source extraction error: %v", err), "source", 0, map[string]any{"etl_id": sn.etlID})
+				}
 				return
 			}
 			count := 0
@@ -78,11 +89,17 @@ func (sn *SourceNode) Process(ctx context.Context, _ <-chan utils.Record, tableC
 			if sn.hooks != nil && sn.hooks.AfterExtract != nil {
 				if err := sn.hooks.AfterExtract(ctx, count); err != nil {
 					log.Printf("[SourceNode] AfterExtract hook error: %v", err)
+					if sn.dlq != nil {
+						sn.dlq.AddRecord(nil, fmt.Sprintf("AfterExtract hook error: %v", err), "source", 0, map[string]any{"etl_id": sn.etlID})
+					}
 				}
 			}
 			if sn.validations != nil && sn.validations.ValidateAfterExtract != nil {
 				if err := sn.validations.ValidateAfterExtract(ctx, count); err != nil {
 					log.Printf("[SourceNode] ValidateAfterExtract error: %v", err)
+					if sn.dlq != nil {
+						sn.dlq.AddRecord(nil, fmt.Sprintf("ValidateAfterExtract error: %v", err), "source", 0, map[string]any{"etl_id": sn.etlID})
+					}
 				}
 			}
 			if sn.Logger != nil {
