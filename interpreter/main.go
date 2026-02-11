@@ -2,10 +2,14 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Token types
@@ -1062,18 +1066,41 @@ func (p *Parser) parseIndexExpression(left Expression) Expression {
 }
 
 // Evaluator
-type ObjectType string
+type ObjectType int
 
 const (
-	INTEGER_OBJ      ObjectType = "INTEGER"
-	BOOLEAN_OBJ      ObjectType = "BOOLEAN"
-	STRING_OBJ       ObjectType = "STRING"
-	NULL_OBJ         ObjectType = "NULL"
-	RETURN_VALUE_OBJ ObjectType = "RETURN_VALUE"
-	FUNCTION_OBJ     ObjectType = "FUNCTION"
-	BUILTIN_OBJ      ObjectType = "BUILTIN"
-	ARRAY_OBJ        ObjectType = "ARRAY"
+	INTEGER_OBJ ObjectType = iota
+	BOOLEAN_OBJ
+	STRING_OBJ
+	NULL_OBJ
+	RETURN_VALUE_OBJ
+	FUNCTION_OBJ
+	BUILTIN_OBJ
+	ARRAY_OBJ
 )
+
+func (ot ObjectType) String() string {
+	switch ot {
+	case INTEGER_OBJ:
+		return "INTEGER"
+	case BOOLEAN_OBJ:
+		return "BOOLEAN"
+	case STRING_OBJ:
+		return "STRING"
+	case NULL_OBJ:
+		return "NULL"
+	case RETURN_VALUE_OBJ:
+		return "RETURN_VALUE"
+	case FUNCTION_OBJ:
+		return "FUNCTION"
+	case BUILTIN_OBJ:
+		return "BUILTIN"
+	case ARRAY_OBJ:
+		return "ARRAY"
+	default:
+		return "UNKNOWN"
+	}
+}
 
 type Object interface {
 	Type() ObjectType
@@ -1531,10 +1558,19 @@ func evalIfExpression(ie *IfExpression, env *Environment) Object {
 	}
 }
 
+// Global cancellation channel
+var CancelCh = make(chan struct{})
+
 func evalWhileStatement(ws *WhileStatement, env *Environment) Object {
 	var result Object = NULL
 
 	for {
+		select {
+		case <-CancelCh:
+			return &String{Value: "ERROR: execution cancelled"}
+		default:
+		}
+
 		condition := Eval(ws.Condition, env)
 		if isError(condition) {
 			return condition
@@ -1667,40 +1703,70 @@ func unwrapReturnValue(obj Object) Object {
 
 // REPL and Main
 func main() {
-	// Check if a file was provided
-	if len(os.Args) > 1 {
-		// File execution mode
-		filename := os.Args[1]
-		content, err := os.ReadFile(filename)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-			os.Exit(1)
-		}
+	timeout := flag.Duration("timeout", 0, "Execution timeout (0 = no limit)")
+	flag.Parse()
 
-		env := NewEnvironment()
-		l := NewLexer(string(content))
-		p := NewParser(l)
-		program := p.ParseProgram()
-
-		if len(p.Errors()) != 0 {
-			for _, msg := range p.Errors() {
-				fmt.Println(msg)
-			}
-			os.Exit(1)
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Runtime Panic: %v\n", r)
+			os.Exit(2)
 		}
+	}()
 
-		evaluated := Eval(program, env)
-		if evaluated != nil && evaluated.Type() == STRING_OBJ {
-			strObj := evaluated.(*String)
-			if strings.HasPrefix(strObj.Value, "ERROR:") {
-				fmt.Println(strObj.Value)
-				os.Exit(1)
-			}
-		}
-		return
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nCancelling execution...")
+		close(CancelCh)
+		os.Exit(130)
+	}()
+
+	if *timeout > 0 {
+		time.AfterFunc(*timeout, func() {
+			fmt.Println("\nTimeout reached.")
+			os.Exit(3)
+		})
 	}
 
-	// REPL mode
+	args := flag.Args()
+	if len(args) > 0 {
+		runFile(args[0])
+	} else {
+		runRepl()
+	}
+}
+
+func runFile(filename string) {
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+		os.Exit(1)
+	}
+
+	env := NewEnvironment()
+	l := NewLexer(string(content))
+	p := NewParser(l)
+	program := p.ParseProgram()
+
+	if len(p.Errors()) != 0 {
+		for _, msg := range p.Errors() {
+			fmt.Println(msg)
+		}
+		os.Exit(1)
+	}
+
+	evaluated := Eval(program, env)
+	if evaluated != nil && evaluated.Type() == STRING_OBJ {
+		strObj := evaluated.(*String)
+		if strings.HasPrefix(strObj.Value, "ERROR:") {
+			fmt.Println(strObj.Value)
+			os.Exit(1)
+		}
+	}
+}
+
+func runRepl() {
 	fmt.Println("Welcome to the Simple Programming Language!")
 	fmt.Println("Type 'exit' to quit")
 	fmt.Println("For multi-line input: continue typing and end with a blank line")
