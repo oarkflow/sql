@@ -1,4 +1,4 @@
-package main
+package interpreter
 
 import (
 	"bufio"
@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +22,7 @@ type TokenType int
 const (
 	// Literals
 	TOKEN_INT TokenType = iota
+	TOKEN_FLOAT
 	TOKEN_STRING
 	TOKEN_IDENT
 	TOKEN_TRUE
@@ -38,6 +40,9 @@ const (
 	TOKEN_FUNCTION
 	TOKEN_RETURN
 	TOKEN_PRINT
+	TOKEN_CONST
+	TOKEN_IMPORT
+	TOKEN_EXPORT
 
 	// Operators
 	TOKEN_ASSIGN
@@ -66,6 +71,8 @@ const (
 	TOKEN_COMMA
 	TOKEN_SEMICOLON
 	TOKEN_COLON
+	TOKEN_DOT
+	TOKEN_ARROW
 
 	TOKEN_EOF
 	TOKEN_ILLEGAL
@@ -137,13 +144,22 @@ func (l *Lexer) readIdentifier() string {
 	}
 	return l.input[position:l.position]
 }
-
-func (l *Lexer) readNumber() string {
+func (l *Lexer) readNumber() (TokenType, string) {
 	position := l.position
-	for isDigit(l.ch) {
+	dotFound := false
+	for isDigit(l.ch) || l.ch == '.' {
+		if l.ch == '.' {
+			if dotFound {
+				break
+			}
+			dotFound = true
+		}
 		l.readChar()
 	}
-	return l.input[position:l.position]
+	if dotFound {
+		return TOKEN_FLOAT, l.input[position:l.position]
+	}
+	return TOKEN_INT, l.input[position:l.position]
 }
 
 func (l *Lexer) readString() string {
@@ -199,6 +215,10 @@ func (l *Lexer) NextToken() Token {
 			ch := l.ch
 			l.readChar()
 			tok = Token{Type: TOKEN_EQ, Literal: string(ch) + string(l.ch)}
+		} else if l.peekChar() == '>' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: TOKEN_ARROW, Literal: string(ch) + string(l.ch)}
 		} else {
 			tok = Token{Type: TOKEN_ASSIGN, Literal: string(l.ch)}
 		}
@@ -270,6 +290,8 @@ func (l *Lexer) NextToken() Token {
 		tok = Token{Type: TOKEN_SEMICOLON, Literal: string(l.ch)}
 	case ':':
 		tok = Token{Type: TOKEN_COLON, Literal: string(l.ch)}
+	case '.':
+		tok = Token{Type: TOKEN_DOT, Literal: string(l.ch)}
 	case '"':
 		tok.Type = TOKEN_STRING
 		tok.Literal = l.readString()
@@ -282,8 +304,7 @@ func (l *Lexer) NextToken() Token {
 			tok.Type = lookupIdent(tok.Literal)
 			return tok
 		} else if isDigit(l.ch) {
-			tok.Type = TOKEN_INT
-			tok.Literal = l.readNumber()
+			tok.Type, tok.Literal = l.readNumber()
 			return tok
 		} else {
 			tok = Token{Type: TOKEN_ILLEGAL, Literal: string(l.ch)}
@@ -313,6 +334,9 @@ func lookupIdent(ident string) TokenType {
 		"continue": TOKEN_CONTINUE,
 		"function": TOKEN_FUNCTION,
 		"return":   TOKEN_RETURN,
+		"const":    TOKEN_CONST,
+		"import":   TOKEN_IMPORT,
+		"export":   TOKEN_EXPORT,
 		"print":    TOKEN_PRINT,
 		"true":     TOKEN_TRUE,
 		"false":    TOKEN_FALSE,
@@ -359,6 +383,12 @@ type IntegerLiteral struct {
 func (il *IntegerLiteral) expressionNode() {}
 func (il *IntegerLiteral) String() string  { return fmt.Sprintf("%d", il.Value) }
 
+type FloatLiteral struct {
+	Value float64
+}
+
+func (fl *FloatLiteral) expressionNode() {}
+func (fl *FloatLiteral) String() string  { return fmt.Sprintf("%g", fl.Value) }
 type StringLiteral struct {
 	Value string
 }
@@ -428,6 +458,16 @@ type IndexExpression struct {
 func (ie *IndexExpression) expressionNode() {}
 func (ie *IndexExpression) String() string {
 	return fmt.Sprintf("(%s[%s])", ie.Left.String(), ie.Index.String())
+}
+
+type DotExpression struct {
+	Left  Expression
+	Right *Identifier // The property or method name
+}
+
+func (de *DotExpression) expressionNode() {}
+func (de *DotExpression) String() string {
+	return fmt.Sprintf("(%s.%s)", de.Left.String(), de.Right.String())
 }
 
 type PrefixExpression struct {
@@ -513,8 +553,9 @@ func (ae *AssignExpression) String() string {
 }
 
 type LetStatement struct {
-	Name  *Identifier
-	Value Expression
+	Name   *Identifier   // Deprecated: use Names[0]
+	Names  []*Identifier // Support for multi-assignment
+	Value  Expression
 }
 
 func (ls *LetStatement) statementNode() {}
@@ -685,6 +726,8 @@ func (p *Parser) parseStatement() Statement {
 	switch p.curToken.Type {
 	case TOKEN_LET:
 		return p.parseLetStatement()
+	case TOKEN_CONST:
+		return p.parseConstStatement()
 	case TOKEN_RETURN:
 		return p.parseReturnStatement()
 	case TOKEN_WHILE:
@@ -709,7 +752,45 @@ func (p *Parser) parseLetStatement() *LetStatement {
 		return nil
 	}
 
-	stmt.Name = &Identifier{Name: p.curToken.Literal}
+	// Always populate Names
+	firstIdent := &Identifier{Name: p.curToken.Literal}
+	stmt.Names = append(stmt.Names, firstIdent)
+	stmt.Name = firstIdent // Keep backward compat for now inside struct, though logic changes
+
+	// Check for tuple assignment: let x, y = ...
+	for p.peekTokenIs(TOKEN_COMMA) {
+		p.nextToken() // consume comma
+		if !p.expectPeek(TOKEN_IDENT) {
+			return nil
+		}
+		stmt.Names = append(stmt.Names, &Identifier{Name: p.curToken.Literal})
+	}
+
+	if !p.expectPeek(TOKEN_ASSIGN) {
+		return nil
+	}
+
+	p.nextToken()
+
+	stmt.Value = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(TOKEN_SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseConstStatement() *LetStatement {
+	stmt := &LetStatement{} // Reuse LetStatement for now
+
+	if !p.expectPeek(TOKEN_IDENT) {
+		return nil
+	}
+
+	ident := &Identifier{Name: p.curToken.Literal}
+	stmt.Name = ident
+	stmt.Names = []*Identifier{ident}
 
 	if !p.expectPeek(TOKEN_ASSIGN) {
 		return nil
@@ -910,6 +991,8 @@ var precedences = map[TokenType]int{
 	TOKEN_MODULO:   PRODUCT,
 	TOKEN_LPAREN:   CALL,
 	TOKEN_LBRACKET: INDEX,
+	TOKEN_DOT:      INDEX,
+	TOKEN_ARROW:    LOWEST,
 }
 
 func (p *Parser) peekPrecedence() int {
@@ -954,6 +1037,8 @@ func (p *Parser) prefixParseFn() func() Expression {
 		return p.parseIdentifier
 	case TOKEN_INT:
 		return p.parseIntegerLiteral
+	case TOKEN_FLOAT:
+		return p.parseFloatLiteral
 	case TOKEN_STRING:
 		return p.parseStringLiteral
 	case TOKEN_TRUE, TOKEN_FALSE:
@@ -986,6 +1071,8 @@ func (p *Parser) infixParseFn() func(Expression) Expression {
 		return p.parseCallExpression
 	case TOKEN_LBRACKET:
 		return p.parseIndexExpression
+	case TOKEN_DOT:
+		return p.parseDotExpression
 	case TOKEN_ASSIGN:
 		return p.parseAssignExpression
 	}
@@ -1022,6 +1109,20 @@ func (p *Parser) parseIntegerLiteral() Expression {
 	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
 	if err != nil {
 		msg := fmt.Sprintf("Line %d: could not parse %q as integer", p.curToken.Line, p.curToken.Literal)
+		p.errors = append(p.errors, msg)
+		return nil
+	}
+
+	lit.Value = value
+	return lit
+}
+
+func (p *Parser) parseFloatLiteral() Expression {
+	lit := &FloatLiteral{}
+
+	value, err := strconv.ParseFloat(p.curToken.Literal, 64)
+	if err != nil {
+		msg := fmt.Sprintf("Line %d: could not parse %q as float", p.curToken.Line, p.curToken.Literal)
 		p.errors = append(p.errors, msg)
 		return nil
 	}
@@ -1215,6 +1316,18 @@ func (p *Parser) parseFunctionParameters() []*Identifier {
 	return identifiers
 }
 
+func (p *Parser) parseDotExpression(left Expression) Expression {
+	exp := &DotExpression{Left: left}
+
+	if !p.expectPeek(TOKEN_IDENT) {
+		return nil
+	}
+
+	exp.Right = &Identifier{Name: p.curToken.Literal}
+
+	return exp
+}
+
 func (p *Parser) parseCallExpression(function Expression) Expression {
 	exp := &CallExpression{Function: function}
 	exp.Arguments = p.parseExpressionList(TOKEN_RPAREN)
@@ -1239,6 +1352,7 @@ type ObjectType int
 
 const (
 	INTEGER_OBJ ObjectType = iota
+	FLOAT_OBJ
 	BOOLEAN_OBJ
 	STRING_OBJ
 	NULL_OBJ
@@ -1255,6 +1369,8 @@ func (ot ObjectType) String() string {
 	switch ot {
 	case INTEGER_OBJ:
 		return "INTEGER"
+	case FLOAT_OBJ:
+		return "FLOAT"
 	case BOOLEAN_OBJ:
 		return "BOOLEAN"
 	case STRING_OBJ:
@@ -1291,6 +1407,13 @@ type Integer struct {
 
 func (i *Integer) Type() ObjectType { return INTEGER_OBJ }
 func (i *Integer) Inspect() string  { return fmt.Sprintf("%d", i.Value) }
+
+type Float struct {
+	Value float64
+}
+
+func (f *Float) Type() ObjectType { return FLOAT_OBJ }
+func (f *Float) Inspect() string  { return fmt.Sprintf("%g", f.Value) }
 
 type Boolean struct {
 	Value bool
@@ -1607,37 +1730,65 @@ var builtins = map[string]*Builtin{
 	},
 	"read_file": {
 		Fn: func(args ...Object) Object {
+			// Helper to return error tuple: [NULL, "ERROR msg"]
+			retErr := func(msg string) Object {
+				// Use NULL_OBJ for value (which is &Null{})
+				return &Array{Elements: []Object{&Null{}, &String{Value: msg}}}
+			}
+			// Helper to return success tuple: [String, NULL]
+			retOk := func(val string) Object {
+				return &Array{Elements: []Object{&String{Value: val}, &Null{}}}
+			}
+
 			if len(args) != 1 {
-				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args))}
+				return retErr(fmt.Sprintf("wrong number of arguments. got=%d, want=1", len(args)))
 			}
 			if args[0].Type() != STRING_OBJ {
-				return &String{Value: fmt.Sprintf("argument to `read_file` must be STRING, got %s", args[0].Type())}
+				return retErr(fmt.Sprintf("argument to `read_file` must be STRING, got %s", args[0].Type()))
 			}
 
 			path := args[0].(*String).Value
-			content, err := os.ReadFile(path)
+			safePath, err := sanitizePath(path)
 			if err != nil {
-				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+				return retErr(fmt.Sprintf("%s", err))
 			}
-			return &String{Value: string(content)}
+
+			content, err := os.ReadFile(safePath)
+			if err != nil {
+				return retErr(fmt.Sprintf("%s", err))
+			}
+			return retOk(string(content))
 		},
 	},
 	"write_file": {
 		Fn: func(args ...Object) Object {
+			// Returns [Result(bool), Error(string/null)]
+			retErr := func(msg string) Object {
+				return &Array{Elements: []Object{FALSE, &String{Value: msg}}}
+			}
+			retOk := func() Object {
+				return &Array{Elements: []Object{TRUE, &Null{}}}
+			}
+
 			if len(args) != 2 {
-				return &String{Value: fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args))}
+				return retErr(fmt.Sprintf("wrong number of arguments. got=%d, want=2", len(args)))
 			}
 			if args[0].Type() != STRING_OBJ || args[1].Type() != STRING_OBJ {
-				return &String{Value: fmt.Sprintf("arguments to `write_file` must be STRING, got %s and %s", args[0].Type(), args[1].Type())}
+				return retErr(fmt.Sprintf("arguments to `write_file` must be STRING, got %s and %s", args[0].Type(), args[1].Type()))
 			}
 
 			path := args[0].(*String).Value
-			content := args[1].(*String).Value
-			err := os.WriteFile(path, []byte(content), 0644)
+			safePath, err := sanitizePath(path)
 			if err != nil {
-				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+				return retErr(fmt.Sprintf("%s", err))
 			}
-			return TRUE // success
+
+			content := args[1].(*String).Value
+			err = os.WriteFile(safePath, []byte(content), 0644)
+			if err != nil {
+				return retErr(fmt.Sprintf("%s", err))
+			}
+			return retOk() // success
 		},
 	},
 	"file_exists": {
@@ -1648,7 +1799,14 @@ var builtins = map[string]*Builtin{
 			if args[0].Type() != STRING_OBJ {
 				return &String{Value: fmt.Sprintf("argument to `file_exists` must be STRING, got %s", args[0].Type())}
 			}
-			_, err := os.Stat(args[0].(*String).Value)
+
+			path := args[0].(*String).Value
+			safePath, err := sanitizePath(path)
+			if err != nil {
+				return &String{Value: fmt.Sprintf("IO ERROR: %s", err)}
+			}
+
+			_, err = os.Stat(safePath)
 			return nativeBoolToBooleanObject(!os.IsNotExist(err))
 		},
 	},
@@ -1660,9 +1818,16 @@ var builtins = map[string]*Builtin{
 			if args[0].Type() != STRING_OBJ {
 				return &String{Value: fmt.Sprintf("argument to `remove_file` must be STRING, got %s", args[0].Type())}
 			}
-			err := os.Remove(args[0].(*String).Value)
+
+			path := args[0].(*String).Value
+			safePath, err := sanitizePath(path)
 			if err != nil {
-				return &String{Value: fmt.Sprintf("ERROR: %s", err)}
+				return &String{Value: fmt.Sprintf("IO ERROR: %s", err)}
+			}
+
+			err = os.Remove(safePath)
+			if err != nil {
+				return &String{Value: fmt.Sprintf("IO ERROR: %s", err)}
 			}
 			return TRUE
 		},
@@ -1928,6 +2093,9 @@ func Eval(node Node, env *Environment) Object {
 	case *IntegerLiteral:
 		return &Integer{Value: node.Value}
 
+	case *FloatLiteral:
+		return &Float{Value: node.Value}
+
 	case *StringLiteral:
 		return &String{Value: node.Value}
 
@@ -1958,7 +2126,15 @@ func Eval(node Node, env *Environment) Object {
 		}
 		return evalIndexExpression(left, index)
 
+	case *DotExpression:
+		left := Eval(node.Left, env)
+		if isError(left) {
+			return left
+		}
+		return evalDotExpression(left, node.Right.Name)
+
 	case *PrefixExpression:
+
 		right := Eval(node.Right, env)
 		if isError(right) {
 			return right
@@ -2018,7 +2194,37 @@ func Eval(node Node, env *Environment) Object {
 		if isError(val) {
 			return val
 		}
-		env.Set(node.Name.Name, val)
+
+		if len(node.Names) > 1 {
+			// Expecting an Array result for multi-assignment
+			// Support Golang-style tuple returns
+
+			arr, ok := val.(*Array)
+			if !ok {
+				// Allow single value to be assigned to first var, others null?
+				// Or stricter: Error. Go is strict.
+				return &String{Value: fmt.Sprintf("ERROR: assignment mismatch: %d variables but 1 value", len(node.Names))}
+			}
+
+			if len(node.Names) != len(arr.Elements) {
+				// Go is strict about count mismatch
+				// We can be strict or loose. Let's be semi-strict to match expectations.
+				return &String{Value: fmt.Sprintf("ERROR: assignment mismatch: %d variables but %d values", len(node.Names), len(arr.Elements))}
+			}
+
+			for i, name := range node.Names {
+				env.Set(name.Name, arr.Elements[i])
+			}
+		} else {
+			// Backward compat or single assignment
+			targetName := node.Name
+			if targetName == nil && len(node.Names) > 0 {
+				targetName = node.Names[0]
+			}
+			if targetName != nil {
+				env.Set(targetName.Name, val)
+			}
+		}
 
 	case *PrintStatement:
 		val := Eval(node.Expression, env)
@@ -2126,18 +2332,28 @@ func evalBangOperatorExpression(right Object) Object {
 }
 
 func evalMinusPrefixOperatorExpression(right Object) Object {
-	if right.Type() != INTEGER_OBJ {
+	switch right.Type() {
+	case INTEGER_OBJ:
+		value := right.(*Integer).Value
+		return &Integer{Value: -value}
+	case FLOAT_OBJ:
+		value := right.(*Float).Value
+		return &Float{Value: -value}
+	default:
 		return &String{Value: fmt.Sprintf("ERROR: unknown operator: -%s", right.Type())}
 	}
-
-	value := right.(*Integer).Value
-	return &Integer{Value: -value}
 }
 
 func evalInfixExpression(operator string, left, right Object) Object {
 	switch {
 	case left.Type() == INTEGER_OBJ && right.Type() == INTEGER_OBJ:
 		return evalIntegerInfixExpression(operator, left, right)
+	case left.Type() == FLOAT_OBJ && right.Type() == FLOAT_OBJ:
+		return evalFloatInfixExpression(operator, left, right)
+	case left.Type() == INTEGER_OBJ && right.Type() == FLOAT_OBJ:
+		return evalFloatInfixExpression(operator, &Float{Value: float64(left.(*Integer).Value)}, right)
+	case left.Type() == FLOAT_OBJ && right.Type() == INTEGER_OBJ:
+		return evalFloatInfixExpression(operator, left, &Float{Value: float64(right.(*Integer).Value)})
 	case left.Type() == STRING_OBJ && right.Type() == STRING_OBJ:
 		return evalStringInfixExpression(operator, left, right)
 	case operator == "==":
@@ -2148,8 +2364,43 @@ func evalInfixExpression(operator string, left, right Object) Object {
 		return nativeBoolToBooleanObject(isTruthy(left) && isTruthy(right))
 	case operator == "||":
 		return nativeBoolToBooleanObject(isTruthy(left) || isTruthy(right))
+	case operator == "+" && (left.Type() == STRING_OBJ || right.Type() == STRING_OBJ):
+		return evalMixedStringConcatenation(left, right)
 	case left.Type() != right.Type():
 		return &String{Value: fmt.Sprintf("ERROR: type mismatch: %s %s %s", left.Type(), operator, right.Type())}
+	default:
+		return &String{Value: fmt.Sprintf("ERROR: unknown operator: %s %s %s", left.Type(), operator, right.Type())}
+	}
+}
+
+func evalFloatInfixExpression(operator string, left, right Object) Object {
+	leftVal := left.(*Float).Value
+	rightVal := right.(*Float).Value
+
+	switch operator {
+	case "+":
+		return &Float{Value: leftVal + rightVal}
+	case "-":
+		return &Float{Value: leftVal - rightVal}
+	case "*":
+		return &Float{Value: leftVal * rightVal}
+	case "/":
+		if rightVal == 0 {
+			return &String{Value: "ERROR: division by zero"}
+		}
+		return &Float{Value: leftVal / rightVal}
+	case "<":
+		return nativeBoolToBooleanObject(leftVal < rightVal)
+	case ">":
+		return nativeBoolToBooleanObject(leftVal > rightVal)
+	case "<=":
+		return nativeBoolToBooleanObject(leftVal <= rightVal)
+	case ">=":
+		return nativeBoolToBooleanObject(leftVal >= rightVal)
+	case "==":
+		return nativeBoolToBooleanObject(leftVal == rightVal)
+	case "!=":
+		return nativeBoolToBooleanObject(leftVal != rightVal)
 	default:
 		return &String{Value: fmt.Sprintf("ERROR: unknown operator: %s %s %s", left.Type(), operator, right.Type())}
 	}
@@ -2204,6 +2455,10 @@ func evalStringInfixExpression(operator string, left, right Object) Object {
 	default:
 		return &String{Value: fmt.Sprintf("ERROR: unknown operator: %s %s %s", left.Type(), operator, right.Type())}
 	}
+}
+
+func evalMixedStringConcatenation(left, right Object) Object {
+	return &String{Value: left.Inspect() + right.Inspect()}
 }
 
 func evalIfExpression(ie *IfExpression, env *Environment) Object {
@@ -2481,8 +2736,7 @@ func unwrapReturnValue(obj Object) Object {
 	return obj
 }
 
-// REPL and Main
-func main() {
+func StartCLI() {
 	rand.Seed(time.Now().UnixNano())
 	timeout := flag.Duration("timeout", 0, "Execution timeout (0 = no limit)")
 	flag.Parse()
@@ -2555,15 +2809,81 @@ func runFile(filename string, args []string) {
 	}
 }
 
+// Helper to secure file paths
+func sanitizePath(userPath string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	// 1. Get Absolute Path
+	absPath, err := filepath.Abs(userPath)
+	if err != nil {
+		return "", err
+	}
+
+	// 2. Resolve Symlinks (handle non-existent files for write ops)
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist, verify parent directory instead
+			dir := filepath.Dir(absPath)
+			realDir, dirErr := filepath.EvalSymlinks(dir)
+			if dirErr != nil {
+				// If parent doesn't exist or is invalid, we can't safely verify or write
+				return "", dirErr
+			}
+			realPath = filepath.Join(realDir, filepath.Base(absPath))
+		} else {
+			return "", err
+		}
+	}
+
+	cleanPath := filepath.Clean(realPath)
+
+	// 3. Prefix Check (Robust)
+	// Add separator to ensure partial prefix matches like /dir vs /dir-hack fail
+	cwdClean := filepath.Clean(cwd)
+	if !strings.HasSuffix(cwdClean, string(os.PathSeparator)) {
+		cwdClean += string(os.PathSeparator)
+	}
+
+	checkPath := cleanPath
+	if !strings.HasSuffix(checkPath, string(os.PathSeparator)) {
+		checkPath += string(os.PathSeparator)
+	}
+
+	if !strings.HasPrefix(checkPath, cwdClean) {
+		return "", fmt.Errorf("access denied: path '%s' is outside project root", userPath)
+	}
+	return cleanPath, nil
+}
+
 func runRepl() {
 	fmt.Println("Welcome to the Simple Programming Language!")
 	fmt.Println("Type 'exit' to quit")
-	fmt.Println("For multi-line input: continue typing and end with a blank line")
+	fmt.Println("For multi-line input: ensure braces {} are balanced")
 	fmt.Println("Or run: go run interpreter.go <filename>")
 	fmt.Println()
 
 	env := NewGlobalEnvironment([]string{})
 	scanner := bufio.NewScanner(os.Stdin)
+
+	// Handle Ctrl+C (SIGINT) gracefully
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// We can't easily interrupt a blocking Read on Stdin in Go standard lib without closing it.
+	// However, we can use this to prevent the program from crashing on Ctrl+C during execution.
+	go func() {
+		for range sigChan {
+			// Just print a newline and prompt again if we are idle,
+			// or print 'Interrupted' if running.
+			// Since we can't easily share state here without mutexes, we trust the user to see the output.
+			fmt.Println("\n(Keyboard Interrupt)")
+			fmt.Print(">> ")
+		}
+	}()
 
 	for {
 		fmt.Print(">> ")
@@ -2638,4 +2958,150 @@ func countBraces(line string) int {
 		}
 	}
 	return count
+}
+
+func evalDotExpression(left Object, name string) Object {
+	// 1. Property Access for Hash
+	if hash, ok := left.(*Hash); ok {
+		key := &String{Value: name}
+		hashed := key.HashKey()
+		if pair, ok := hash.Pairs[hashed]; ok {
+			return pair.Value
+		}
+		// If key not found, could proceed to check for Hash methods like 'keys'
+	}
+
+	// 2. Method Access
+	switch left.(type) {
+	case *Array:
+		return getArrayMethod(left.(*Array), name)
+	case *String:
+		// reuse existing strings package functions via wrappers
+		// For now simple stub or existing builtins logic if needed
+		// But builtins are currently global.
+	}
+
+	return &String{Value: fmt.Sprintf("property or method '%s' not found on %s", name, left.Type())}
+}
+
+func getArrayMethod(arr *Array, name string) Object {
+	switch name {
+	case "map":
+		return &Builtin{
+			Fn: func(args ...Object) Object {
+				if len(args) != 1 {
+					return &String{Value: fmt.Sprintf("map expects 1 argument, got %d", len(args))}
+				}
+				_, ok := args[0].(*Function)
+				if !ok {
+					// Also support Builtin as callback?
+					_, isBuiltin := args[0].(*Builtin)
+					if !isBuiltin {
+						return &String{Value: "map expects a function"}
+					}
+				}
+
+				newElements := make([]Object, len(arr.Elements))
+				for i, el := range arr.Elements {
+					// Call function
+					// We need 'applyFunction' logic.
+					// Since we are inside a Builtin Fn, we don't have access to 'applyFunction' easily unless we export it or duplicate logic.
+					// Or call Eval? No, Eval takes AST.
+					// We need to execute the function object.
+					// Helper: executeCallback(fn, []Object{el})
+					res := executeCallback(args[0], []Object{el})
+					if isError(res) {
+						return res
+					}
+					newElements[i] = res
+				}
+				return &Array{Elements: newElements}
+			},
+		}
+	case "filter":
+		return &Builtin{
+			Fn: func(args ...Object) Object {
+				if len(args) != 1 {
+					return &String{Value: "filter expects 1 argument"}
+				}
+
+				newElements := []Object{}
+				for _, el := range arr.Elements {
+					res := executeCallback(args[0], []Object{el})
+					if isError(res) {
+						return res
+					}
+					if isTruthy(res) {
+						newElements = append(newElements, el)
+					}
+				}
+				return &Array{Elements: newElements}
+			},
+		}
+	case "forEach":
+		return &Builtin{
+			Fn: func(args ...Object) Object {
+				if len(args) != 1 {
+					return &String{Value: "forEach expects 1 argument"}
+				}
+				for _, el := range arr.Elements {
+					res := executeCallback(args[0], []Object{el})
+					if isError(res) {
+						return res
+					}
+				}
+				return NULL
+			},
+		}
+	case "push":
+		return &Builtin{
+			Fn: func(args ...Object) Object {
+				// Mutating the array in place?
+				// The Array struct has a slice. If we append, we might need to update the pointer or slice header.
+				// Since we passed *Array, we can modify Elements.
+				for _, arg := range args {
+					arr.Elements = append(arr.Elements, arg)
+				}
+				return &Integer{Value: int64(len(arr.Elements))}
+			},
+		}
+	case "find":
+		return &Builtin{
+			Fn: func(args ...Object) Object {
+				if len(args) != 1 {
+					return &String{Value: "find expects 1 argument"}
+				}
+				for _, el := range arr.Elements {
+					res := executeCallback(args[0], []Object{el})
+					if isTruthy(res) {
+						return el
+					}
+				}
+				return NULL
+			},
+		}
+	}
+	return &String{Value: fmt.Sprintf("method '%s' not found on ARRAY", name)}
+}
+
+func executeCallback(fnObj Object, args []Object) Object {
+	switch fn := fnObj.(type) {
+	case *Function:
+		extendedEnv := NewEnclosedEnvironment(fn.Env)
+		for i, param := range fn.Parameters {
+			if i < len(args) {
+				extendedEnv.Set(param.Name, args[i])
+			}
+		}
+		// Also support implicit 'it' if no params? No.
+
+		evaluated := Eval(fn.Body, extendedEnv)
+		return unwrapReturnValue(evaluated)
+
+	case *Builtin:
+		return fn.Fn(args...)
+
+	default:
+		return &String{Value: "not a function"}
+	}
 }

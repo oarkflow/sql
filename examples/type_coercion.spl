@@ -1,0 +1,31 @@
+// Coercion Example
+// Demonstrates automatic type conversion in string concatenation
+
+puts("=== Type Coercion Demo ===")
+
+// String + Integer
+let name = "Agent"
+let id = 007
+let code = name + " " + id
+puts("String + Int: " + code)
+
+// String + Float
+let const_pi = 3.14159
+let msg = "PI is approx " + const_pi
+puts("String + Float: " + msg)
+
+// String + Boolean
+let is_active = true
+let status = "System Active: " + is_active
+puts("String + Bool: " + status)
+
+// String + Array
+let items = ["apple", "banana"]
+let list_str = "Items: " + items
+puts("String + Array: " + list_str)
+
+// Complex Object (Hash) + String
+let user = {"name": "Sujit", "role": "Admin"}
+puts("User Info: " + user)
+
+puts("=== End Demo ===")
