@@ -380,8 +380,7 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 	for _, expr := range query.Select.Fields {
 		_, underlying := unwrapAlias(expr)
 		if fc, ok := underlying.(*FunctionCall); ok {
-			switch strings.ToUpper(fc.FunctionName) {
-			case "COUNT", "AVG", "SUM", "MIN", "MAX", "DIFF":
+			if IsAggregateFunction(fc.FunctionName) {
 				hasAggregate = true
 			}
 		}
@@ -427,103 +426,10 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 			for i, expr := range query.Select.Fields {
 				colName := getFieldName(expr, i)
 				_, underlying := unwrapAlias(expr)
-				if fc, ok := underlying.(*FunctionCall); ok {
-					switch strings.ToUpper(fc.FunctionName) {
-					case "COUNT":
-						resultRow[colName] = len(groupRows)
-					case "AVG":
-						sum := 0.0
-						count := 0.0
-						for _, r := range groupRows {
-							val := ctx.evalExpression(c, fc.Args[0], r)
-							num, ok := convert.ToFloat64(val)
-							if ok {
-								sum += num
-								count++
-							}
-						}
-						if count > 0 {
-							resultRow[colName] = sum / count
-						} else {
-							resultRow[colName] = nil
-						}
-					case "SUM":
-						sum := 0.0
-						for _, r := range groupRows {
-							val := ctx.evalExpression(c, fc.Args[0], r)
-							num, ok := convert.ToFloat64(val)
-							if ok {
-								sum += num
-							}
-						}
-						resultRow[colName] = sum
-					case "MIN":
-						var minVal float64
-						first := true
-						for _, r := range groupRows {
-							val := ctx.evalExpression(c, fc.Args[0], r)
-							num, ok := convert.ToFloat64(val)
-							if ok {
-								if first {
-									minVal = num
-									first = false
-								} else if num < minVal {
-									minVal = num
-								}
-							}
-						}
-						if first {
-							resultRow[colName] = nil
-						} else {
-							resultRow[colName] = minVal
-						}
-					case "MAX":
-						var maxVal float64
-						first := true
-						for _, r := range groupRows {
-							val := ctx.evalExpression(c, fc.Args[0], r)
-							num, ok := convert.ToFloat64(val)
-							if ok {
-								if first {
-									maxVal = num
-									first = false
-								} else if num > maxVal {
-									maxVal = num
-								}
-							}
-						}
-						if first {
-							resultRow[colName] = nil
-						} else {
-							resultRow[colName] = maxVal
-						}
-					case "DIFF":
-						var minVal, maxVal float64
-						first := true
-						for _, r := range groupRows {
-							val := ctx.evalExpression(c, fc.Args[0], r)
-							num, ok := convert.ToFloat64(val)
-							if ok {
-								if first {
-									minVal = num
-									maxVal = num
-									first = false
-								} else {
-									if num < minVal {
-										minVal = num
-									}
-									if num > maxVal {
-										maxVal = num
-									}
-								}
-							}
-						}
-						if first {
-							resultRow[colName] = nil
-						} else {
-							resultRow[colName] = maxVal - minVal
-						}
-					default:
+				if fc, ok := underlying.(*FunctionCall); ok && IsAggregateFunction(fc.FunctionName) {
+					if v, ok := EvaluateAggregateFunction(fc.FunctionName, ctx, c, fc.Args, groupRows); ok {
+						resultRow[colName] = v
+					} else {
 						resultRow[colName] = nil
 					}
 				} else {
@@ -543,103 +449,10 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		for i, expr := range query.Select.Fields {
 			colName := getFieldName(expr, i)
 			_, underlying := unwrapAlias(expr)
-			if fc, ok := underlying.(*FunctionCall); ok {
-				switch strings.ToUpper(fc.FunctionName) {
-				case "COUNT":
-					resultRow[colName] = len(filteredRows)
-				case "AVG":
-					sum := 0.0
-					count := 0.0
-					for _, r := range filteredRows {
-						val := ctx.evalExpression(c, fc.Args[0], r)
-						num, ok := convert.ToFloat64(val)
-						if ok {
-							sum += num
-							count++
-						}
-					}
-					if count > 0 {
-						resultRow[colName] = sum / count
-					} else {
-						resultRow[colName] = nil
-					}
-				case "SUM":
-					sum := 0.0
-					for _, r := range filteredRows {
-						val := ctx.evalExpression(c, fc.Args[0], r)
-						num, ok := convert.ToFloat64(val)
-						if ok {
-							sum += num
-						}
-					}
-					resultRow[colName] = sum
-				case "MIN":
-					var minVal float64
-					first := true
-					for _, r := range filteredRows {
-						val := ctx.evalExpression(c, fc.Args[0], r)
-						num, ok := convert.ToFloat64(val)
-						if ok {
-							if first {
-								minVal = num
-								first = false
-							} else if num < minVal {
-								minVal = num
-							}
-						}
-					}
-					if first {
-						resultRow[colName] = nil
-					} else {
-						resultRow[colName] = minVal
-					}
-				case "MAX":
-					var maxVal float64
-					first := true
-					for _, r := range filteredRows {
-						val := ctx.evalExpression(c, fc.Args[0], r)
-						num, ok := convert.ToFloat64(val)
-						if ok {
-							if first {
-								maxVal = num
-								first = false
-							} else if num > maxVal {
-								maxVal = num
-							}
-						}
-					}
-					if first {
-						resultRow[colName] = nil
-					} else {
-						resultRow[colName] = maxVal
-					}
-				case "DIFF":
-					var minVal, maxVal float64
-					first := true
-					for _, r := range filteredRows {
-						val := ctx.evalExpression(c, fc.Args[0], r)
-						num, ok := convert.ToFloat64(val)
-						if ok {
-							if first {
-								minVal = num
-								maxVal = num
-								first = false
-							} else {
-								if num < minVal {
-									minVal = num
-								}
-								if num > maxVal {
-									maxVal = num
-								}
-							}
-						}
-					}
-					if first {
-						resultRow[colName] = nil
-					} else {
-						resultRow[colName] = maxVal - minVal
-					}
-				default:
+			if fc, ok := underlying.(*FunctionCall); ok && IsAggregateFunction(fc.FunctionName) {
+				if v, ok := EvaluateAggregateFunction(fc.FunctionName, ctx, c, fc.Args, filteredRows); ok {
+					resultRow[colName] = v
+				} else {
 					resultRow[colName] = nil
 				}
 			} else {

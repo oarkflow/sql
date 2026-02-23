@@ -3,7 +3,6 @@ package sql
 import (
 	"context"
 	"fmt"
-	"math" // <-- added import for math functions
 	"reflect"
 	"sort"
 	"strconv"
@@ -32,6 +31,11 @@ func NewEvalContext() *EvalContext {
 		OuterRow: make(map[string]any),
 		Errors:   []string{},
 	}
+}
+
+// Eval exposes expression evaluation for externally registered plugin functions.
+func (ctx *EvalContext) Eval(c context.Context, expr Expression, row utils.Record) any {
+	return ctx.evalExpression(c, expr, row)
 }
 
 func (ctx *EvalContext) evalExpression(c context.Context, expr Expression, row utils.Record) any {
@@ -176,14 +180,11 @@ func (ctx *EvalContext) evalPrefixExpression(c context.Context, e *PrefixExpress
 
 func (ctx *EvalContext) evalFunctionCall(c context.Context, fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
-	switch name {
-	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW",
-		"CURRENT_TIMESTAMP", "ROUND", "DATEDIFF", "ANY", "ALL", "CAST", "JSON_EXTRACT", "JSON_EXISTS", "JSON_VALUE":
+	if _, ok := LookupScalarFunction(name); ok {
 		return ctx.evalScalarFunction(c, fc, row)
-	default:
-		ctx.logError("Unsupported function: " + name)
-		return nil
 	}
+	ctx.logError("Unsupported function: " + name)
+	return nil
 }
 
 func (ctx *EvalContext) evalWindowFunction(c context.Context, e *WindowFunction, row utils.Record) any {
@@ -377,194 +378,12 @@ func (ctx *EvalContext) evalBinaryExpression(c context.Context, e *BinaryExpress
 
 func (ctx *EvalContext) evalScalarFunction(c context.Context, fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
-	switch name {
-	case "NOW", "CURRENT_TIMESTAMP":
-		return time.Now().Format("2006-01-02 15:04:05")
-	case "COALESCE":
-		for _, arg := range fc.Args {
-			val := ctx.evalExpression(c, arg, row)
-			if !isNilOrEmpty(val) {
-				return val
-			}
-		}
-		return nil
-	case "CONCAT":
-		var parts []string
-		for _, arg := range fc.Args {
-			val := ctx.evalExpression(c, arg, row)
-			parts = append(parts, fmt.Sprintf("%v", val))
-		}
-		return strings.Join(parts, "")
-	case "IF":
-		if len(fc.Args) < 3 {
-			ctx.logError("IF requires at least 3 arguments")
-			return nil
-		}
-		cond := ctx.evalExpression(c, fc.Args[0], row)
-		if b, ok := cond.(bool); ok && b {
-			return ctx.evalExpression(c, fc.Args[1], row)
-		}
-		return ctx.evalExpression(c, fc.Args[2], row)
-	case "SUBSTR":
-		if len(fc.Args) < 2 {
-			ctx.logError("SUBSTR requires at least 2 arguments")
-			return nil
-		}
-		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		startVal, ok := convert.ToFloat64(ctx.evalExpression(c, fc.Args[1], row))
-		if !ok {
-			return nil
-		}
-		start := int(startVal) - 1
-		if start < 0 || start >= len(s) {
-			return ""
-		}
-		if len(fc.Args) == 3 {
-			lenVal, ok := convert.ToFloat64(ctx.evalExpression(c, fc.Args[2], row))
-			if !ok {
-				return nil
-			}
-			length := int(lenVal)
-			end := start + length
-			if end > len(s) {
-				end = len(s)
-			}
-			return s[start:end]
-		}
-		return s[start:]
-	case "LENGTH":
-		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		return len(s)
-	case "UPPER":
-		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		return strings.ToUpper(s)
-	case "LOWER":
-		s := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		return strings.ToLower(s)
-	case "TO_DATE":
-		if len(fc.Args) < 2 {
-			ctx.logError("TO_DATE requires 2 arguments")
-			return nil
-		}
-		dateStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		formatStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		layout := sqlDateFormatToGoLayout(formatStr)
-		t, err := time.Parse(layout, dateStr)
-		if err != nil {
-			ctx.logError("TO_DATE parse error: " + err.Error())
-			return nil
-		}
-		return t.Format("2006-01-02")
-	case "TO_NUMBER":
-		if len(fc.Args) < 1 {
-			return nil
-		}
-		numStr := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		f, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			ctx.logError("TO_NUMBER parse error: " + err.Error())
-			return nil
-		}
-		return f
-	case "ROUND":
-		if len(fc.Args) < 1 {
-			ctx.logError("ROUND requires at least 1 argument")
-			return nil
-		}
-		val := ctx.evalExpression(c, fc.Args[0], row)
-		num, ok := convert.ToFloat64(val)
-		if !ok {
-			ctx.logError("ROUND: unable to convert argument to number")
-			return nil
-		}
-		precision := 0.0
-		if len(fc.Args) >= 2 {
-			pVal := ctx.evalExpression(c, fc.Args[1], row)
-			if p, ok := convert.ToFloat64(pVal); ok {
-				precision = p
-			}
-		}
-		factor := math.Pow(10, precision)
-		return math.Round(num*factor) / factor
-	case "ANY", "ALL":
-		if len(fc.Args) < 1 {
-			ctx.logError(strings.ToUpper(fc.FunctionName) + " requires one argument")
-			return quantifiedValues{Mode: strings.ToUpper(fc.FunctionName)}
-		}
-		val := ctx.evalExpression(c, fc.Args[0], row)
-		values := toComparableSlice(val)
-		return quantifiedValues{
-			Mode:   strings.ToUpper(fc.FunctionName),
-			Values: values,
-		}
-	case "CAST":
-		if len(fc.Args) < 2 {
-			ctx.logError("CAST requires 2 arguments: CAST(expr AS type)")
-			return nil
-		}
-		typeName := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		value := ctx.evalExpression(c, fc.Args[0], row)
-		return castValue(typeName, value)
-	case "DATEDIFF":
-		if len(fc.Args) < 2 {
-			ctx.logError("DATEDIFF requires 2 arguments")
-			return nil
-		}
-		date1Str := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[0], row))
-		date2Str := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		t1, err1 := time.Parse("2006-01-02", date1Str)
-		t2, err2 := time.Parse("2006-01-02", date2Str)
-		if err1 != nil || err2 != nil {
-			ctx.logError("DATEDIFF parse error: invalid date format")
-			return nil
-		}
-		diff := t1.Sub(t2)
-		return int(diff.Hours() / 24)
-	case "JSON_EXTRACT":
-		if len(fc.Args) < 2 {
-			ctx.logError("JSON_EXTRACT requires 2 arguments")
-			return nil
-		}
-		payload := ctx.evalExpression(c, fc.Args[0], row)
-		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		val, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
-		if !ok {
-			return nil
-		}
-		return val
-	case "JSON_EXISTS":
-		if len(fc.Args) < 2 {
-			ctx.logError("JSON_EXISTS requires 2 arguments")
-			return false
-		}
-		payload := ctx.evalExpression(c, fc.Args[0], row)
-		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		_, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
-		return ok
-	case "JSON_VALUE":
-		if len(fc.Args) < 2 {
-			ctx.logError("JSON_VALUE requires 2 arguments")
-			return nil
-		}
-		payload := ctx.evalExpression(c, fc.Args[0], row)
-		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
-		val, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
-		if !ok {
-			return nil
-		}
-		if arr, ok := toAnySlice(val); ok {
-			for _, item := range arr {
-				if item != nil {
-					return item
-				}
-			}
-			return nil
-		}
-		return val
-	default:
+	handler, ok := LookupScalarFunction(name)
+	if !ok {
 		ctx.logError("Unsupported scalar function: " + name)
 		return nil
 	}
+	return handler(ctx, c, fc.Args, row)
 }
 
 func (ctx *EvalContext) getPartitionKey(c context.Context, row utils.Record, exprs []Expression) string {
@@ -1001,4 +820,26 @@ func castValue(typeName string, value any) any {
 	default:
 		return nil
 	}
+}
+
+func parseFlexibleDateTime(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		return v, true
+	}
+	s := fmt.Sprintf("%v", value)
+	layouts := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+		"2006/01/02",
+		"01/02/2006",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }

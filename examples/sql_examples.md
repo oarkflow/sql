@@ -190,3 +190,22 @@ SELECT tags[abc] FROM read_service('posts');
 -- Malformed arrow path
 SELECT education-> FROM read_service('users');
 ```
+
+### 12. Additional functions (`SUBSTR`, `YEAR`, `MONTH`, `FIRST`, `LAST`)
+```sql
+-- SUBSTR (already supported)
+SELECT id, SUBSTR(name, 1, 5) AS short_name
+FROM read_service('users');
+
+-- YEAR / MONTH from date fields
+SELECT id, YEAR(created_at) AS year_created, MONTH(created_at) AS month_created
+FROM read_service('posts');
+
+-- Aggregate FIRST / LAST over result set order
+SELECT FIRST(id) AS first_post_id, LAST(id) AS last_post_id
+FROM read_service('posts');
+
+-- FIRST / LAST with indexed array values
+SELECT FIRST(tags[0]) AS first_tag, LAST(tags[0]) AS last_tag
+FROM read_service('posts');
+```
