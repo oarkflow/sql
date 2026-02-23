@@ -11,7 +11,8 @@ import (
 )
 
 func TestRegisterScalarFunction(t *testing.T) {
-	RegisterScalarFunction("REVERSE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	_ = UnregisterScalarFunction("REVERSE")
+	if err := RegisterScalarFunctionE("REVERSE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) == 0 {
 			return ""
 		}
@@ -21,7 +22,9 @@ func TestRegisterScalarFunction(t *testing.T) {
 			runes[i], runes[j] = runes[j], runes[i]
 		}
 		return string(runes)
-	})
+	}); err != nil {
+		t.Fatalf("register scalar function failed: %v", err)
+	}
 
 	rows := []utils.Record{
 		{"name": "abc"},
@@ -36,7 +39,8 @@ func TestRegisterScalarFunction(t *testing.T) {
 }
 
 func TestRegisterAggregateFunction(t *testing.T) {
-	RegisterAggregateFunction("MEDIAN", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	_ = UnregisterAggregateFunction("MEDIAN")
+	if err := RegisterAggregateFunctionE("MEDIAN", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 || len(rows) == 0 {
 			return nil
 		}
@@ -57,7 +61,9 @@ func TestRegisterAggregateFunction(t *testing.T) {
 			return vals[mid]
 		}
 		return (vals[mid-1] + vals[mid]) / 2.0
-	})
+	}); err != nil {
+		t.Fatalf("register aggregate function failed: %v", err)
+	}
 
 	rows := []utils.Record{
 		{"id": 10},

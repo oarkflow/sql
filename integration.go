@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ var (
 	userManagers = map[string]*integrations.Manager{}
 	umMutex      sync.RWMutex
 )
+
+var serviceIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_.-]+)?$`)
+var serviceSourcePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func toString(val any) string {
 	switch val := val.(type) {
@@ -102,12 +106,24 @@ func RegisterIntegrationForUser(ctx context.Context, service integrations.Servic
 // ReadServiceForUser executes a service based on an identifier for the specified user.
 // If userID is empty it will use the default manager.
 func ReadServiceForUser(ctx context.Context, identifier string) ([]utils.Record, error) {
+	if !serviceIdentifierPattern.MatchString(identifier) {
+		return nil, &SQLError{
+			Code:    ErrCodeInput,
+			Message: "invalid service identifier format",
+		}
+	}
 	parts := strings.SplitN(identifier, ".", 2)
 	integrationKey := parts[0]
 	var query any
 	var source string
 	if len(parts) > 1 {
 		source = parts[1]
+		if !serviceSourcePattern.MatchString(source) {
+			return nil, &SQLError{
+				Code:    ErrCodeInput,
+				Message: "invalid service source name in identifier",
+			}
+		}
 		query = fmt.Sprintf("SELECT * FROM %s", source)
 	}
 	mgr := getManager(ctx)
@@ -117,7 +133,7 @@ func ReadServiceForUser(ctx context.Context, identifier string) ([]utils.Record,
 	if err != nil {
 		return nil, err
 	}
-	if userID != nil {
+	if userID != nil && effectiveRuntimeConfig(ctx).LogQueryExecution {
 		latency := time.Since(start)
 		log.Info().Any("user_id", userID).Str("integration", integrationKey).Str("latency", fmt.Sprintf("%s", latency)).Msg("Executed integration")
 	}

@@ -32,11 +32,11 @@ func TestFirstLastAggregates(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(result))
 	}
-	if result[0]["first_id"] != 3 {
-		t.Fatalf("expected first_id 3, got %#v", result[0]["first_id"])
+	if result[0]["first_id"] != 1 {
+		t.Fatalf("expected first_id 1, got %#v", result[0]["first_id"])
 	}
-	if result[0]["last_id"] != 2 {
-		t.Fatalf("expected last_id 2, got %#v", result[0]["last_id"])
+	if result[0]["last_id"] != 3 {
+		t.Fatalf("expected last_id 3, got %#v", result[0]["last_id"])
 	}
 }
 

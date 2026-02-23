@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -21,6 +22,12 @@ type sqlFunctionRegistry struct {
 	mu        sync.RWMutex
 	scalar    map[string]ScalarFunctionHandler
 	aggregate map[string]AggregateFunctionHandler
+	opts      FunctionRegistryOptions
+}
+
+type FunctionRegistryOptions struct {
+	AllowOverride bool
+	Frozen        bool
 }
 
 var (
@@ -28,17 +35,69 @@ var (
 	functionRegistry         = &sqlFunctionRegistry{
 		scalar:    make(map[string]ScalarFunctionHandler),
 		aggregate: make(map[string]AggregateFunctionHandler),
+		opts: FunctionRegistryOptions{
+			AllowOverride: false,
+			Frozen:        false,
+		},
 	}
 )
 
 func RegisterScalarFunction(name string, handler ScalarFunctionHandler) {
 	ensureFunctionRegistryInitialized()
-	functionRegistry.registerScalar(name, handler)
+	_ = functionRegistry.registerScalar(name, handler, false)
 }
 
 func RegisterAggregateFunction(name string, handler AggregateFunctionHandler) {
 	ensureFunctionRegistryInitialized()
-	functionRegistry.registerAggregate(name, handler)
+	_ = functionRegistry.registerAggregate(name, handler, false)
+}
+
+func RegisterScalarFunctionE(name string, handler ScalarFunctionHandler) error {
+	ensureFunctionRegistryInitialized()
+	return functionRegistry.registerScalar(name, handler, false)
+}
+
+func RegisterAggregateFunctionE(name string, handler AggregateFunctionHandler) error {
+	ensureFunctionRegistryInitialized()
+	return functionRegistry.registerAggregate(name, handler, false)
+}
+
+func UnregisterScalarFunction(name string) error {
+	ensureFunctionRegistryInitialized()
+	return functionRegistry.unregisterScalar(name)
+}
+
+func UnregisterAggregateFunction(name string) error {
+	ensureFunctionRegistryInitialized()
+	return functionRegistry.unregisterAggregate(name)
+}
+
+func SetFunctionRegistryOptions(opts FunctionRegistryOptions) {
+	ensureFunctionRegistryInitialized()
+	functionRegistry.mu.Lock()
+	functionRegistry.opts = opts
+	functionRegistry.mu.Unlock()
+}
+
+func GetFunctionRegistryOptions() FunctionRegistryOptions {
+	ensureFunctionRegistryInitialized()
+	functionRegistry.mu.RLock()
+	defer functionRegistry.mu.RUnlock()
+	return functionRegistry.opts
+}
+
+func FreezeFunctionRegistry() {
+	ensureFunctionRegistryInitialized()
+	functionRegistry.mu.Lock()
+	functionRegistry.opts.Frozen = true
+	functionRegistry.mu.Unlock()
+}
+
+func UnfreezeFunctionRegistry() {
+	ensureFunctionRegistryInitialized()
+	functionRegistry.mu.Lock()
+	functionRegistry.opts.Frozen = false
+	functionRegistry.mu.Unlock()
 }
 
 func LookupScalarFunction(name string) (ScalarFunctionHandler, bool) {
@@ -74,24 +133,70 @@ func ensureFunctionRegistryInitialized() {
 	functionRegistryInitOnce.Do(registerDefaultFunctions)
 }
 
-func (r *sqlFunctionRegistry) registerScalar(name string, handler ScalarFunctionHandler) {
+func (r *sqlFunctionRegistry) registerScalar(name string, handler ScalarFunctionHandler, internal bool) error {
 	n := strings.ToUpper(strings.TrimSpace(name))
 	if n == "" || handler == nil {
-		return
+		return &SQLError{Code: ErrCodeRegistry, Message: "invalid scalar function registration"}
 	}
 	r.mu.Lock()
+	if r.opts.Frozen && !internal {
+		r.mu.Unlock()
+		return &SQLError{Code: ErrCodeRegistry, Message: "function registry is frozen"}
+	}
+	if _, exists := r.scalar[n]; exists && !r.opts.AllowOverride && !internal {
+		r.mu.Unlock()
+		return &SQLError{Code: ErrCodeRegistry, Message: "scalar function already exists: " + n}
+	}
 	r.scalar[n] = handler
 	r.mu.Unlock()
+	return nil
 }
 
-func (r *sqlFunctionRegistry) registerAggregate(name string, handler AggregateFunctionHandler) {
+func (r *sqlFunctionRegistry) registerAggregate(name string, handler AggregateFunctionHandler, internal bool) error {
 	n := strings.ToUpper(strings.TrimSpace(name))
 	if n == "" || handler == nil {
-		return
+		return &SQLError{Code: ErrCodeRegistry, Message: "invalid aggregate function registration"}
 	}
 	r.mu.Lock()
+	if r.opts.Frozen && !internal {
+		r.mu.Unlock()
+		return &SQLError{Code: ErrCodeRegistry, Message: "function registry is frozen"}
+	}
+	if _, exists := r.aggregate[n]; exists && !r.opts.AllowOverride && !internal {
+		r.mu.Unlock()
+		return &SQLError{Code: ErrCodeRegistry, Message: "aggregate function already exists: " + n}
+	}
 	r.aggregate[n] = handler
 	r.mu.Unlock()
+	return nil
+}
+
+func (r *sqlFunctionRegistry) unregisterScalar(name string) error {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	if n == "" {
+		return &SQLError{Code: ErrCodeRegistry, Message: "invalid scalar function name"}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opts.Frozen {
+		return &SQLError{Code: ErrCodeRegistry, Message: "function registry is frozen"}
+	}
+	delete(r.scalar, n)
+	return nil
+}
+
+func (r *sqlFunctionRegistry) unregisterAggregate(name string) error {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	if n == "" {
+		return &SQLError{Code: ErrCodeRegistry, Message: "invalid aggregate function name"}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opts.Frozen {
+		return &SQLError{Code: ErrCodeRegistry, Message: "function registry is frozen"}
+	}
+	delete(r.aggregate, n)
+	return nil
 }
 
 func registerDefaultFunctions() {
@@ -100,13 +205,13 @@ func registerDefaultFunctions() {
 }
 
 func registerDefaultScalarFunctions() {
-	functionRegistry.registerScalar("NOW", func(_ *EvalContext, _ context.Context, _ []Expression, _ utils.Record) any {
+	_ = functionRegistry.registerScalar("NOW", func(_ *EvalContext, _ context.Context, _ []Expression, _ utils.Record) any {
 		return time.Now().Format("2006-01-02 15:04:05")
-	})
-	functionRegistry.registerScalar("CURRENT_TIMESTAMP", func(_ *EvalContext, _ context.Context, _ []Expression, _ utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("CURRENT_TIMESTAMP", func(_ *EvalContext, _ context.Context, _ []Expression, _ utils.Record) any {
 		return time.Now().Format("2006-01-02 15:04:05")
-	})
-	functionRegistry.registerScalar("COALESCE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("COALESCE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		for _, arg := range args {
 			val := ctx.evalExpression(execCtx, arg, row)
 			if !isNilOrEmpty(val) {
@@ -114,16 +219,16 @@ func registerDefaultScalarFunctions() {
 			}
 		}
 		return nil
-	})
-	functionRegistry.registerScalar("CONCAT", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("CONCAT", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		var parts []string
 		for _, arg := range args {
 			val := ctx.evalExpression(execCtx, arg, row)
 			parts = append(parts, fmt.Sprintf("%v", val))
 		}
 		return strings.Join(parts, "")
-	})
-	functionRegistry.registerScalar("IF", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("IF", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 3 {
 			ctx.logError("IF requires at least 3 arguments")
 			return nil
@@ -133,8 +238,8 @@ func registerDefaultScalarFunctions() {
 			return ctx.evalExpression(execCtx, args[1], row)
 		}
 		return ctx.evalExpression(execCtx, args[2], row)
-	})
-	functionRegistry.registerScalar("SUBSTR", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("SUBSTR", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("SUBSTR requires at least 2 arguments")
 			return nil
@@ -161,29 +266,29 @@ func registerDefaultScalarFunctions() {
 			return s[start:end]
 		}
 		return s[start:]
-	})
-	functionRegistry.registerScalar("LENGTH", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("LENGTH", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) == 0 {
 			return 0
 		}
 		s := fmt.Sprintf("%v", ctx.evalExpression(execCtx, args[0], row))
 		return len(s)
-	})
-	functionRegistry.registerScalar("UPPER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("UPPER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) == 0 {
 			return ""
 		}
 		s := fmt.Sprintf("%v", ctx.evalExpression(execCtx, args[0], row))
 		return strings.ToUpper(s)
-	})
-	functionRegistry.registerScalar("LOWER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("LOWER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) == 0 {
 			return ""
 		}
 		s := fmt.Sprintf("%v", ctx.evalExpression(execCtx, args[0], row))
 		return strings.ToLower(s)
-	})
-	functionRegistry.registerScalar("TO_DATE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("TO_DATE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("TO_DATE requires 2 arguments")
 			return nil
@@ -197,8 +302,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return t.Format("2006-01-02")
-	})
-	functionRegistry.registerScalar("TO_NUMBER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("TO_NUMBER", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			return nil
 		}
@@ -209,8 +314,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return f
-	})
-	functionRegistry.registerScalar("ROUND", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("ROUND", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("ROUND requires at least 1 argument")
 			return nil
@@ -230,8 +335,8 @@ func registerDefaultScalarFunctions() {
 		}
 		factor := math.Pow(10, precision)
 		return math.Round(num*factor) / factor
-	})
-	functionRegistry.registerScalar("DATEDIFF", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("DATEDIFF", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("DATEDIFF requires 2 arguments")
 			return nil
@@ -246,24 +351,24 @@ func registerDefaultScalarFunctions() {
 		}
 		diff := t1.Sub(t2)
 		return int(diff.Hours() / 24)
-	})
-	functionRegistry.registerScalar("ANY", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("ANY", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("ANY requires one argument")
 			return quantifiedValues{Mode: "ANY"}
 		}
 		val := ctx.evalExpression(execCtx, args[0], row)
 		return quantifiedValues{Mode: "ANY", Values: toComparableSlice(val)}
-	})
-	functionRegistry.registerScalar("ALL", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("ALL", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("ALL requires one argument")
 			return quantifiedValues{Mode: "ALL"}
 		}
 		val := ctx.evalExpression(execCtx, args[0], row)
 		return quantifiedValues{Mode: "ALL", Values: toComparableSlice(val)}
-	})
-	functionRegistry.registerScalar("CAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("CAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("CAST requires 2 arguments: CAST(expr AS type)")
 			return nil
@@ -271,8 +376,8 @@ func registerDefaultScalarFunctions() {
 		typeName := fmt.Sprintf("%v", ctx.evalExpression(execCtx, args[1], row))
 		value := ctx.evalExpression(execCtx, args[0], row)
 		return castValue(typeName, value)
-	})
-	functionRegistry.registerScalar("JSON_EXTRACT", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("JSON_EXTRACT", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("JSON_EXTRACT requires 2 arguments")
 			return nil
@@ -284,8 +389,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return val
-	})
-	functionRegistry.registerScalar("JSON_EXISTS", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("JSON_EXISTS", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("JSON_EXISTS requires 2 arguments")
 			return false
@@ -294,8 +399,8 @@ func registerDefaultScalarFunctions() {
 		path := fmt.Sprintf("%v", ctx.evalExpression(execCtx, args[1], row))
 		_, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
 		return ok
-	})
-	functionRegistry.registerScalar("JSON_VALUE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("JSON_VALUE", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 2 {
 			ctx.logError("JSON_VALUE requires 2 arguments")
 			return nil
@@ -315,8 +420,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return val
-	})
-	functionRegistry.registerScalar("YEAR", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("YEAR", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("YEAR requires 1 argument")
 			return nil
@@ -327,8 +432,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return t.Year()
-	})
-	functionRegistry.registerScalar("MONTH", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("MONTH", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("MONTH requires 1 argument")
 			return nil
@@ -339,8 +444,8 @@ func registerDefaultScalarFunctions() {
 			return nil
 		}
 		return int(t.Month())
-	})
-	functionRegistry.registerScalar("FIRST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("FIRST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("FIRST requires 1 argument")
 			return nil
@@ -351,8 +456,8 @@ func registerDefaultScalarFunctions() {
 			return val
 		}
 		return arr[0]
-	})
-	functionRegistry.registerScalar("LAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerScalar("LAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, row utils.Record) any {
 		if len(args) < 1 {
 			ctx.logError("LAST requires 1 argument")
 			return nil
@@ -363,14 +468,14 @@ func registerDefaultScalarFunctions() {
 			return val
 		}
 		return arr[len(arr)-1]
-	})
+	}, true)
 }
 
 func registerDefaultAggregateFunctions() {
-	functionRegistry.registerAggregate("COUNT", func(_ *EvalContext, _ context.Context, _ []Expression, rows []utils.Record) any {
+	_ = functionRegistry.registerAggregate("COUNT", func(_ *EvalContext, _ context.Context, _ []Expression, rows []utils.Record) any {
 		return len(rows)
-	})
-	functionRegistry.registerAggregate("AVG", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("AVG", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 {
 			return nil
 		}
@@ -388,8 +493,8 @@ func registerDefaultAggregateFunctions() {
 			return nil
 		}
 		return sum / count
-	})
-	functionRegistry.registerAggregate("SUM", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("SUM", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 {
 			return nil
 		}
@@ -402,8 +507,8 @@ func registerDefaultAggregateFunctions() {
 			}
 		}
 		return sum
-	})
-	functionRegistry.registerAggregate("MIN", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("MIN", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 {
 			return nil
 		}
@@ -423,8 +528,8 @@ func registerDefaultAggregateFunctions() {
 			return nil
 		}
 		return minVal
-	})
-	functionRegistry.registerAggregate("MAX", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("MAX", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 {
 			return nil
 		}
@@ -444,8 +549,8 @@ func registerDefaultAggregateFunctions() {
 			return nil
 		}
 		return maxVal
-	})
-	functionRegistry.registerAggregate("DIFF", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("DIFF", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 {
 			return nil
 		}
@@ -473,17 +578,44 @@ func registerDefaultAggregateFunctions() {
 			return nil
 		}
 		return maxVal - minVal
-	})
-	functionRegistry.registerAggregate("FIRST", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+	}, true)
+	_ = functionRegistry.registerAggregate("FIRST", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 || len(rows) == 0 {
 			return nil
 		}
-		return ctx.evalExpression(execCtx, args[0], rows[0])
-	})
-	functionRegistry.registerAggregate("LAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
+		idx := pickDeterministicRowIndex(rows, false)
+		return ctx.evalExpression(execCtx, args[0], rows[idx])
+	}, true)
+	_ = functionRegistry.registerAggregate("LAST", func(ctx *EvalContext, execCtx context.Context, args []Expression, rows []utils.Record) any {
 		if len(args) == 0 || len(rows) == 0 {
 			return nil
 		}
-		return ctx.evalExpression(execCtx, args[0], rows[len(rows)-1])
-	})
+		idx := pickDeterministicRowIndex(rows, true)
+		return ctx.evalExpression(execCtx, args[0], rows[idx])
+	}, true)
+}
+
+func pickDeterministicRowIndex(rows []utils.Record, wantLast bool) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	bestIdx := 0
+	bestKey := recordStableKey(rows[0])
+	for i := 1; i < len(rows); i++ {
+		k := recordStableKey(rows[i])
+		cmp := strings.Compare(k, bestKey)
+		if (!wantLast && cmp < 0) || (wantLast && cmp > 0) {
+			bestIdx = i
+			bestKey = k
+		}
+	}
+	return bestIdx
+}
+
+func recordStableKey(row utils.Record) string {
+	b, err := json.Marshal(row)
+	if err != nil {
+		return fmt.Sprintf("%v", row)
+	}
+	return string(b)
 }

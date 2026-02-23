@@ -12,12 +12,19 @@ type Parser struct {
 	peekToken   Token
 	errors      []string
 	currentWith *WithClause
+	exprDepth   int
+	runtimeCfg  RuntimeConfig
 }
 
 func NewParser(l *Lexer) *Parser {
+	return NewParserWithRuntimeConfig(l, GetRuntimeConfig())
+}
+
+func NewParserWithRuntimeConfig(l *Lexer, cfg RuntimeConfig) *Parser {
 	p := &Parser{
-		l:      l,
-		errors: []string{},
+		l:          l,
+		errors:     []string{},
+		runtimeCfg: cfg,
 	}
 	p.nextToken()
 	p.nextToken()
@@ -914,6 +921,16 @@ func mergePathExpressions(left, right Expression) (string, bool) {
 }
 
 func (p *Parser) parseExpression(precedence int) Expression {
+	maxDepth := p.runtimeCfg.MaxExpressionDepth
+	if maxDepth > 0 && p.exprDepth >= maxDepth {
+		p.errors = append(p.errors, fmt.Sprintf("Expression nesting exceeds max depth %d. Simplify expression or increase runtime max_expression_depth.", maxDepth))
+		return nil
+	}
+	p.exprDepth++
+	defer func() {
+		p.exprDepth--
+	}()
+
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
 			p.nextToken()

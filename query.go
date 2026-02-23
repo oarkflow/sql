@@ -80,20 +80,40 @@ func sqlLikeMatch(s, pattern string) bool {
 }
 
 func Query(ctx context.Context, query string) ([]utils.Record, error) {
+	cfg := effectiveRuntimeConfig(ctx)
+	ctx, cancel := withQueryTimeout(ctx, cfg)
+	defer cancel()
+
 	start := time.Now()
 	lexer := NewLexer(query)
-	parser := NewParser(lexer)
+	parser := NewParserWithRuntimeConfig(lexer, cfg)
 	program := parser.ParseQueryStatement()
 	if len(parser.errors) != 0 {
-		return nil, errors.New(strings.Join(parser.errors, "\t"))
+		return nil, &SQLError{
+			Code:    ErrCodeParse,
+			Message: "failed to parse SQL query",
+			Details: parser.errors,
+		}
 	}
 	records, err := program.parseAndExecute(ctx)
 	if err != nil {
-		return nil, err
+		if ctxErr := wrapContextErr(ctx.Err()); ctxErr != nil {
+			return nil, ctxErr
+		}
+		var sqlErr *SQLError
+		if errors.As(err, &sqlErr) {
+			return nil, err
+		}
+		return nil, &SQLError{
+			Code:    ErrCodeExecution,
+			Message: "query execution failed",
+			Cause:   err,
+		}
 	}
+	records = capRows(records, cfg)
 	latency := time.Since(start)
 	userID := ctx.Value("user_id")
-	if userID == nil {
+	if userID == nil || !cfg.LogQueryExecution {
 		return records, nil
 	}
 	log.Info().Any("user_id", userID).Str("latency", fmt.Sprintf("%s", latency)).Msg("Executed query")
@@ -323,6 +343,9 @@ func intersectRecords(a, b []utils.Record) []utils.Record {
 }
 
 func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.Record, error) {
+	if err := c.Err(); err != nil {
+		return nil, wrapContextErr(err)
+	}
 	if len(rows) == 0 {
 		if query.From != nil {
 			var err error
@@ -348,6 +371,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		for _, cond := range conds {
 			var set []utils.Record
 			for _, row := range rows {
+				if err := c.Err(); err != nil {
+					return nil, wrapContextErr(err)
+				}
 				// Use evalExpression to apply alias rules
 				val := ctx.evalExpression(c, &Identifier{Value: cond.Field}, row)
 				if val != nil {
@@ -367,6 +393,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		}
 	} else {
 		for _, row := range rows {
+			if err := c.Err(); err != nil {
+				return nil, wrapContextErr(err)
+			}
 			if query.Where != nil {
 				result := ctx.evalExpression(c, query.Where, row)
 				if b, ok := result.(bool); !ok || !b {
@@ -393,6 +422,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		if len(conds) == 0 {
 			var temp []utils.Record
 			for _, row := range rows {
+				if err := c.Err(); err != nil {
+					return nil, wrapContextErr(err)
+				}
 				if query.Where != nil {
 					result := ctx.evalExpression(c, query.Where, row)
 					if b, ok := result.(bool); !ok || !b {
@@ -412,6 +444,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 	if query.GroupBy != nil {
 		groups := make(map[string][]utils.Record)
 		for _, row := range filteredRows {
+			if err := c.Err(); err != nil {
+				return nil, wrapContextErr(err)
+			}
 			var keyParts []string
 			// Support multiple grouping fields.
 			for _, expr := range query.GroupBy.Fields {
@@ -466,6 +501,9 @@ func (query *SQL) executeQuery(c context.Context, rows []utils.Record) ([]utils.
 		resultRows = append(resultRows, resultRow)
 	} else {
 		for _, row := range filteredRows {
+			if err := c.Err(); err != nil {
+				return nil, wrapContextErr(err)
+			}
 			newRow := make(utils.Record)
 			for i, expr := range query.Select.Fields {
 				colName := getFieldName(expr, i)
