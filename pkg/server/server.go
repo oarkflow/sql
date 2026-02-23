@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
+	"github.com/gofiber/fiber/v3/middleware/logger"
 	"github.com/google/uuid"
 	"github.com/oarkflow/sql"
 	"github.com/oarkflow/sql/etl"
@@ -580,7 +580,7 @@ func (s *Server) buildCredential(serviceName string, payload *credentialPayload,
 
 func NewServer(cfg Config) (*Server, error) {
 	app := fiber.New(fiber.Config{
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
+		ErrorHandler: func(c fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			if e, ok := err.(*fiber.Error); ok {
 				code = e.Code
@@ -704,25 +704,25 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/api/configurations", s.getConfigurationsHandler)
 
 	// Serve HTML pages
-	s.app.Get("/", func(c *fiber.Ctx) error {
+	s.app.Get("/", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/dashboard.html")
 	})
-	s.app.Get("/integrations", func(c *fiber.Ctx) error {
+	s.app.Get("/integrations", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/integrations.html")
 	})
-	s.app.Get("/etl", func(c *fiber.Ctx) error {
+	s.app.Get("/etl", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/etl.html")
 	})
-	s.app.Get("/adapters", func(c *fiber.Ctx) error {
+	s.app.Get("/adapters", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/adapters.html")
 	})
-	s.app.Get("/query", func(c *fiber.Ctx) error {
+	s.app.Get("/query", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/query.html")
 	})
-	s.app.Get("/scheduler", func(c *fiber.Ctx) error {
+	s.app.Get("/scheduler", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/scheduler.html")
 	})
-	s.app.Get("/execute", func(c *fiber.Ctx) error {
+	s.app.Get("/execute", func(c fiber.Ctx) error {
 		return c.SendFile(s.config.StaticPath + "/execute.html")
 	})
 
@@ -759,7 +759,7 @@ func (s *Server) setupRoutes() {
 	s.app.Static("/", s.config.StaticPath)
 }
 
-func (s *Server) healthHandler(c *fiber.Ctx) error {
+func (s *Server) healthHandler(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"status":    "healthy",
 		"version":   s.config.Version,
@@ -767,9 +767,9 @@ func (s *Server) healthHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) executeQueryHandler(c *fiber.Ctx) error {
+func (s *Server) executeQueryHandler(c fiber.Ctx) error {
 	var req QueryRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -844,9 +844,9 @@ func (s *Server) executeQueryHandler(c *fiber.Ctx) error {
 	return c.JSON(response)
 }
 
-func (s *Server) validateQueryHandler(c *fiber.Ctx) error {
+func (s *Server) validateQueryHandler(c fiber.Ctx) error {
 	var req QueryRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -875,7 +875,7 @@ func (s *Server) validateQueryHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) getSchemaHandler(c *fiber.Ctx) error {
+func (s *Server) getSchemaHandler(c fiber.Ctx) error {
 	if !s.config.EnableMocks {
 		return c.JSON(SchemaResponse{
 			Tables:  []string{},
@@ -895,13 +895,13 @@ func (s *Server) getSchemaHandler(c *fiber.Ctx) error {
 	return c.JSON(schema)
 }
 
-func (s *Server) listOAuthProvidersHandler(c *fiber.Ctx) error {
+func (s *Server) listOAuthProvidersHandler(c fiber.Ctx) error {
 	return c.JSON(defaultOAuthProviders())
 }
 
-func (s *Server) startOAuthHandler(c *fiber.Ctx) error {
+func (s *Server) startOAuthHandler(c fiber.Ctx) error {
 	var req oauthStartRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 	if tpl, ok := findOAuthProviderTemplate(req.Provider); ok {
@@ -967,7 +967,7 @@ func (s *Server) startOAuthHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) getOAuthSessionHandler(c *fiber.Ctx) error {
+func (s *Server) getOAuthSessionHandler(c fiber.Ctx) error {
 	state := c.Params("state")
 	if strings.TrimSpace(state) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing state"})
@@ -1002,7 +1002,7 @@ func (s *Server) getOAuthSessionHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) oauthCallbackHandler(c *fiber.Ctx) error {
+func (s *Server) oauthCallbackHandler(c fiber.Ctx) error {
 	state := c.Query("state")
 	if strings.TrimSpace(state) == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("Missing OAuth state")
@@ -1027,7 +1027,7 @@ func (s *Server) oauthCallbackHandler(c *fiber.Ctx) error {
 	return c.SendString("<html><body><div style='font-family: sans-serif; text-align:center; padding:40px;'>Authentication complete. You can close this window.</div><script>setTimeout(function(){ window.close(); }, 1500);</script></body></html>")
 }
 
-func (s *Server) getIntegrationsHandler(c *fiber.Ctx) error {
+func (s *Server) getIntegrationsHandler(c fiber.Ctx) error {
 	services, err := s.store.ListIntegrations(context.Background())
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list integrations"})
@@ -1039,7 +1039,7 @@ func (s *Server) getIntegrationsHandler(c *fiber.Ctx) error {
 	return c.JSON(responses)
 }
 
-func (s *Server) getIntegrationHandler(c *fiber.Ctx) error {
+func (s *Server) getIntegrationHandler(c fiber.Ctx) error {
 	name := c.Params("id")
 	svc, err := s.store.GetIntegration(context.Background(), name)
 	if err != nil {
@@ -1051,9 +1051,9 @@ func (s *Server) getIntegrationHandler(c *fiber.Ctx) error {
 	return c.JSON(newIntegrationResponse(svc))
 }
 
-func (s *Server) createIntegrationHandler(c *fiber.Ctx) error {
+func (s *Server) createIntegrationHandler(c fiber.Ctx) error {
 	var payload integrationPayload
-	if err := c.BodyParser(&payload); err != nil {
+	if err := c.Bind().Body(&payload); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -1089,7 +1089,7 @@ func (s *Server) createIntegrationHandler(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(newIntegrationResponse(saved))
 }
 
-func (s *Server) updateIntegrationHandler(c *fiber.Ctx) error {
+func (s *Server) updateIntegrationHandler(c fiber.Ctx) error {
 	name := c.Params("id")
 	ctx := context.Background()
 	existing, err := s.store.GetIntegration(ctx, name)
@@ -1100,7 +1100,7 @@ func (s *Server) updateIntegrationHandler(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load integration"})
 	}
 	var payload integrationPayload
-	if err := c.BodyParser(&payload); err != nil {
+	if err := c.Bind().Body(&payload); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 	if payload.Name != "" && normalizeIntegrationName(payload.Name) != existing.Name {
@@ -1141,7 +1141,7 @@ func (s *Server) updateIntegrationHandler(c *fiber.Ctx) error {
 	return c.JSON(newIntegrationResponse(saved))
 }
 
-func (s *Server) deleteIntegrationHandler(c *fiber.Ctx) error {
+func (s *Server) deleteIntegrationHandler(c fiber.Ctx) error {
 	name := c.Params("id")
 	ctx := context.Background()
 	svc, err := s.store.GetIntegration(ctx, name)
@@ -1163,7 +1163,7 @@ func (s *Server) deleteIntegrationHandler(c *fiber.Ctx) error {
 }
 
 // Placeholder implementations for other endpoints
-func (s *Server) getQueryHistoryHandler(c *fiber.Ctx) error {
+func (s *Server) getQueryHistoryHandler(c fiber.Ctx) error {
 	ctx := context.Background()
 	records, err := s.store.ListQueryHistory(ctx, 50)
 	if err != nil {
@@ -1189,20 +1189,20 @@ func (s *Server) getQueryHistoryHandler(c *fiber.Ctx) error {
 	return c.JSON(history)
 }
 
-func (s *Server) clearQueryHistoryHandler(c *fiber.Ctx) error {
+func (s *Server) clearQueryHistoryHandler(c fiber.Ctx) error {
 	if err := s.store.ClearQueryHistory(context.Background()); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to clear query history"})
 	}
 	return c.JSON(fiber.Map{"message": "query history cleared"})
 }
 
-func (s *Server) saveQueryHandler(c *fiber.Ctx) error {
+func (s *Server) saveQueryHandler(c fiber.Ctx) error {
 	var req struct {
 		Query       string `json:"query"`
 		Name        string `json:"name,omitempty"`
 		Integration string `json:"integration,omitempty"`
 	}
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1225,7 +1225,7 @@ func (s *Server) saveQueryHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) listSavedQueriesHandler(c *fiber.Ctx) error {
+func (s *Server) listSavedQueriesHandler(c fiber.Ctx) error {
 	records, err := s.store.ListSavedQueries(context.Background())
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to list saved queries"})
@@ -1245,7 +1245,7 @@ func (s *Server) listSavedQueriesHandler(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-func (s *Server) updateSavedQueryHandler(c *fiber.Ctx) error {
+func (s *Server) updateSavedQueryHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	if strings.TrimSpace(id) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing query id"})
@@ -1256,7 +1256,7 @@ func (s *Server) updateSavedQueryHandler(c *fiber.Ctx) error {
 		Query       *string `json:"query"`
 		Integration *string `json:"integration"`
 	}
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -1301,7 +1301,7 @@ func (s *Server) updateSavedQueryHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) deleteSavedQueryHandler(c *fiber.Ctx) error {
+func (s *Server) deleteSavedQueryHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	if strings.TrimSpace(id) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing query id"})
@@ -1315,7 +1315,7 @@ func (s *Server) deleteSavedQueryHandler(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"id": id, "message": "saved query deleted"})
 }
 
-func (s *Server) getPipelinesHandler(c *fiber.Ctx) error {
+func (s *Server) getPipelinesHandler(c fiber.Ctx) error {
 	if !s.config.EnableMocks {
 		return c.JSON([]map[string]interface{}{})
 	}
@@ -1355,7 +1355,7 @@ func (s *Server) getPipelinesHandler(c *fiber.Ctx) error {
 	return c.JSON(pipelines)
 }
 
-func (s *Server) getPipelineHandler(c *fiber.Ctx) error {
+func (s *Server) getPipelineHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation with more detailed data
 	return c.JSON(map[string]interface{}{
@@ -1372,25 +1372,25 @@ func (s *Server) getPipelineHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) createPipelineHandler(c *fiber.Ctx) error {
+func (s *Server) createPipelineHandler(c fiber.Ctx) error {
 	var pipeline map[string]interface{}
-	if err := c.BodyParser(&pipeline); err != nil {
+	if err := c.Bind().Body(&pipeline); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 	return c.Status(201).JSON(pipeline)
 }
 
-func (s *Server) updatePipelineHandler(c *fiber.Ctx) error {
+func (s *Server) updatePipelineHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	return c.JSON(map[string]interface{}{"id": id})
 }
 
-func (s *Server) deletePipelineHandler(c *fiber.Ctx) error {
+func (s *Server) deletePipelineHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	return c.JSON(map[string]interface{}{"id": id})
 }
 
-func (s *Server) runPipelineHandler(c *fiber.Ctx) error {
+func (s *Server) runPipelineHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 
 	// Create a new execution
@@ -1441,18 +1441,18 @@ func (s *Server) runPipelineHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) getRunsHandler(c *fiber.Ctx) error {
+func (s *Server) getRunsHandler(c fiber.Ctx) error {
 	return c.JSON([]map[string]interface{}{})
 }
 
-func (s *Server) getRunHandler(c *fiber.Ctx) error {
+func (s *Server) getRunHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	return c.JSON(map[string]interface{}{"id": id})
 }
 
-func (s *Server) executeConfigHandler(c *fiber.Ctx) error {
+func (s *Server) executeConfigHandler(c fiber.Ctx) error {
 	var req ExecuteConfigRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1609,11 +1609,11 @@ func (s *Server) executeConfigHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) getExecutionsHandler(c *fiber.Ctx) error {
+func (s *Server) getExecutionsHandler(c fiber.Ctx) error {
 	return c.JSON(s.executions)
 }
 
-func (s *Server) getConfigurationsHandler(c *fiber.Ctx) error {
+func (s *Server) getConfigurationsHandler(c fiber.Ctx) error {
 	// Return stored configurations
 	configurations := make([]map[string]interface{}, len(s.configurations))
 	for i, config := range s.configurations {
@@ -1648,38 +1648,38 @@ func convertWorkerActivities(activities []etl.WorkerActivity) []WorkerActivity {
 }
 
 // Legacy ETL handlers
-func (s *Server) getConfigHandler(c *fiber.Ctx) error {
+func (s *Server) getConfigHandler(c fiber.Ctx) error {
 	return c.JSON(config.Config{})
 }
 
-func (s *Server) createConfigHandler(c *fiber.Ctx) error {
+func (s *Server) createConfigHandler(c fiber.Ctx) error {
 	var cfg config.Config
-	if err := c.BodyParser(&cfg); err != nil {
+	if err := c.Bind().Body(&cfg); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid config"})
 	}
 	return c.JSON(map[string]interface{}{"message": "Config created"})
 }
 
-func (s *Server) listETLsHandler(c *fiber.Ctx) error {
+func (s *Server) listETLsHandler(c fiber.Ctx) error {
 	return c.SendString("<h1>ETL Jobs</h1><p>Mock ETL list</p>")
 }
 
-func (s *Server) startETLHandler(c *fiber.Ctx) error {
+func (s *Server) startETLHandler(c fiber.Ctx) error {
 	id := c.Params("id")
-	return c.Redirect(fmt.Sprintf("/etls/%s", id))
+	return c.Redirect().To(fmt.Sprintf("/etls/%s", id))
 }
 
-func (s *Server) stopETLHandler(c *fiber.Ctx) error {
+func (s *Server) stopETLHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	return c.JSON(map[string]interface{}{"id": id, "message": "ETL stopped"})
 }
 
-func (s *Server) getETLDetailsHandler(c *fiber.Ctx) error {
+func (s *Server) getETLDetailsHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	return c.SendString(fmt.Sprintf("<h1>ETL %s Details</h1><p>Mock details</p>", id))
 }
 
-func (s *Server) getETLMetricsHandler(c *fiber.Ctx) error {
+func (s *Server) getETLMetricsHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	if !s.config.EnableMocks {
 		return c.JSON(map[string]interface{}{
@@ -1697,7 +1697,7 @@ func (s *Server) getETLMetricsHandler(c *fiber.Ctx) error {
 }
 
 // Adapter handlers
-func (s *Server) getAdaptersHandler(c *fiber.Ctx) error {
+func (s *Server) getAdaptersHandler(c fiber.Ctx) error {
 	if !s.config.EnableMocks {
 		return c.JSON([]map[string]interface{}{})
 	}
@@ -1729,7 +1729,7 @@ func (s *Server) getAdaptersHandler(c *fiber.Ctx) error {
 	return c.JSON(adapters)
 }
 
-func (s *Server) getAdapterHandler(c *fiber.Ctx) error {
+func (s *Server) getAdapterHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation
 	return c.JSON(map[string]interface{}{
@@ -1743,9 +1743,9 @@ func (s *Server) getAdapterHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) createAdapterHandler(c *fiber.Ctx) error {
+func (s *Server) createAdapterHandler(c fiber.Ctx) error {
 	var adapter map[string]interface{}
-	if err := c.BodyParser(&adapter); err != nil {
+	if err := c.Bind().Body(&adapter); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1756,10 +1756,10 @@ func (s *Server) createAdapterHandler(c *fiber.Ctx) error {
 	return c.Status(201).JSON(adapter)
 }
 
-func (s *Server) updateAdapterHandler(c *fiber.Ctx) error {
+func (s *Server) updateAdapterHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	var updates map[string]interface{}
-	if err := c.BodyParser(&updates); err != nil {
+	if err := c.Bind().Body(&updates); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1770,7 +1770,7 @@ func (s *Server) updateAdapterHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) deleteAdapterHandler(c *fiber.Ctx) error {
+func (s *Server) deleteAdapterHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation
 	return c.JSON(map[string]interface{}{
@@ -1779,7 +1779,7 @@ func (s *Server) deleteAdapterHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) testAdapterHandler(c *fiber.Ctx) error {
+func (s *Server) testAdapterHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation - simulate test
 	time.Sleep(1 * time.Second)
@@ -1795,7 +1795,7 @@ func (s *Server) testAdapterHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) testIntegrationHandler(c *fiber.Ctx) error {
+func (s *Server) testIntegrationHandler(c fiber.Ctx) error {
 	name := c.Params("id")
 	svc, err := s.integrationManager.GetService(name)
 	if err != nil {
@@ -1831,7 +1831,7 @@ func (s *Server) testIntegrationHandler(c *fiber.Ctx) error {
 }
 
 // Real-time updates endpoint for polling
-func (s *Server) getUpdatesHandler(c *fiber.Ctx) error {
+func (s *Server) getUpdatesHandler(c fiber.Ctx) error {
 	lastUpdate := c.Query("since")
 
 	// Filter executions based on last update time
@@ -1858,7 +1858,7 @@ func (s *Server) getUpdatesHandler(c *fiber.Ctx) error {
 }
 
 // Scheduler handlers
-func (s *Server) getSchedulesHandler(c *fiber.Ctx) error {
+func (s *Server) getSchedulesHandler(c fiber.Ctx) error {
 	if !s.config.EnableMocks {
 		return c.JSON([]map[string]interface{}{})
 	}
@@ -1910,9 +1910,9 @@ func (s *Server) getSchedulesHandler(c *fiber.Ctx) error {
 	return c.JSON(schedules)
 }
 
-func (s *Server) createScheduleHandler(c *fiber.Ctx) error {
+func (s *Server) createScheduleHandler(c fiber.Ctx) error {
 	var schedule map[string]interface{}
-	if err := c.BodyParser(&schedule); err != nil {
+	if err := c.Bind().Body(&schedule); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1925,7 +1925,7 @@ func (s *Server) createScheduleHandler(c *fiber.Ctx) error {
 	return c.Status(201).JSON(schedule)
 }
 
-func (s *Server) getScheduleHandler(c *fiber.Ctx) error {
+func (s *Server) getScheduleHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation
 	return c.JSON(map[string]interface{}{
@@ -1944,10 +1944,10 @@ func (s *Server) getScheduleHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) updateScheduleHandler(c *fiber.Ctx) error {
+func (s *Server) updateScheduleHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	var updates map[string]interface{}
-	if err := c.BodyParser(&updates); err != nil {
+	if err := c.Bind().Body(&updates); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
@@ -1958,7 +1958,7 @@ func (s *Server) updateScheduleHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) deleteScheduleHandler(c *fiber.Ctx) error {
+func (s *Server) deleteScheduleHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation
 	return c.JSON(map[string]interface{}{
@@ -1967,7 +1967,7 @@ func (s *Server) deleteScheduleHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) toggleScheduleHandler(c *fiber.Ctx) error {
+func (s *Server) toggleScheduleHandler(c fiber.Ctx) error {
 	id := c.Params("id")
 	// Mock implementation
 	return c.JSON(map[string]interface{}{
@@ -1977,7 +1977,7 @@ func (s *Server) toggleScheduleHandler(c *fiber.Ctx) error {
 	})
 }
 
-func (s *Server) getScheduleExecutionsHandler(c *fiber.Ctx) error {
+func (s *Server) getScheduleExecutionsHandler(c fiber.Ctx) error {
 	if !s.config.EnableMocks {
 		return c.JSON([]map[string]interface{}{})
 	}

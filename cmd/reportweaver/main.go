@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/oarkflow/sql"
 	"github.com/oarkflow/sql/integrations"
 )
@@ -211,23 +211,23 @@ func createApp(store *stateStore) *fiber.App {
 	app := fiber.New(fiber.Config{AppName: "report-weaver-sql-api"})
 
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "*",
-		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		AllowCredentials: false,
 	}))
 
-	app.Get("/api/health", func(c *fiber.Ctx) error {
+	app.Get("/api/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
-	app.Get("/api/state", func(c *fiber.Ctx) error {
+	app.Get("/api/state", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot())
 	})
 
-	app.Put("/api/state", func(c *fiber.Ctx) error {
+	app.Put("/api/state", func(c fiber.Ctx) error {
 		var next appState
-		if err := c.BodyParser(&next); err != nil {
+		if err := c.Bind().Body(&next); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid state payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -239,13 +239,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "saved"})
 	})
 
-	app.Get("/api/reports", func(c *fiber.Ctx) error {
+	app.Get("/api/reports", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().Reports)
 	})
 
-	app.Post("/api/reports", func(c *fiber.Ctx) error {
+	app.Post("/api/reports", func(c fiber.Ctx) error {
 		var report map[string]any
-		if err := c.BodyParser(&report); err != nil {
+		if err := c.Bind().Body(&report); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid report payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -257,10 +257,10 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(report)
 	})
 
-	app.Put("/api/reports/:id", func(c *fiber.Ctx) error {
+	app.Put("/api/reports/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		var report map[string]any
-		if err := c.BodyParser(&report); err != nil {
+		if err := c.Bind().Body(&report); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid report payload"})
 		}
 		report["id"] = id
@@ -273,7 +273,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(report)
 	})
 
-	app.Delete("/api/reports/:id", func(c *fiber.Ctx) error {
+	app.Delete("/api/reports/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		if err := store.update(func(state *appState) error {
 			state.Reports = removeByID(state.Reports, id)
@@ -284,11 +284,11 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Post("/api/reports/:reportId/pages/:pageId/widgets", func(c *fiber.Ctx) error {
+	app.Post("/api/reports/:reportId/pages/:pageId/widgets", func(c fiber.Ctx) error {
 		reportID := c.Params("reportId")
 		pageID := c.Params("pageId")
 		var widget map[string]any
-		if err := c.BodyParser(&widget); err != nil {
+		if err := c.Bind().Body(&widget); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid widget payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -323,12 +323,12 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(widget)
 	})
 
-	app.Put("/api/reports/:reportId/pages/:pageId/widgets/:widgetId", func(c *fiber.Ctx) error {
+	app.Put("/api/reports/:reportId/pages/:pageId/widgets/:widgetId", func(c fiber.Ctx) error {
 		reportID := c.Params("reportId")
 		pageID := c.Params("pageId")
 		widgetID := c.Params("widgetId")
 		var widget map[string]any
-		if err := c.BodyParser(&widget); err != nil {
+		if err := c.Bind().Body(&widget); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid widget payload"})
 		}
 		widget["id"] = widgetID
@@ -366,7 +366,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(widget)
 	})
 
-	app.Delete("/api/reports/:reportId/pages/:pageId/widgets/:widgetId", func(c *fiber.Ctx) error {
+	app.Delete("/api/reports/:reportId/pages/:pageId/widgets/:widgetId", func(c fiber.Ctx) error {
 		reportID := c.Params("reportId")
 		pageID := c.Params("pageId")
 		widgetID := c.Params("widgetId")
@@ -404,13 +404,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Get("/api/report-groups", func(c *fiber.Ctx) error {
+	app.Get("/api/report-groups", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().ReportGroups)
 	})
 
-	app.Post("/api/report-groups", func(c *fiber.Ctx) error {
+	app.Post("/api/report-groups", func(c fiber.Ctx) error {
 		var group map[string]any
-		if err := c.BodyParser(&group); err != nil {
+		if err := c.Bind().Body(&group); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid report group payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -422,10 +422,10 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(group)
 	})
 
-	app.Put("/api/report-groups/:id", func(c *fiber.Ctx) error {
+	app.Put("/api/report-groups/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		var group map[string]any
-		if err := c.BodyParser(&group); err != nil {
+		if err := c.Bind().Body(&group); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid report group payload"})
 		}
 		group["id"] = id
@@ -438,7 +438,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(group)
 	})
 
-	app.Delete("/api/report-groups/:id", func(c *fiber.Ctx) error {
+	app.Delete("/api/report-groups/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		if err := store.update(func(state *appState) error {
 			state.ReportGroups = removeByID(state.ReportGroups, id)
@@ -449,13 +449,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Get("/api/queries", func(c *fiber.Ctx) error {
+	app.Get("/api/queries", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().Queries)
 	})
 
-	app.Post("/api/queries", func(c *fiber.Ctx) error {
+	app.Post("/api/queries", func(c fiber.Ctx) error {
 		var query map[string]any
-		if err := c.BodyParser(&query); err != nil {
+		if err := c.Bind().Body(&query); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid query payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -467,10 +467,10 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(query)
 	})
 
-	app.Put("/api/queries/:id", func(c *fiber.Ctx) error {
+	app.Put("/api/queries/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		var query map[string]any
-		if err := c.BodyParser(&query); err != nil {
+		if err := c.Bind().Body(&query); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid query payload"})
 		}
 		query["id"] = id
@@ -483,7 +483,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(query)
 	})
 
-	app.Delete("/api/queries/:id", func(c *fiber.Ctx) error {
+	app.Delete("/api/queries/:id", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		if err := store.update(func(state *appState) error {
 			state.Queries = removeByID(state.Queries, id)
@@ -494,13 +494,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Get("/api/integrations/config", func(c *fiber.Ctx) error {
+	app.Get("/api/integrations/config", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().Integrations)
 	})
 
-	app.Put("/api/integrations/config", func(c *fiber.Ctx) error {
+	app.Put("/api/integrations/config", func(c fiber.Ctx) error {
 		var cfg integrations.Config
-		if err := c.BodyParser(&cfg); err != nil {
+		if err := c.Bind().Body(&cfg); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid integration config payload"})
 		}
 		if err := store.update(func(state *appState) error {
@@ -512,13 +512,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(cfg)
 	})
 
-	app.Get("/api/integrations", func(c *fiber.Ctx) error {
+	app.Get("/api/integrations", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().Integrations.Services)
 	})
 
-	app.Post("/api/integrations", func(c *fiber.Ctx) error {
+	app.Post("/api/integrations", func(c fiber.Ctx) error {
 		var service integrations.Service
-		if err := c.BodyParser(&service); err != nil {
+		if err := c.Bind().Body(&service); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid integration payload"})
 		}
 		if strings.TrimSpace(service.Name) == "" {
@@ -533,10 +533,10 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(service)
 	})
 
-	app.Put("/api/integrations/:name", func(c *fiber.Ctx) error {
+	app.Put("/api/integrations/:name", func(c fiber.Ctx) error {
 		name := c.Params("name")
 		var service integrations.Service
-		if err := c.BodyParser(&service); err != nil {
+		if err := c.Bind().Body(&service); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid integration payload"})
 		}
 		service.Name = name
@@ -549,7 +549,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(service)
 	})
 
-	app.Delete("/api/integrations/:name", func(c *fiber.Ctx) error {
+	app.Delete("/api/integrations/:name", func(c fiber.Ctx) error {
 		name := c.Params("name")
 		if err := store.update(func(state *appState) error {
 			state.Integrations.Services = removeService(state.Integrations.Services, name)
@@ -560,13 +560,13 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Get("/api/credentials", func(c *fiber.Ctx) error {
+	app.Get("/api/credentials", func(c fiber.Ctx) error {
 		return c.JSON(store.snapshot().Integrations.Credentials)
 	})
 
-	app.Post("/api/credentials", func(c *fiber.Ctx) error {
+	app.Post("/api/credentials", func(c fiber.Ctx) error {
 		var credential integrations.Credential
-		if err := c.BodyParser(&credential); err != nil {
+		if err := c.Bind().Body(&credential); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid credential payload"})
 		}
 		if strings.TrimSpace(credential.Key) == "" {
@@ -581,10 +581,10 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(credential)
 	})
 
-	app.Put("/api/credentials/:key", func(c *fiber.Ctx) error {
+	app.Put("/api/credentials/:key", func(c fiber.Ctx) error {
 		key := c.Params("key")
 		var credential integrations.Credential
-		if err := c.BodyParser(&credential); err != nil {
+		if err := c.Bind().Body(&credential); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid credential payload"})
 		}
 		credential.Key = key
@@ -597,7 +597,7 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(credential)
 	})
 
-	app.Delete("/api/credentials/:key", func(c *fiber.Ctx) error {
+	app.Delete("/api/credentials/:key", func(c fiber.Ctx) error {
 		key := c.Params("key")
 		if err := store.update(func(state *appState) error {
 			state.Integrations.Credentials = removeCredential(state.Integrations.Credentials, key)
@@ -608,9 +608,9 @@ func createApp(store *stateStore) *fiber.App {
 		return c.JSON(fiber.Map{"status": "deleted"})
 	})
 
-	app.Post("/api/query", func(c *fiber.Ctx) error {
+	app.Post("/api/query", func(c fiber.Ctx) error {
 		var req queryRequest
-		if err := c.BodyParser(&req); err != nil {
+		if err := c.Bind().Body(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request payload"})
 		}
 

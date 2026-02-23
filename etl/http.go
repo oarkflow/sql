@@ -7,16 +7,16 @@ import (
 	"os"
 	"strconv"
 	"time"
-	
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/basicauth"
-	"github.com/gofiber/fiber/v2/middleware/logger"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/basicauth"
+	"github.com/gofiber/fiber/v3/middleware/logger"
 )
 
 func (m *Manager) Serve(addr string) error {
 	app := fiber.New()
 	app.Use(logger.New())
-	
+
 	// If dashboard credentials are set via env variables, secure endpoints.
 	user := os.Getenv("DASHBOARD_USER")
 	pass := os.Getenv("DASHBOARD_PASS")
@@ -27,9 +27,9 @@ func (m *Manager) Serve(addr string) error {
 			},
 		}))
 	}
-	
+
 	// Home page with links.
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		homeHTML := `
 			<h1>ETL Manager</h1>
@@ -40,9 +40,9 @@ func (m *Manager) Serve(addr string) error {
 		`
 		return c.SendString(homeHTML)
 	})
-	
+
 	// Page to enter JSON config.
-	app.Get("/config", func(c *fiber.Ctx) error {
+	app.Get("/config", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		configHTML := `
 			<h1>Enter ETL Config (JSON, YAML or BCL)</h1>
@@ -53,9 +53,9 @@ func (m *Manager) Serve(addr string) error {
 		`
 		return c.SendString(configHTML)
 	})
-	
+
 	// POST endpoint to accept JSON config and prepare ETL.
-	app.Post("/config", func(c *fiber.Ctx) error {
+	app.Post("/config", func(c fiber.Ctx) error {
 		configJSON := c.FormValue("config")
 		cfg, err := DetectConfigFormat(configJSON)
 		if err != nil {
@@ -65,11 +65,11 @@ func (m *Manager) Serve(addr string) error {
 		if err != nil {
 			return c.Status(500).SendString(fmt.Sprintf("Error preparing ETL: %v", err))
 		}
-		return c.Redirect("/etls")
+		return c.Redirect().To("/etls")
 	})
-	
+
 	// Page to list existing ETL jobs with their status.
-	app.Get("/etls", func(c *fiber.Ctx) error {
+	app.Get("/etls", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -81,9 +81,9 @@ func (m *Manager) Serve(addr string) error {
 		html += "</ul>"
 		return c.SendString(html)
 	})
-	
+
 	// Page to show details and live metrics for an ETL job.
-	app.Get("/etls/:id/start", func(c *fiber.Ctx) error {
+	app.Get("/etls/:id/start", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		id := c.Params("id")
 		m.mu.Lock()
@@ -98,10 +98,10 @@ func (m *Manager) Serve(addr string) error {
 				log.Printf("ETL job %s failed asynchronously: %v", id, err)
 			}
 		}(etl)
-		return c.Redirect("/etls/" + id)
+		return c.Redirect().To("/etls/" + id)
 	})
-	
-	app.Post("/etls/:id/stop", func(c *fiber.Ctx) error {
+
+	app.Post("/etls/:id/stop", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		m.mu.Lock()
 		etl, ok := m.etls[id]
@@ -116,8 +116,8 @@ func (m *Manager) Serve(addr string) error {
 		}
 		return c.Status(400).SendString("ETL job cannot be stopped (it may not be running)")
 	})
-	
-	app.Post("/etls/:id/adjust-worker", func(c *fiber.Ctx) error {
+
+	app.Post("/etls/:id/adjust-worker", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		m.mu.Lock()
 		etl, ok := m.etls[id]
@@ -130,11 +130,11 @@ func (m *Manager) Serve(addr string) error {
 			return c.Status(400).SendString("Invalid worker count")
 		}
 		etl.AdjustWorker(workerCount)
-		return c.Redirect("/etls/" + id)
+		return c.Redirect().To("/etls/" + id)
 	})
-	
+
 	// Page to show details and live metrics for an ETL job.
-	app.Get("/etls/:id", func(c *fiber.Ctx) error {
+	app.Get("/etls/:id", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
 		id := c.Params("id")
 		m.mu.Lock()
@@ -165,9 +165,9 @@ func (m *Manager) Serve(addr string) error {
 		`, id, etl.Status, etl.CreatedAt.Format(time.DateTime), id, etl.workerCount, id)
 		return c.SendString(detailsHTML)
 	})
-	
+
 	// API endpoint to get metrics JSON for an ETL job.
-	app.Get("/etls/:id/metrics", func(c *fiber.Ctx) error {
+	app.Get("/etls/:id/metrics", func(c fiber.Ctx) error {
 		id := c.Params("id")
 		m.mu.Lock()
 		etl, ok := m.etls[id]
@@ -177,8 +177,8 @@ func (m *Manager) Serve(addr string) error {
 		}
 		return c.JSON(etl.GetSummary())
 	})
-	
-	app.Post("/shutdown", func(c *fiber.Ctx) error {
+
+	app.Post("/shutdown", func(c fiber.Ctx) error {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			if err := app.Shutdown(); err != nil {
@@ -187,7 +187,7 @@ func (m *Manager) Serve(addr string) error {
 		}()
 		return c.SendString("Server is shutting down...")
 	})
-	
+
 	log.Printf("Starting API server on %s", addr)
 	return app.Listen(addr)
 }
