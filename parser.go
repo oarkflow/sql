@@ -277,11 +277,35 @@ func (p *Parser) parseSelectExpression() Expression {
 }
 
 func (p *Parser) parseTableReference() *TableReference {
-	if p.curToken.Type == IDENT {
+	lateral := false
+	if p.curToken.Type == LATERAL {
+		lateral = true
+		p.nextToken()
+	}
+	if p.curToken.Type == IDENT || p.curToken.Type == UNNEST {
+		if strings.EqualFold(p.curToken.Literal, "UNNEST") && p.peekToken.Type == LPAREN {
+			tr := &TableReference{Source: "unnest", Lateral: lateral}
+			if !p.expectPeek(LPAREN) {
+				return nil
+			}
+			p.nextToken()
+			expr := p.parseExpression(0)
+			if expr == nil {
+				p.errors = append(p.errors, "UNNEST requires an array expression, e.g. UNNEST(user.education)")
+				return nil
+			}
+			tr.UnnestExpr = expr
+			if !p.expectPeek(RPAREN) {
+				p.errors = append(p.errors, "UNNEST is missing closing ')'")
+				return nil
+			}
+			p.parseOptionalTableAlias(tr)
+			return tr
+		}
 		if p.peekToken.Type == LPAREN {
 			sourceFunc := strings.ToLower(p.curToken.Literal)
 			if strings.HasPrefix(sourceFunc, "read_") {
-				tr := &TableReference{Source: sourceFunc}
+				tr := &TableReference{Source: sourceFunc, Lateral: lateral}
 				if !p.expectPeek(LPAREN) {
 					return nil
 				}
@@ -294,25 +318,12 @@ func (p *Parser) parseTableReference() *TableReference {
 				if !p.expectPeek(RPAREN) {
 					return nil
 				}
-				switch p.peekToken.Type {
-				case AS:
-					p.nextToken()
-					p.nextToken()
-					if p.curToken.Type == IDENT {
-						tr.Alias = p.curToken.Literal
-					}
-				case IDENT:
-					alias := p.peekToken.Literal
-					if !isReservedAlias(alias) {
-						p.nextToken()
-						tr.Alias = p.curToken.Literal
-					}
-				}
+				p.parseOptionalTableAlias(tr)
 				return tr
 			}
-			return &TableReference{Name: p.curToken.Literal}
+			return &TableReference{Name: p.curToken.Literal, Lateral: lateral}
 		}
-		return &TableReference{Name: p.curToken.Literal}
+		return &TableReference{Name: p.curToken.Literal, Lateral: lateral}
 	}
 	if p.curToken.Type == LPAREN {
 		if p.peekToken.Type == SELECT {
@@ -329,20 +340,8 @@ func (p *Parser) parseTableReference() *TableReference {
 			} else {
 				tr = &TableReference{Subquery: subStmt.Query}
 			}
-			switch p.peekToken.Type {
-			case AS:
-				p.nextToken()
-				p.nextToken()
-				if p.curToken.Type == IDENT {
-					tr.Alias = p.curToken.Literal
-				}
-			case IDENT:
-				alias := p.peekToken.Literal
-				if !isReservedAlias(alias) {
-					p.nextToken()
-					tr.Alias = p.curToken.Literal
-				}
-			}
+			tr.Lateral = lateral
+			p.parseOptionalTableAlias(tr)
 			return tr
 		} else {
 			p.errors = append(p.errors, "Expected SELECT after '(' in table reference")
@@ -351,6 +350,23 @@ func (p *Parser) parseTableReference() *TableReference {
 	}
 	p.errors = append(p.errors, "Table must be specified using a data source function (e.g. read_file, read_db, read_api) or as a CTE reference")
 	return nil
+}
+
+func (p *Parser) parseOptionalTableAlias(tr *TableReference) {
+	switch p.peekToken.Type {
+	case AS:
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type == IDENT {
+			tr.Alias = p.curToken.Literal
+		}
+	case IDENT:
+		alias := p.peekToken.Literal
+		if !isReservedAlias(alias) {
+			p.nextToken()
+			tr.Alias = p.curToken.Literal
+		}
+	}
 }
 
 func (p *Parser) parseJoinClause() *JoinClause {
@@ -382,6 +398,14 @@ func (p *Parser) parseJoinClause() *JoinClause {
 	if jc.Table == nil {
 		p.errors = append(p.errors, "JOIN table must be specified using a valid data source function or subquery")
 		return nil
+	}
+	if jc.Table.Source == "unnest" && jc.Table.Lateral {
+		if p.peekToken.Type == ON {
+			p.nextToken()
+			p.nextToken()
+			jc.On = p.parseExpression(0)
+		}
+		return jc
 	}
 	if joinType != "CROSS" && joinType != "CROSS JOIN" && joinType != "NATURAL" {
 		if !p.expectPeek(ON) {
@@ -566,6 +590,9 @@ func (p *Parser) parseFunctionCall() Expression {
 	if !p.expectPeek(LPAREN) {
 		return nil
 	}
+	if strings.EqualFold(fn.FunctionName, "CAST") {
+		return p.parseCastFunctionCall(fn)
+	}
 	p.nextToken()
 	fn.Args = p.parseExpressionList(COMMA)
 	if !p.expectPeek(RPAREN) {
@@ -583,6 +610,31 @@ func (p *Parser) parseFunctionCall() Expression {
 			OrderBy:     order,
 		}
 	}
+	return fn
+}
+
+func (p *Parser) parseCastFunctionCall(fn *FunctionCall) Expression {
+	p.nextToken()
+	valueExpr := p.parseExpression(0)
+	if valueExpr == nil {
+		p.errors = append(p.errors, "CAST requires an expression before AS, e.g. CAST(score AS int)")
+		return nil
+	}
+	if !p.expectPeek(AS) {
+		p.errors = append(p.errors, "CAST syntax error: use CAST(expr AS type), e.g. CAST(age AS int)")
+		return nil
+	}
+	p.nextToken()
+	if p.curToken.Type != IDENT {
+		p.errors = append(p.errors, fmt.Sprintf("CAST type must be an identifier, got %q", p.curToken.Literal))
+		return nil
+	}
+	typeExpr := &Literal{Value: p.curToken.Literal}
+	if !p.expectPeek(RPAREN) {
+		p.errors = append(p.errors, "CAST missing closing ')', expected CAST(expr AS type)")
+		return nil
+	}
+	fn.Args = []Expression{valueExpr, typeExpr}
 	return fn
 }
 
@@ -627,6 +679,57 @@ func (p *Parser) parseExpressionList(separator TokenType) []Expression {
 
 func (p *Parser) parseInfixExpression(left Expression) Expression {
 	switch p.curToken.Type {
+	case DOT:
+		if p.peekToken.Type != IDENT {
+			p.errors = append(p.errors, "Malformed path after '.', expected a field name or quoted segment like address.\"zip-code\"")
+			return nil
+		}
+		p.nextToken()
+		path, ok := mergePathExpressions(left, &Identifier{Value: p.curToken.Literal})
+		if !ok {
+			p.errors = append(p.errors, "Invalid dotted path segment; use identifier syntax like parent.child")
+			return nil
+		}
+		return &Identifier{Value: path}
+	case LBRACKET:
+		if p.peekToken.Type != INT {
+			p.errors = append(p.errors, "Invalid array index syntax. Use numeric index like tags[0]")
+			return nil
+		}
+		p.nextToken()
+		indexToken := p.curToken
+		if !p.expectPeek(RBRACKET) {
+			p.errors = append(p.errors, "Missing closing ']' in indexed path, e.g. education[0].year")
+			return nil
+		}
+		leftID, ok := left.(*Identifier)
+		if !ok {
+			p.errors = append(p.errors, "Index syntax can only be applied to fields, e.g. education[0]")
+			return nil
+		}
+		return &Identifier{Value: fmt.Sprintf("%s[%s]", leftID.Value, indexToken.Literal)}
+	case TYPECAST:
+		if p.peekToken.Type != IDENT {
+			p.errors = append(p.errors, "Type cast syntax error: use expr::type, e.g. amount::float")
+			return nil
+		}
+		p.nextToken()
+		return &FunctionCall{
+			FunctionName: "CAST",
+			Args: []Expression{
+				left,
+				&Literal{Value: p.curToken.Literal},
+			},
+		}
+	case ARROW:
+		prec := p.curPrecedence()
+		p.nextToken()
+		right := p.parseExpression(prec)
+		if path, ok := mergePathExpressions(left, right); ok {
+			return &Identifier{Value: path}
+		}
+		p.errors = append(p.errors, "Malformed path with '->'. Use field->nestedField, e.g. education->year")
+		return nil
 	case BETWEEN:
 		p.nextToken()
 		lower := p.parseExpression(0)
@@ -750,6 +853,30 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 			Not:     false,
 			Pattern: pattern,
 		}
+	case CONTAINS, OVERLAPS:
+		operator := p.curToken.Literal
+		if p.peekToken.Type == LPAREN {
+			p.nextToken() // consume (
+			p.nextToken() // move to first expression
+			list := p.parseExpressionList(COMMA)
+			if !p.expectPeek(RPAREN) {
+				p.errors = append(p.errors, fmt.Sprintf("%s expects a closing ')' for value list", operator))
+				return nil
+			}
+			return &BinaryExpression{
+				Left:     left,
+				Operator: operator,
+				Right:    &ArrayLiteral{Elements: list},
+			}
+		}
+		prec := p.curPrecedence()
+		p.nextToken()
+		right := p.parseExpression(prec)
+		return &BinaryExpression{
+			Left:     left,
+			Operator: operator,
+			Right:    right,
+		}
 	default:
 		operator := p.curToken.Literal
 		// Normalize alternate not-equals representation
@@ -765,6 +892,25 @@ func (p *Parser) parseInfixExpression(left Expression) Expression {
 			Right:    right,
 		}
 	}
+}
+
+func mergePathExpressions(left, right Expression) (string, bool) {
+	leftID, ok := left.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	rightID, ok := right.(*Identifier)
+	if !ok {
+		return "", false
+	}
+	leftPath := strings.ReplaceAll(strings.TrimSpace(leftID.Value), "->", ".")
+	rightPath := strings.ReplaceAll(strings.TrimSpace(rightID.Value), "->", ".")
+	leftPath = strings.Trim(leftPath, ".")
+	rightPath = strings.Trim(rightPath, ".")
+	if leftPath == "" || rightPath == "" {
+		return "", false
+	}
+	return leftPath + "." + rightPath, true
 }
 
 func (p *Parser) parseExpression(precedence int) Expression {
@@ -802,7 +948,7 @@ func (p *Parser) parseExpression(precedence int) Expression {
 		leftExp = &Star{}
 	case CASE:
 		leftExp = p.parseCaseExpression()
-	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF, DATEDIFF, NOW, CURRENT_TIMESTAMP, CURRENT_DATE:
+	case IDENT, COUNT, AVG, SUM, MIN, MAX, DIFF, COALESCE, CONCAT, IF, DATEDIFF, NOW, CURRENT_TIMESTAMP, CURRENT_DATE, ANY, ALL, CAST:
 		if p.peekToken.Type == LPAREN {
 			leftExp = p.parseFunctionCall()
 		} else {

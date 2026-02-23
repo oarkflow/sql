@@ -42,7 +42,23 @@ func (l *Lexer) NextToken() Token {
 	case '+':
 		tok = newToken(PLUS, l.ch, l.line, l.column)
 	case '-':
-		tok = newToken(MINUS, l.ch, l.line, l.column)
+		if l.peekChar() == '>' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: ARROW, Literal: string(ch) + string(l.ch)}
+		} else {
+			tok = newToken(MINUS, l.ch, l.line, l.column)
+		}
+	case ':':
+		if l.peekChar() == ':' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: TYPECAST, Literal: string(ch) + string(l.ch)}
+		} else {
+			tok = newToken(ILLEGAL, l.ch, l.line, l.column)
+		}
+	case '.':
+		tok = newToken(DOT, l.ch, l.line, l.column)
 	case '*':
 		tok = newToken(ASTERISK, l.ch, l.line, l.column)
 	case '|':
@@ -63,6 +79,10 @@ func (l *Lexer) NextToken() Token {
 		tok = newToken(LPAREN, l.ch, l.line, l.column)
 	case ')':
 		tok = newToken(RPAREN, l.ch, l.line, l.column)
+	case '[':
+		tok = newToken(LBRACKET, l.ch, l.line, l.column)
+	case ']':
+		tok = newToken(RBRACKET, l.ch, l.line, l.column)
 	case '?':
 		tok = newToken(PARAM, l.ch, l.line, l.column)
 	case '\'':
@@ -74,9 +94,6 @@ func (l *Lexer) NextToken() Token {
 	case '`':
 		tok.Type = IDENT
 		tok.Literal = l.readBacktickIdentifier()
-	case '[':
-		tok.Type = IDENT
-		tok.Literal = l.readBracketIdentifier()
 	case 0:
 		tok.Literal = ""
 		tok.Type = EOF
@@ -207,17 +224,6 @@ func (l *Lexer) readBacktickIdentifier() string {
 	l.readChar()
 	start := l.position
 	for l.ch != '`' && l.ch != 0 {
-		l.readChar()
-	}
-	literal := l.input[start:l.position]
-	l.readChar()
-	return literal
-}
-
-func (l *Lexer) readBracketIdentifier() string {
-	l.readChar()
-	start := l.position
-	for l.ch != ']' && l.ch != 0 {
 		l.readChar()
 	}
 	literal := l.input[start:l.position]

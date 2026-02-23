@@ -56,6 +56,8 @@ func (tr *TableReference) loadData(ctx context.Context) ([]utils.Record, error) 
 		return rows, nil
 	case "read_service":
 		return ReadServiceForUser(ctx, tr.Name)
+	case "unnest":
+		return nil, fmt.Errorf("UNNEST must be used as a LATERAL join source")
 	default:
 		if tr.Name == "dual" {
 			return []utils.Record{{}}, nil
@@ -200,6 +202,20 @@ func (l *Literal) String() string {
 	}
 }
 
+type ArrayLiteral struct {
+	Elements []Expression
+}
+
+func (al *ArrayLiteral) ExpressionNode()      {}
+func (al *ArrayLiteral) TokenLiteral() string { return "ARRAY" }
+func (al *ArrayLiteral) String() string {
+	var vals []string
+	for _, el := range al.Elements {
+		vals = append(vals, el.String())
+	}
+	return "(" + strings.Join(vals, ", ") + ")"
+}
+
 type BinaryExpression struct {
 	Left     Expression
 	Operator string
@@ -299,6 +315,8 @@ type TableReference struct {
 	Alias            string
 	Subquery         *SQL
 	CompoundSubquery *QueryStatement
+	UnnestExpr       Expression
+	Lateral          bool
 }
 
 func (tr *TableReference) TokenLiteral() string { return tr.Source }
@@ -308,6 +326,16 @@ func (tr *TableReference) String() string {
 			return fmt.Sprintf("(%s) AS %s", tr.Subquery.String(), tr.Alias)
 		}
 		return fmt.Sprintf("(%s)", tr.Subquery.String())
+	}
+	if tr.Source == "unnest" && tr.UnnestExpr != nil {
+		lateral := ""
+		if tr.Lateral {
+			lateral = "LATERAL "
+		}
+		if tr.Alias != "" {
+			return fmt.Sprintf("%sUNNEST(%s) AS %s", lateral, tr.UnnestExpr.String(), tr.Alias)
+		}
+		return fmt.Sprintf("%sUNNEST(%s)", lateral, tr.UnnestExpr.String())
 	}
 	return fmt.Sprintf("%s('%s')", tr.Source, tr.Name)
 }

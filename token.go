@@ -11,12 +11,16 @@ var (
 	reserved = []string{
 		"JOIN", "FROM", "WHERE", "GROUP", "HAVING", "ON", "CASE", "WHEN", "THEN",
 		"ELSE", "END", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT",
-		"WITH", "TRUE", "FALSE", "OR", "AND",
+		"WITH", "TRUE", "FALSE", "OR", "AND", "CONTAINS", "OVERLAPS", "LATERAL",
 	}
 
 	precedences = map[TokenType]int{
+		DOT:       50,
+		LBRACKET:  50,
 		PLUS:      10,
 		MINUS:     10,
+		ARROW:     40,
+		TYPECAST:  35,
 		ASTERISK:  20,
 		SLASH:     20,
 		CONCAT_OP: 10, // precedence for "||"
@@ -30,6 +34,8 @@ var (
 		LPAREN:    30,
 		IN:        5,
 		LIKE:      5,
+		CONTAINS:  5,
+		OVERLAPS:  5,
 		NOT:       5,
 		AND:       5, // Ensure AND has higher precedence than OR
 		OR:        3, // OR has lower precedence than AND
@@ -61,6 +67,9 @@ const (
 	GTE      = ">="
 	PLUS     = "+"
 	MINUS    = "-"
+	ARROW    = "->"
+	DOT      = "."
+	TYPECAST = "::"
 	ASTERISK = "*"
 	SLASH    = "/"
 
@@ -68,6 +77,8 @@ const (
 	SEMICOLON = ";"
 	LPAREN    = "("
 	RPAREN    = ")"
+	LBRACKET  = "["
+	RBRACKET  = "]"
 
 	CURRENT_DATE = "CURRENT_DATE"
 
@@ -80,6 +91,8 @@ const (
 	IN       = "IN"
 	NOT      = "NOT"
 	LIKE     = "LIKE"
+	CONTAINS = "CONTAINS"
+	OVERLAPS = "OVERLAPS"
 	COUNT    = "COUNT"
 	AVG      = "AVG"
 	SUM      = "SUM"
@@ -123,6 +136,9 @@ const (
 	EXISTS    = "EXISTS"
 	ANY       = "ANY"
 	ALL       = "ALL"
+	LATERAL   = "LATERAL"
+	UNNEST    = "UNNEST"
+	CAST      = "CAST"
 
 	ROW_NUMBER = "ROW_NUMBER"
 	RANK       = "RANK"
@@ -166,6 +182,10 @@ func lookupKeyword(ident string) TokenType {
 		return NOT
 	case "LIKE":
 		return LIKE
+	case "CONTAINS":
+		return CONTAINS
+	case "OVERLAPS":
+		return OVERLAPS
 	case "COUNT":
 		return COUNT
 	case "AVG":
@@ -248,6 +268,12 @@ func lookupKeyword(ident string) TokenType {
 		return ANY
 	case "ALL":
 		return ALL
+	case "LATERAL":
+		return LATERAL
+	case "UNNEST":
+		return UNNEST
+	case "CAST":
+		return CAST
 	case "ROW_NUMBER":
 		return ROW_NUMBER
 	case "RANK":

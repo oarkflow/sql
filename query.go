@@ -248,6 +248,11 @@ func extractConditions(expr Expression) []Condition {
 			strings.ToUpper(e.Operator) == "LIKE" {
 			if ident, ok := e.Left.(*Identifier); ok {
 				if lit, ok2 := e.Right.(*Literal); ok2 {
+					// Keep fast-path filtering for simple flat fields only.
+					if strings.Contains(ident.Value, ".") || strings.Contains(ident.Value, "->") ||
+						strings.Contains(ident.Value, "[") || strings.Contains(ident.Value, "]") {
+						break
+					}
 					conds = append(conds, Condition{
 						Field:    ident.Value,
 						Operator: e.Operator,
@@ -886,6 +891,10 @@ func executeDefaultJoin(c context.Context, leftRows, rightRows []utils.Record, a
 func (query *SQL) executeJoins(ctx context.Context, rows []utils.Record) ([]utils.Record, error) {
 	currentRows := rows
 	for _, join := range query.Joins {
+		if join.Table != nil && join.Table.Source == "unnest" && join.Table.UnnestExpr != nil {
+			currentRows = executeUnnestJoin(ctx, currentRows, join)
+			continue
+		}
 		joinRows, err := join.Table.loadData(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load join table %s: %s", join.Table.Name, err)
@@ -913,4 +922,47 @@ func (query *SQL) executeJoins(ctx context.Context, rows []utils.Record) ([]util
 		currentRows = newResult
 	}
 	return currentRows, nil
+}
+
+func executeUnnestJoin(c context.Context, leftRows []utils.Record, join *JoinClause) []utils.Record {
+	var newResult []utils.Record
+	joinType := strings.ToUpper(join.JoinType)
+	alias := join.Table.Alias
+	if alias == "" {
+		alias = "unnest"
+	}
+	for _, leftRow := range leftRows {
+		ev := NewEvalContext()
+		items := ev.evalExpression(c, join.Table.UnnestExpr, leftRow)
+		values, ok := toAnySlice(items)
+		if !ok || len(values) == 0 {
+			if joinType == "LEFT" || joinType == "LEFT JOIN" || joinType == "LEFT OUTER" || joinType == "LEFT OUTER JOIN" {
+				newResult = append(newResult, utils.MergeRows(leftRow, nil, alias))
+			}
+			continue
+		}
+		matched := false
+		for _, item := range values {
+			rightRow := make(utils.Record)
+			switch v := item.(type) {
+			case map[string]any:
+				rightRow = v
+			default:
+				rightRow["value"] = v
+			}
+			merged := utils.MergeRows(leftRow, rightRow, alias)
+			if join.On != nil {
+				cond := ev.evalExpression(c, join.On, merged)
+				if b, ok := cond.(bool); !ok || !b {
+					continue
+				}
+			}
+			matched = true
+			newResult = append(newResult, merged)
+		}
+		if !matched && (joinType == "LEFT" || joinType == "LEFT JOIN" || joinType == "LEFT OUTER" || joinType == "LEFT OUTER JOIN") {
+			newResult = append(newResult, utils.MergeRows(leftRow, nil, alias))
+		}
+	}
+	return newResult
 }

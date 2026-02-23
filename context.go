@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math" // <-- added import for math functions
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,11 @@ type EvalContext struct {
 	CurrentAlias     string
 }
 
+type quantifiedValues struct {
+	Mode   string
+	Values []any
+}
+
 func NewEvalContext() *EvalContext {
 	return &EvalContext{
 		OuterRow: make(map[string]any),
@@ -34,6 +40,12 @@ func (ctx *EvalContext) evalExpression(c context.Context, expr Expression, row u
 		return ctx.evalIdentifier(c, e, row)
 	case *Literal:
 		return e.Value
+	case *ArrayLiteral:
+		out := make([]any, 0, len(e.Elements))
+		for _, el := range e.Elements {
+			out = append(out, ctx.evalExpression(c, el, row))
+		}
+		return out
 	case *AliasExpression:
 		return ctx.evalExpression(c, e.Expr, row)
 	case *BinaryExpression:
@@ -63,37 +75,28 @@ func (ctx *EvalContext) evalExpression(c context.Context, expr Expression, row u
 }
 
 func (ctx *EvalContext) evalIdentifier(_ context.Context, id *Identifier, row utils.Record) any {
-	// Support for alias fields: check full key first then fallback.
-	if strings.Contains(id.Value, ".") {
-		// Try full key (e.g. "t1.work_item_id")
-		if val, ok := row[id.Value]; ok {
-			return val
-		}
-		// Split alias and field; then try field-only lookup.
-		parts := strings.SplitN(id.Value, ".", 2)
-		if val, ok := row[parts[1]]; ok {
-			return val
-		}
-		return nil
-	}
 	upperVal := strings.ToUpper(id.Value)
 	if upperVal == "CURRENT_DATE" {
 		return time.Now().Format("2006-01-02")
 	}
 
-	// Try with current alias prefix
-	if ctx.CurrentAlias != "" {
-		if val, ok := row[ctx.CurrentAlias+"."+id.Value]; ok {
+	path := normalizeIdentifierPath(id.Value)
+	if val, ok := resolvePathFromRecord(row, path); ok {
+		return val
+	}
+	if ctx.CurrentAlias != "" && !strings.Contains(path, ".") {
+		if val, ok := resolvePathFromRecord(row, ctx.CurrentAlias+"."+path); ok {
 			return val
 		}
 	}
-	// Try direct key
-	if v, ok := row[id.Value]; ok {
-		return v
+	if ctx.CurrentAlias != "" {
+		aliasedPath := ctx.CurrentAlias + "." + path
+		if val, ok := resolvePathFromRecord(row, aliasedPath); ok {
+			return val
+		}
 	}
-
 	if ctx.OuterRow != nil {
-		if v, ok := ctx.OuterRow[id.Value]; ok {
+		if v, ok := resolvePathFromRecord(ctx.OuterRow, path); ok {
 			return v
 		}
 	}
@@ -103,6 +106,7 @@ func (ctx *EvalContext) evalIdentifier(_ context.Context, id *Identifier, row ut
 func (ctx *EvalContext) evalInExpression(c context.Context, e *InExpression, row utils.Record) any {
 	leftVal := ctx.evalExpression(c, e.Left, row)
 	found := false
+	var candidateVals []any
 
 	if e.Subquery != nil {
 		// Handle subquery IN
@@ -113,24 +117,16 @@ func (ctx *EvalContext) evalInExpression(c context.Context, e *InExpression, row
 		for _, subRow := range subRows {
 			// For subquery, we assume it returns a single column
 			for _, val := range subRow {
-				if utils.CompareValues(val, leftVal) == 0 {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
+				candidateVals = append(candidateVals, val)
 			}
 		}
 	} else {
 		// Handle expression list IN
 		for _, exp := range e.List {
-			if utils.CompareValues(ctx.evalExpression(c, exp, row), leftVal) == 0 {
-				found = true
-				break
-			}
+			candidateVals = append(candidateVals, ctx.evalExpression(c, exp, row))
 		}
 	}
+	found = valueInList(leftVal, candidateVals)
 
 	if e.Not {
 		return !found
@@ -181,7 +177,8 @@ func (ctx *EvalContext) evalPrefixExpression(c context.Context, e *PrefixExpress
 func (ctx *EvalContext) evalFunctionCall(c context.Context, fc *FunctionCall, row utils.Record) any {
 	name := strings.ToUpper(fc.FunctionName)
 	switch name {
-	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW", "CURRENT_TIMESTAMP", "ROUND", "DATEDIFF":
+	case "COALESCE", "CONCAT", "IF", "SUBSTR", "LENGTH", "UPPER", "LOWER", "TO_DATE", "TO_NUMBER", "NOW",
+		"CURRENT_TIMESTAMP", "ROUND", "DATEDIFF", "ANY", "ALL", "CAST", "JSON_EXTRACT", "JSON_EXISTS", "JSON_VALUE":
 		return ctx.evalScalarFunction(c, fc, row)
 	default:
 		ctx.logError("Unsupported function: " + name)
@@ -309,17 +306,57 @@ func (ctx *EvalContext) evalBinaryExpression(c context.Context, e *BinaryExpress
 		rightStr := fmt.Sprintf("%v", right)
 		return leftStr + rightStr
 	case "=":
+		if result, ok := compareWithQuantified("=", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection("=", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) == 0
 	case "!=":
+		if result, ok := compareWithQuantified("!=", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection("!=", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) != 0
 	case "<":
+		if result, ok := compareWithQuantified("<", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection("<", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) < 0
 	case ">":
+		if result, ok := compareWithQuantified(">", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection(">", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) > 0
 	case "<=":
+		if result, ok := compareWithQuantified("<=", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection("<=", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) <= 0
 	case ">=":
+		if result, ok := compareWithQuantified(">=", left, right); ok {
+			return result
+		}
+		if result, ok := compareWithCollection(">=", left, right); ok {
+			return result
+		}
 		return utils.CompareValues(left, right) >= 0
+	case "CONTAINS":
+		return containsOperator(left, right)
+	case "OVERLAPS":
+		return overlapsOperator(left, right)
 	case "IS NULL":
 		return left == nil
 	case "IS NOT NULL":
@@ -449,6 +486,25 @@ func (ctx *EvalContext) evalScalarFunction(c context.Context, fc *FunctionCall, 
 		}
 		factor := math.Pow(10, precision)
 		return math.Round(num*factor) / factor
+	case "ANY", "ALL":
+		if len(fc.Args) < 1 {
+			ctx.logError(strings.ToUpper(fc.FunctionName) + " requires one argument")
+			return quantifiedValues{Mode: strings.ToUpper(fc.FunctionName)}
+		}
+		val := ctx.evalExpression(c, fc.Args[0], row)
+		values := toComparableSlice(val)
+		return quantifiedValues{
+			Mode:   strings.ToUpper(fc.FunctionName),
+			Values: values,
+		}
+	case "CAST":
+		if len(fc.Args) < 2 {
+			ctx.logError("CAST requires 2 arguments: CAST(expr AS type)")
+			return nil
+		}
+		typeName := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
+		value := ctx.evalExpression(c, fc.Args[0], row)
+		return castValue(typeName, value)
 	case "DATEDIFF":
 		if len(fc.Args) < 2 {
 			ctx.logError("DATEDIFF requires 2 arguments")
@@ -464,6 +520,47 @@ func (ctx *EvalContext) evalScalarFunction(c context.Context, fc *FunctionCall, 
 		}
 		diff := t1.Sub(t2)
 		return int(diff.Hours() / 24)
+	case "JSON_EXTRACT":
+		if len(fc.Args) < 2 {
+			ctx.logError("JSON_EXTRACT requires 2 arguments")
+			return nil
+		}
+		payload := ctx.evalExpression(c, fc.Args[0], row)
+		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
+		val, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
+		if !ok {
+			return nil
+		}
+		return val
+	case "JSON_EXISTS":
+		if len(fc.Args) < 2 {
+			ctx.logError("JSON_EXISTS requires 2 arguments")
+			return false
+		}
+		payload := ctx.evalExpression(c, fc.Args[0], row)
+		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
+		_, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
+		return ok
+	case "JSON_VALUE":
+		if len(fc.Args) < 2 {
+			ctx.logError("JSON_VALUE requires 2 arguments")
+			return nil
+		}
+		payload := ctx.evalExpression(c, fc.Args[0], row)
+		path := fmt.Sprintf("%v", ctx.evalExpression(c, fc.Args[1], row))
+		val, ok := resolvePathFromValue(payload, normalizeJSONPath(path))
+		if !ok {
+			return nil
+		}
+		if arr, ok := toAnySlice(val); ok {
+			for _, item := range arr {
+				if item != nil {
+					return item
+				}
+			}
+			return nil
+		}
+		return val
 	default:
 		ctx.logError("Unsupported scalar function: " + name)
 		return nil
@@ -498,4 +595,410 @@ func isNilOrEmpty(val any) bool {
 
 func isArithmeticOperator(op string) bool {
 	return op == PLUS || op == MINUS || op == ASTERISK || op == SLASH
+}
+
+func normalizeIdentifierPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.ReplaceAll(path, "->", ".")
+	path = strings.Trim(path, ".")
+	return path
+}
+
+type pathSegment struct {
+	Key     string
+	Indexes []int
+}
+
+func parsePath(path string) []pathSegment {
+	path = normalizeIdentifierPath(path)
+	if path == "" {
+		return nil
+	}
+	rawSegs := strings.Split(path, ".")
+	segments := make([]pathSegment, 0, len(rawSegs))
+	for _, raw := range rawSegs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		seg := pathSegment{}
+		for i := 0; i < len(raw); {
+			switch raw[i] {
+			case '[':
+				end := strings.IndexByte(raw[i:], ']')
+				if end <= 1 {
+					return nil
+				}
+				end += i
+				idxVal, err := strconv.Atoi(strings.TrimSpace(raw[i+1 : end]))
+				if err != nil {
+					return nil
+				}
+				seg.Indexes = append(seg.Indexes, idxVal)
+				i = end + 1
+			default:
+				j := i
+				for j < len(raw) && raw[j] != '[' {
+					j++
+				}
+				if seg.Key == "" {
+					seg.Key = strings.TrimSpace(raw[i:j])
+				} else {
+					seg.Key += strings.TrimSpace(raw[i:j])
+				}
+				i = j
+			}
+		}
+		segments = append(segments, seg)
+	}
+	return segments
+}
+
+func resolvePathFromRecord(row utils.Record, path string) (any, bool) {
+	segs := parsePath(path)
+	if len(segs) == 0 {
+		return nil, false
+	}
+
+	// Direct object traversal: row[first] -> nested keys/indexes.
+	if first, ok := row[segs[0].Key]; ok {
+		val, ok := resolveSegments(first, segs, 0, true)
+		if ok {
+			return val, true
+		}
+	}
+
+	// Flattened key traversal: support alias-prefixed keys like "u.education".
+	for i := len(segs); i >= 1; i-- {
+		var keyParts []string
+		valid := true
+		for _, seg := range segs[:i] {
+			if seg.Key == "" {
+				valid = false
+				break
+			}
+			keyParts = append(keyParts, seg.Key)
+		}
+		if !valid {
+			continue
+		}
+		key := strings.Join(keyParts, ".")
+		val, ok := row[key]
+		if !ok {
+			continue
+		}
+		current := val
+		if len(segs[i-1].Indexes) > 0 {
+			next, ok := applyIndexes(current, segs[i-1].Indexes)
+			if !ok {
+				continue
+			}
+			current = next
+		}
+		if i == len(segs) {
+			return current, true
+		}
+		return resolveSegments(current, segs, i, false)
+	}
+	return nil, false
+}
+
+func resolvePathFromValue(value any, path string) (any, bool) {
+	segs := parsePath(path)
+	if len(segs) == 0 {
+		return nil, false
+	}
+	return resolveSegments(value, segs, 0, false)
+}
+
+func resolveSegments(current any, segs []pathSegment, start int, firstFromRecord bool) (any, bool) {
+	val := current
+	for i := start; i < len(segs); i++ {
+		seg := segs[i]
+		if i == start && firstFromRecord {
+			// key already resolved by caller
+		} else if seg.Key != "" {
+			switch v := val.(type) {
+			case map[string]any:
+				next, ok := v[seg.Key]
+				if !ok {
+					return nil, false
+				}
+				val = next
+			default:
+				items, ok := toAnySlice(val)
+				if !ok {
+					return nil, false
+				}
+				var out []any
+				for _, item := range items {
+					resolved, ok := resolveSegments(item, segs, i, false)
+					if !ok {
+						continue
+					}
+					if nested, isSlice := toAnySlice(resolved); isSlice {
+						out = append(out, nested...)
+					} else {
+						out = append(out, resolved)
+					}
+				}
+				if len(out) == 0 {
+					return nil, false
+				}
+				return out, true
+			}
+		}
+		if len(seg.Indexes) > 0 {
+			next, ok := applyIndexes(val, seg.Indexes)
+			if !ok {
+				return nil, false
+			}
+			val = next
+		}
+	}
+	return val, true
+}
+
+func applyIndexes(value any, indexes []int) (any, bool) {
+	current := value
+	for _, idx := range indexes {
+		items, ok := toAnySlice(current)
+		if !ok {
+			return nil, false
+		}
+		if idx < 0 || idx >= len(items) {
+			return nil, false
+		}
+		current = items[idx]
+	}
+	return current, true
+}
+
+func toAnySlice(value any) ([]any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	switch v := value.(type) {
+	case []any:
+		return v, true
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return nil, false
+	}
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+	out := make([]any, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, true
+}
+
+func toComparableSlice(value any) []any {
+	if value == nil {
+		return nil
+	}
+	if arr, ok := toAnySlice(value); ok {
+		return arr
+	}
+	return []any{value}
+}
+
+func valueInList(left any, candidates []any) bool {
+	if leftSlice, ok := toAnySlice(left); ok {
+		for _, lv := range leftSlice {
+			if valueInList(lv, candidates) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, candidate := range candidates {
+		if rightSlice, ok := toAnySlice(candidate); ok {
+			if valueInList(left, rightSlice) {
+				return true
+			}
+			continue
+		}
+		if utils.CompareValues(left, candidate) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func compareWithCollection(op string, left, right any) (bool, bool) {
+	if leftSlice, ok := toAnySlice(left); ok {
+		for _, lv := range leftSlice {
+			if result, done := compareWithCollection(op, lv, right); done && result {
+				return true, true
+			}
+		}
+		return false, true
+	}
+	if rightSlice, ok := toAnySlice(right); ok {
+		for _, rv := range rightSlice {
+			if result, done := compareWithCollection(op, left, rv); done && result {
+				return true, true
+			}
+		}
+		return false, true
+	}
+	switch op {
+	case "=":
+		return utils.CompareValues(left, right) == 0, true
+	case "!=":
+		return utils.CompareValues(left, right) != 0, true
+	case "<":
+		return utils.CompareValues(left, right) < 0, true
+	case ">":
+		return utils.CompareValues(left, right) > 0, true
+	case "<=":
+		return utils.CompareValues(left, right) <= 0, true
+	case ">=":
+		return utils.CompareValues(left, right) >= 0, true
+	default:
+		return false, false
+	}
+}
+
+func compareWithQuantified(op string, left, right any) (bool, bool) {
+	if q, ok := right.(quantifiedValues); ok {
+		return compareWithQuantifiedValues(op, left, q), true
+	}
+	if q, ok := left.(quantifiedValues); ok {
+		return compareWithQuantifiedValues(op, right, q), true
+	}
+	return false, false
+}
+
+func compareWithQuantifiedValues(op string, value any, q quantifiedValues) bool {
+	switch q.Mode {
+	case "ANY":
+		for _, candidate := range q.Values {
+			if matchSimpleComparison(op, value, candidate) {
+				return true
+			}
+		}
+		return false
+	case "ALL":
+		if len(q.Values) == 0 {
+			return true
+		}
+		for _, candidate := range q.Values {
+			if !matchSimpleComparison(op, value, candidate) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func matchSimpleComparison(op string, left, right any) bool {
+	switch op {
+	case "=":
+		return utils.CompareValues(left, right) == 0
+	case "!=":
+		return utils.CompareValues(left, right) != 0
+	case "<":
+		return utils.CompareValues(left, right) < 0
+	case ">":
+		return utils.CompareValues(left, right) > 0
+	case "<=":
+		return utils.CompareValues(left, right) <= 0
+	case ">=":
+		return utils.CompareValues(left, right) >= 0
+	default:
+		return false
+	}
+}
+
+func containsOperator(left, right any) bool {
+	leftSlice := toComparableSlice(left)
+	if len(leftSlice) == 0 {
+		return false
+	}
+	rightSlice := toComparableSlice(right)
+	if len(rightSlice) == 0 {
+		return false
+	}
+	for _, rv := range rightSlice {
+		found := false
+		for _, lv := range leftSlice {
+			if utils.CompareValues(lv, rv) == 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func overlapsOperator(left, right any) bool {
+	leftSlice := toComparableSlice(left)
+	rightSlice := toComparableSlice(right)
+	for _, lv := range leftSlice {
+		for _, rv := range rightSlice {
+			if utils.CompareValues(lv, rv) == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeJSONPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, "'")
+	path = strings.Trim(path, "\"")
+	if strings.HasPrefix(path, "$.") {
+		return path[2:]
+	}
+	if path == "$" {
+		return ""
+	}
+	if strings.HasPrefix(path, "$") {
+		return strings.TrimPrefix(path, "$")
+	}
+	return path
+}
+
+func castValue(typeName string, value any) any {
+	switch strings.ToLower(strings.TrimSpace(typeName)) {
+	case "int", "integer", "int32":
+		v, ok := convert.ToInt(value)
+		if !ok {
+			return nil
+		}
+		return v
+	case "int64", "bigint":
+		v, ok := convert.ToInt64(value)
+		if !ok {
+			return nil
+		}
+		return v
+	case "float", "float64", "double", "decimal", "numeric":
+		v, ok := convert.ToFloat64(value)
+		if !ok {
+			return nil
+		}
+		return v
+	case "bool", "boolean":
+		v, ok := convert.ToBool(value)
+		if !ok {
+			return nil
+		}
+		return v
+	case "string", "text", "varchar":
+		return fmt.Sprintf("%v", value)
+	default:
+		return nil
+	}
 }
