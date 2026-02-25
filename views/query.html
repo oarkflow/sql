@@ -486,61 +486,106 @@
             try {
                 const response = await fetch(`/api/schema/${integration}`);
                 const schema = await response.json();
+                if (!response.ok) {
+                    throw new Error(schema.error || 'Failed to load schema');
+                }
                 renderSchema(schema);
             } catch (error) {
                 console.error('Failed to load schema:', error);
-                document.getElementById('schemaTree').innerHTML = '<div class="text-red-500 text-sm">Failed to load schema</div>';
+                document.getElementById('schemaTree').innerHTML = `<div class="text-red-500 text-sm">${error.message || 'Failed to load schema'}</div>`;
             }
         }
 
-        // Render schema tree
+        function safeNodeId(prefix, value) {
+            return `${prefix}-${String(value).replace(/[^A-Za-z0-9_-]/g, '_')}`;
+        }
+
+        function getColumnName(column) {
+            if (typeof column === 'string') return column;
+            return column?.name || '';
+        }
+
+        function getColumnMeta(column) {
+            if (typeof column === 'string') return '';
+            const type = column?.type || '';
+            const nullable = column?.is_nullable || '';
+            const key = column?.key || '';
+            const parts = [type, nullable, key].filter(Boolean);
+            return parts.join(' | ');
+        }
+
         function renderSchema(schema) {
             const schemaTree = document.getElementById('schemaTree');
+            schemaTree.innerHTML = '';
 
             if (!schema.tables || schema.tables.length === 0) {
                 schemaTree.innerHTML = '<div class="text-gray-500 text-sm">No tables found</div>';
                 return;
             }
 
-            let html = '<div class="space-y-2">';
-            schema.tables.forEach(table => {
-                html += `
-                    <div class="border border-gray-200 rounded-lg p-2">
-                        <div class="flex items-center cursor-pointer" onclick="toggleTable('${table}')">
-                            <i data-lucide="chevron-right" class="w-4 h-4 mr-1 transition-transform" id="chevron-${table}"></i>
-                            <i data-lucide="table" class="w-4 h-4 mr-1 text-blue-600"></i>
-                            <span class="font-medium">${table}</span>
-                        </div>
-                        <div id="columns-${table}" class="hidden mt-2 ml-6 space-y-1">
+            const wrapper = document.createElement('div');
+            wrapper.className = 'space-y-2';
+
+            schema.tables.forEach((table) => {
+                const tableId = safeNodeId('table', table);
+                const columnsId = safeNodeId('columns', table);
+                const chevronId = safeNodeId('chevron', table);
+
+                const box = document.createElement('div');
+                box.className = 'border border-gray-200 rounded-lg p-2';
+
+                const tableHeader = document.createElement('div');
+                tableHeader.className = 'flex items-center cursor-pointer';
+                tableHeader.setAttribute('onclick', `toggleTable('${tableId}', '${columnsId}', '${chevronId}')`);
+                tableHeader.innerHTML = `
+                    <i data-lucide="chevron-right" class="w-4 h-4 mr-1 transition-transform" id="${chevronId}"></i>
+                    <i data-lucide="table" class="w-4 h-4 mr-1 text-blue-600"></i>
+                    <span class="font-medium">${table}</span>
                 `;
 
-                if (schema.columns[table]) {
-                    schema.columns[table].forEach(column => {
-                        html += `
-                            <div class="flex items-center text-sm text-gray-600 cursor-pointer hover:text-gray-800"
-                                 onclick="insertColumn('${table}', '${column}')">
-                                <i data-lucide="column" class="w-3 h-3 mr-1"></i>
-                                <span>${column}</span>
+                const columns = document.createElement('div');
+                columns.id = columnsId;
+                columns.className = 'hidden mt-2 ml-6 space-y-1';
+
+                const tableColumns = Array.isArray(schema.columns?.[table]) ? schema.columns[table] : [];
+                if (tableColumns.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'text-xs text-gray-400';
+                    empty.textContent = 'No columns';
+                    columns.appendChild(empty);
+                } else {
+                    tableColumns.forEach((column) => {
+                        const colName = getColumnName(column);
+                        const colMeta = getColumnMeta(column);
+                        const row = document.createElement('div');
+                        row.className = 'flex items-center justify-between text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-50 rounded px-1 py-1';
+                        row.setAttribute('role', 'button');
+                        row.setAttribute('title', colMeta || colName);
+                        row.onclick = () => insertColumn(table, colName);
+                        row.innerHTML = `
+                            <div class="flex items-center min-w-0">
+                                <i data-lucide="column" class="w-3 h-3 mr-1 flex-shrink-0"></i>
+                                <span class="truncate">${colName}</span>
                             </div>
+                            ${colMeta ? `<span class="text-xs text-gray-400 ml-2 truncate">${colMeta}</span>` : ''}
                         `;
+                        columns.appendChild(row);
                     });
                 }
 
-                html += `
-                        </div>
-                    </div>
-                `;
+                box.appendChild(tableHeader);
+                box.appendChild(columns);
+                wrapper.appendChild(box);
             });
-            html += '</div>';
 
-            schemaTree.innerHTML = html;
+            schemaTree.appendChild(wrapper);
             lucide.createIcons();
         }
 
-        // Toggle table visibility
-        function toggleTable(table) {
-            const columns = document.getElementById(`columns-${table}`);
-            const chevron = document.getElementById(`chevron-${table}`);
+        function toggleTable(tableId, columnsId, chevronId) {
+            const columns = document.getElementById(columnsId);
+            const chevron = document.getElementById(chevronId);
+            if (!columns || !chevron) return;
 
             if (columns.classList.contains('hidden')) {
                 columns.classList.remove('hidden');
@@ -554,6 +599,7 @@
         // Insert column into query
         function insertColumn(table, column) {
             if (!queryEditor) return;
+            if (!column) return;
 
             const position = queryEditor.getPosition();
             const text = queryEditor.getModel().getValueInRange({
@@ -575,6 +621,34 @@
             }]);
 
             queryEditor.focus();
+        }
+
+        async function loadIntegrations() {
+            try {
+                const response = await fetch('/api/integrations');
+                const payload = await response.json();
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Failed to load integrations');
+                }
+                const dbIntegrations = (Array.isArray(payload) ? payload : [])
+                    .filter(item => String(item.type || '').toLowerCase() === 'database')
+                    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+
+                integrationSelect.innerHTML = '<option value="">Select Database Datasource</option>';
+                dbIntegrations.forEach(item => {
+                    const opt = document.createElement('option');
+                    opt.value = item.name;
+                    opt.textContent = item.name;
+                    integrationSelect.appendChild(opt);
+                });
+
+                if (dbIntegrations.length === 0) {
+                    document.getElementById('schemaTree').innerHTML = '<div class="text-gray-500 text-sm">No database integrations found</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load integrations:', error);
+                showStatus('Failed to load integrations', 'error');
+            }
         }
 
         async function loadSavedQueryOptions(selectedId = '') {
@@ -1263,6 +1337,7 @@
         // Initialize
         initPerformanceChart();
         renderHistory();
+        loadIntegrations();
         loadSavedQueryOptions();
         loadQueryHistory();
     </script>

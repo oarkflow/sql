@@ -110,7 +110,7 @@ type ValidationResponse struct {
 }
 
 type SchemaResponse struct {
-	Tables  []string                        `json:"tables"`
+	Tables  []string                 `json:"tables"`
 	Columns map[string][]utils.Field `json:"columns"`
 }
 

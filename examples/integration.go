@@ -7,6 +7,7 @@ import (
 
 	"github.com/oarkflow/log"
 	"github.com/oarkflow/mail"
+	"github.com/oarkflow/sql"
 
 	"github.com/oarkflow/sql/integrations"
 )
@@ -22,7 +23,10 @@ func main() {
 		panic(err)
 	}
 	service := "prod-database"
-	query := "SELECT * FROM users"
+	query := `
+	-- integration: prod-database
+	SELECT * FROM users
+	`
 	resp, err := manager.Execute(ctx, service, query)
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
@@ -30,7 +34,8 @@ func main() {
 		logger.Info().Str("service", service).Msg("Service executed successfully")
 	}
 	fmt.Println(resp)
-	fmt.Println(manager.ListDatabaseTableColumns(ctx, service, "users"))
+	sql.RegisterUserManager(ctx, manager)
+	fmt.Println(sql.Query(ctx, query))
 }
 
 func testServices(ctx context.Context, manager *integrations.Manager) {

@@ -13,6 +13,7 @@ import (
 	"github.com/oarkflow/convert"
 	"github.com/oarkflow/log"
 
+	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/utils"
 )
 
@@ -31,6 +32,7 @@ var tableCacheMu sync.Mutex
 
 var likeRegexCache = make(map[string]*regexp.Regexp)
 var likeRegexCacheMu sync.RWMutex
+var runtimeIntegrationDirectivePattern = regexp.MustCompile(`(?i)^\s*--\s*integration\s*:\s*([-A-Za-z0-9_]+)\s*;?\s*$`)
 
 func compileLikeRegex(pattern string) (*regexp.Regexp, error) {
 	likeRegexCacheMu.RLock()
@@ -79,12 +81,58 @@ func sqlLikeMatch(s, pattern string) bool {
 	return re.MatchString(s)
 }
 
-func Query(ctx context.Context, query string) ([]utils.Record, error) {
+func Query(ctx context.Context, query string, mgr ...*integrations.Manager) ([]utils.Record, error) {
 	cfg := effectiveRuntimeConfig(ctx)
 	ctx, cancel := withQueryTimeout(ctx, cfg)
 	defer cancel()
 
 	start := time.Now()
+	integrationName, strippedQuery := parseRuntimeIntegrationDirective(query)
+	if integrationName != "" {
+		strippedQuery = strings.TrimSpace(strippedQuery)
+		if strippedQuery == "" {
+			return nil, &SQLError{
+				Code:    ErrCodeInput,
+				Message: "integration query cannot be empty",
+			}
+		}
+		manager := getManager(ctx)
+		if len(mgr) > 0 {
+			manager = mgr[0]
+		}
+		result, err := manager.ExecuteDatabaseQuery(ctx, integrationName, strippedQuery)
+		if err != nil {
+			if ctxErr := wrapContextErr(ctx.Err()); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, &SQLError{
+				Code:    ErrCodeExecution,
+				Message: "integration query execution failed",
+				Cause:   err,
+			}
+		}
+		records, convErr := normalizeIntegrationRecords(result)
+		if convErr != nil {
+			return nil, &SQLError{
+				Code:    ErrCodeExecution,
+				Message: "integration query returned unsupported result",
+				Cause:   convErr,
+			}
+		}
+		records = capRows(records, cfg)
+		latency := time.Since(start)
+		userID := ctx.Value("user_id")
+		if userID == nil || !cfg.LogQueryExecution {
+			return records, nil
+		}
+		log.Info().
+			Any("user_id", userID).
+			Str("integration", integrationName).
+			Str("latency", fmt.Sprintf("%s", latency)).
+			Msg("Executed integration query")
+		return records, nil
+	}
+
 	lexer := NewLexer(query)
 	parser := NewParserWithRuntimeConfig(lexer, cfg)
 	program := parser.ParseQueryStatement()
@@ -118,6 +166,49 @@ func Query(ctx context.Context, query string) ([]utils.Record, error) {
 	}
 	log.Info().Any("user_id", userID).Str("latency", fmt.Sprintf("%s", latency)).Msg("Executed query")
 	return records, nil
+}
+
+func parseRuntimeIntegrationDirective(query string) (string, string) {
+	integration, cleaned := parseRuntimeIntegrationDirectiveLines(query)
+	if integration != "" {
+		return integration, cleaned
+	}
+	// Support inline escaped newline variant:
+	// "-- integration: service;\\nSELECT * FROM table"
+	if strings.Contains(query, `\n`) {
+		normalized := strings.ReplaceAll(query, `\r\n`, "\n")
+		normalized = strings.ReplaceAll(normalized, `\n`, "\n")
+		integration, cleaned = parseRuntimeIntegrationDirectiveLines(normalized)
+		if integration != "" {
+			return integration, cleaned
+		}
+	}
+	return "", query
+}
+
+func parseRuntimeIntegrationDirectiveLines(query string) (string, string) {
+	lines := strings.Split(query, "\n")
+	for idx, line := range lines {
+		matches := runtimeIntegrationDirectivePattern.FindStringSubmatch(line)
+		if len(matches) != 2 {
+			continue
+		}
+		integration := strings.TrimSpace(matches[1])
+		lines = append(lines[:idx], lines[idx+1:]...)
+		return integration, strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return "", query
+}
+
+func normalizeIntegrationRecords(result any) ([]utils.Record, error) {
+	switch val := result.(type) {
+	case []map[string]any:
+		return val, nil
+	case map[string]any:
+		return []utils.Record{val}, nil
+	default:
+		return nil, fmt.Errorf("unsupported integration result type %T", result)
+	}
 }
 
 type QueryStatement struct {
