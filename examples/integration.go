@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"time"
 
 	"github.com/oarkflow/log"
 	"github.com/oarkflow/mail"
@@ -22,29 +21,16 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	service := "sms-service"
-	resp, err := manager.Execute(ctx, service, integrations.SMSPayload{
-		To:      "9779856034616",
-		From:    "9832497",
-		Message: "This is a test message",
-	})
+	service := "prod-database"
+	query := "SELECT * FROM users"
+	resp, err := manager.Execute(ctx, service, query)
 	if err != nil {
 		logger.Error().Err(err).Str("service", service).Msg("Service execution failed")
 	} else {
 		logger.Info().Str("service", service).Msg("Service executed successfully")
 	}
-	switch resp := resp.(type) {
-	case *integrations.ServiceResponse:
-		fmt.Println(string(resp.Body))
-		for header, content := range resp.Headers {
-			fmt.Println(fmt.Sprintf("%s: %v", header, content))
-		}
-		fmt.Println(resp.StatusCode)
-	default:
-		fmt.Println(resp)
-	}
-	time.Sleep(20 * time.Second)
-	// testServices(ctx, manager)
+	fmt.Println(resp)
+	fmt.Println(manager.ListDatabaseTableColumns(ctx, service, "users"))
 }
 
 func testServices(ctx context.Context, manager *integrations.Manager) {

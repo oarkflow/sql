@@ -28,6 +28,7 @@ import (
 	"github.com/oarkflow/sql/integrations"
 	"github.com/oarkflow/sql/pkg/config"
 	"github.com/oarkflow/sql/pkg/storage"
+	"github.com/oarkflow/sql/pkg/utils"
 )
 
 type Config struct {
@@ -109,8 +110,8 @@ type ValidationResponse struct {
 }
 
 type SchemaResponse struct {
-	Tables  []string            `json:"tables"`
-	Columns map[string][]string `json:"columns"`
+	Tables  []string                        `json:"tables"`
+	Columns map[string][]utils.Field `json:"columns"`
 }
 
 type QueryHistoryEntry struct {
@@ -1006,23 +1007,36 @@ func (s *Server) validateQueryHandler(c fiber.Ctx) error {
 }
 
 func (s *Server) getSchemaHandler(c fiber.Ctx) error {
-	if !s.config.EnableMocks {
-		return c.JSON(SchemaResponse{
-			Tables:  []string{},
-			Columns: map[string][]string{},
-		})
-	}
-	// Mock schema data
-	schema := SchemaResponse{
-		Tables: []string{"users", "orders", "products"},
-		Columns: map[string][]string{
-			"users":    {"id", "name", "email", "created_at"},
-			"orders":   {"id", "user_id", "product_id", "quantity", "order_date"},
-			"products": {"id", "name", "price", "category"},
-		},
+	integrationName := strings.TrimSpace(c.Params("integration"))
+	if integrationName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "integration is required"})
 	}
 
-	return c.JSON(schema)
+	svc, err := s.integrationManager.GetService(integrationName)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if svc.Type != integrations.ServiceTypeDB {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "schema is supported only for database integrations"})
+	}
+
+	tables, err := s.integrationManager.ListDatabaseTables(context.Background(), integrationName)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	columns := make(map[string][]utils.Field, len(tables))
+	for _, table := range tables {
+		columnList, colErr := s.integrationManager.ListDatabaseTableColumns(context.Background(), integrationName, table)
+		if colErr != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": colErr.Error()})
+		}
+		columns[table] = columnList
+	}
+
+	return c.JSON(SchemaResponse{
+		Tables:  tables,
+		Columns: columns,
+	})
 }
 
 func (s *Server) listOAuthProvidersHandler(c fiber.Ctx) error {

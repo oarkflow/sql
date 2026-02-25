@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	stdJson "encoding/json"
 	sterrors "errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,9 +27,12 @@ import (
 	"github.com/oarkflow/mail"
 	"github.com/oarkflow/smpp"
 	"github.com/oarkflow/smpp/pdu/pdufield"
+	data "github.com/oarkflow/sql/pkg/utils"
 	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/squealx/connection"
 )
+
+var dbIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_.$-]+$`)
 
 type Manager struct {
 	onSmppMessageReport func(manager *smpp.Manager, sms *smpp.Message, parts []*smpp.Part)
@@ -662,7 +668,7 @@ func (is *Manager) getHTTPClient(timeout string, insecure bool) *http.Client {
 	client := &http.Client{
 		Timeout: parseDuration(timeout),
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: insecure},
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 10,
 			IdleConnTimeout:     90 * time.Second,
@@ -1207,56 +1213,441 @@ func (is *Manager) SendSMSViaSMPP(ctx context.Context, serviceName string, messa
 }
 
 func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query string, args ...any) (any, error) {
-	service, err := is.GetService(serviceName)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty query")
+	}
+	db, cfg, err := is.getDatabaseServiceConnection(serviceName)
 	if err != nil {
 		return nil, err
 	}
-	cfg, ok := service.Config.(DatabaseConfig)
-	if !ok {
-		return nil, errors.New("invalid Database configuration")
+	start := time.Now()
+	if isReadQuery(query) {
+		dest, err := is.queryDatabaseRows(ctx, db, query, args...)
+		duration := time.Since(start)
+		if err != nil {
+			is.logger.Error().Err(err).Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Msg("Database query failed")
+			return nil, err
+		}
+		is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int("rows", len(dest)).Msg("Database query executed")
+		return dest, nil
 	}
 
-	if service.CredentialKey == "" {
-		return nil, errors.New("credentials not found")
-	}
-	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
-	if err != nil {
-		return nil, err
-	}
-	if cred.Type != CredentialTypeDatabase {
-		return nil, errors.New("credential is not for database")
-	}
-	var username, password string
-	var uok, pok bool
-	switch credentials := cred.Data.(type) {
-	case map[string]any:
-		username, uok = credentials["username"].(string)
-		password, pok = credentials["password"].(string)
-		if !(uok && pok) {
-			return nil, errors.New("credentials missing")
-		}
-	case DatabaseCredential:
-		username = credentials.Username
-		password = credentials.Password
-	}
-	db, err := is.getDBConnection(serviceName, cfg, username, password)
-	if err != nil {
-		return nil, err
-	}
-	var dest []map[string]any
-	start := time.Now()
+	var result sql.Result
 	if len(args) > 0 {
-		err = db.SelectContext(ctx, &dest, query, args...)
+		result, err = db.ExecContext(ctx, query, args...)
 	} else {
-		err = db.SelectContext(ctx, &dest, query)
+		result, err = db.ExecContext(ctx, query)
 	}
 	duration := time.Since(start)
 	if err != nil {
 		is.logger.Error().Err(err).Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Msg("Database query failed")
 		return nil, err
 	}
-	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int("rows", len(dest)).Msg("Database query executed")
-	return dest, nil
+	rowsAffected, _ := result.RowsAffected()
+	lastInsertID, _ := result.LastInsertId()
+	resp := map[string]any{
+		"rows_affected": rowsAffected,
+	}
+	if lastInsertID > 0 {
+		resp["last_insert_id"] = lastInsertID
+	}
+	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int64("rows_affected", rowsAffected).Msg("Database command executed")
+	return resp, nil
+}
+
+func (is *Manager) getDatabaseServiceConnection(serviceName string) (*squealx.DB, DatabaseConfig, error) {
+	service, err := is.GetService(serviceName)
+	if err != nil {
+		return nil, DatabaseConfig{}, err
+	}
+	cfg, ok := service.Config.(DatabaseConfig)
+	if !ok {
+		return nil, DatabaseConfig{}, errors.New("invalid Database configuration")
+	}
+	if service.CredentialKey == "" {
+		return nil, DatabaseConfig{}, errors.New("credentials not found")
+	}
+	cred, err := is.GetCredential(service.CredentialKey, service.RequireAuth)
+	if err != nil {
+		return nil, DatabaseConfig{}, err
+	}
+	if cred.Type != CredentialTypeDatabase {
+		return nil, DatabaseConfig{}, errors.New("credential is not for database")
+	}
+	var username, password string
+	switch credentials := cred.Data.(type) {
+	case map[string]any:
+		username, _ = credentials["username"].(string)
+		password, _ = credentials["password"].(string)
+	case DatabaseCredential:
+		username = credentials.Username
+		password = credentials.Password
+	case *DatabaseCredential:
+		username = credentials.Username
+		password = credentials.Password
+	default:
+		return nil, DatabaseConfig{}, errors.New("invalid database credentials")
+	}
+	if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
+		return nil, DatabaseConfig{}, errors.New("credentials missing")
+	}
+	db, err := is.getDBConnection(serviceName, cfg, username, password)
+	if err != nil {
+		return nil, DatabaseConfig{}, err
+	}
+	return db, cfg, nil
+}
+
+func isReadQuery(query string) bool {
+	trimmed := strings.TrimLeft(query, " \t\r\n(")
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "select") ||
+		strings.HasPrefix(lower, "with") ||
+		strings.HasPrefix(lower, "show") ||
+		strings.HasPrefix(lower, "describe") ||
+		strings.HasPrefix(lower, "desc") ||
+		strings.HasPrefix(lower, "pragma") ||
+		strings.HasPrefix(lower, "explain")
+}
+
+func normalizeDBValue(v any) any {
+	switch data := v.(type) {
+	case []byte:
+		return string(data)
+	default:
+		return v
+	}
+}
+
+func (is *Manager) queryDatabaseRows(ctx context.Context, db *squealx.DB, query string, args ...any) ([]map[string]any, error) {
+	var rows squealx.SQLRows
+	var err error
+	if len(args) > 0 {
+		rows, err = db.QueryContext(ctx, query, args...)
+	} else {
+		rows, err = db.QueryContext(ctx, query)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	records := make([]map[string]any, 0)
+	if len(cols) == 0 {
+		return records, nil
+	}
+
+	values := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+
+	for rows.Next() {
+		if err = rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			row[col] = normalizeDBValue(values[i])
+		}
+		records = append(records, row)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (is *Manager) ListDatabaseTables(ctx context.Context, serviceName string) ([]string, error) {
+	_, cfg, err := is.getDatabaseServiceConnection(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	query := databaseTableListQuery(cfg.Driver)
+	if query == "" {
+		return nil, fmt.Errorf("unsupported database driver for schema listing: %s", cfg.Driver)
+	}
+	result, err := is.ExecuteDatabaseQuery(ctx, serviceName, query)
+	if err != nil {
+		return nil, err
+	}
+	records, ok := result.([]map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected table list response type: %T", result)
+	}
+	tables := make([]string, 0, len(records))
+	for _, rec := range records {
+		tbl := strings.TrimSpace(fmt.Sprint(rec["table_name"]))
+		if tbl == "" || tbl == "<nil>" {
+			continue
+		}
+		tables = append(tables, tbl)
+	}
+	return tables, nil
+}
+
+func (is *Manager) ListDatabaseTableColumns(ctx context.Context, serviceName, tableName string) ([]data.Field, error) {
+	tableName = strings.TrimSpace(tableName)
+	if !dbIdentifierPattern.MatchString(tableName) {
+		return nil, fmt.Errorf("invalid table name: %s", tableName)
+	}
+	_, cfg, err := is.getDatabaseServiceConnection(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	query := databaseColumnListQuery(cfg.Driver, cfg.Database, tableName)
+	if query == "" {
+		return nil, fmt.Errorf("unsupported database driver for schema listing: %s", cfg.Driver)
+	}
+	result, err := is.ExecuteDatabaseQuery(ctx, serviceName, query)
+	if err != nil {
+		return nil, err
+	}
+	records, ok := result.([]map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected column list response type: %T", result)
+	}
+	fields := make([]data.Field, 0, len(records))
+	for _, rec := range records {
+		field := data.Field{
+			Name:       asString(rec["name"]),
+			OldName:    asString(rec["old_name"]),
+			Key:        strings.ToUpper(asString(rec["key"])),
+			IsNullable: strings.ToUpper(asString(rec["is_nullable"])),
+			DataType:   strings.ToLower(asString(rec["type"])),
+			Comment:    asString(rec["comment"]),
+			Default:    rec["default"],
+			Extra:      asString(rec["extra"]),
+			Length:     asInt(rec["length"]),
+			Precision:  asInt(rec["precision"]),
+			Scale:      asInt(rec["scale"]),
+		}
+		if field.IsNullable == "" {
+			field.IsNullable = "YES"
+		}
+		if field.DataType == "" {
+			field.DataType = strings.ToLower(asString(rec["data_type"]))
+		}
+		if def, ok := field.Default.(string); ok {
+			field.Default = normalizeDefaultValue(def)
+		}
+		// SQLite PRAGMA returns raw type (e.g. varchar(255)); normalize to base+length/precision
+		if strings.EqualFold(cfg.Driver, "sqlite") || strings.EqualFold(cfg.Driver, "sqlite3") {
+			baseType, length, precision, scale := parseDataTypeWithParameters(field.DataType)
+			if baseType != "" {
+				field.DataType = baseType
+			}
+			if field.Length == 0 {
+				field.Length = length
+			}
+			if field.Precision == 0 {
+				field.Precision = precision
+			}
+			if field.Scale == 0 {
+				field.Scale = scale
+			}
+		}
+		fields = append(fields, field)
+	}
+	return fields, nil
+}
+
+func databaseTableListQuery(driver string) string {
+	switch strings.ToLower(strings.TrimSpace(driver)) {
+	case "postgres", "pgx", "postgresql", "cockroach", "cockroachdb":
+		return "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name"
+	case "mysql", "mariadb":
+		return "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name"
+	case "sqlite", "sqlite3":
+		return "SELECT name AS table_name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+	default:
+		return ""
+	}
+}
+
+func databaseColumnListQuery(driver, databaseName, tableName string) string {
+	escapedDB := strings.ReplaceAll(databaseName, "'", "''")
+	escapedTable := strings.ReplaceAll(tableName, "'", "''")
+	switch strings.ToLower(strings.TrimSpace(driver)) {
+	case "postgres", "pgx", "postgresql", "cockroach", "cockroachdb":
+		return fmt.Sprintf(`
+SELECT
+	c.column_name AS name,
+	'' AS old_name,
+	COALESCE(k.column_key, '') AS key,
+	c.is_nullable AS is_nullable,
+	c.data_type AS type,
+	COALESCE(c.numeric_precision, c.character_maximum_length, 0) AS length,
+	COALESCE(c.numeric_precision, 0) AS precision,
+	COALESCE(c.numeric_scale, 0) AS scale,
+	COALESCE(cm.comment, '') AS comment,
+	c.column_default AS "default",
+	'' AS extra
+FROM information_schema.columns c
+LEFT JOIN (
+	SELECT
+		kcu.table_name,
+		kcu.column_name,
+		CASE WHEN tco.constraint_type = 'PRIMARY KEY' THEN 'PRI' ELSE '' END AS column_key
+	FROM information_schema.table_constraints tco
+	JOIN information_schema.key_column_usage kcu
+		ON kcu.constraint_name = tco.constraint_name
+		AND kcu.constraint_schema = tco.constraint_schema
+	WHERE tco.constraint_type = 'PRIMARY KEY'
+		AND kcu.table_catalog = '%s'
+		AND kcu.table_schema = 'public'
+		AND kcu.table_name = '%s'
+) k ON k.table_name = c.table_name AND k.column_name = c.column_name
+LEFT JOIN (
+	SELECT
+		c.table_name,
+		c.column_name,
+		pgd.description AS comment
+	FROM pg_catalog.pg_statio_all_tables st
+	INNER JOIN pg_catalog.pg_description pgd
+		ON pgd.objoid = st.relid
+	INNER JOIN information_schema.columns c
+		ON pgd.objsubid = c.ordinal_position
+		AND c.table_schema = st.schemaname
+		AND c.table_name = st.relname
+	WHERE c.table_catalog = '%s'
+		AND c.table_schema = 'public'
+		AND c.table_name = '%s'
+) cm ON cm.table_name = c.table_name AND cm.column_name = c.column_name
+WHERE c.table_catalog = '%s'
+	AND c.table_schema = 'public'
+	AND c.table_name = '%s'
+ORDER BY c.ordinal_position`, escapedDB, escapedTable, escapedDB, escapedTable, escapedDB, escapedTable)
+	case "mysql", "mariadb":
+		return fmt.Sprintf(`
+SELECT
+	column_name AS name,
+	'' AS old_name,
+	column_key AS key,
+	is_nullable AS is_nullable,
+	data_type AS type,
+	COALESCE(numeric_precision, character_maximum_length, 0) AS length,
+	COALESCE(numeric_precision, 0) AS precision,
+	COALESCE(numeric_scale, 0) AS scale,
+	COALESCE(column_comment, '') AS comment,
+	column_default AS "default",
+	extra AS extra
+FROM information_schema.columns
+WHERE table_name = '%s' AND table_schema = DATABASE()
+ORDER BY ordinal_position`, escapedTable)
+	case "sqlite", "sqlite3":
+		return fmt.Sprintf(`
+SELECT
+	name AS name,
+	'' AS old_name,
+	CASE WHEN pk = 1 THEN 'PRI' ELSE '' END AS key,
+	CASE WHEN "notnull" = 1 THEN 'NO' ELSE 'YES' END AS is_nullable,
+	type AS type,
+	0 AS length,
+	0 AS precision,
+	0 AS scale,
+	'' AS comment,
+	dflt_value AS "default",
+	'' AS extra
+FROM pragma_table_info('%s')`, escapedTable)
+	default:
+		return ""
+	}
+}
+
+func asString(v any) string {
+	if v == nil {
+		return ""
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "<nil>" {
+		return ""
+	}
+	return s
+}
+
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int8:
+		return int(n)
+	case int16:
+		return int(n)
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case uint:
+		return int(n)
+	case uint8:
+		return int(n)
+	case uint16:
+		return int(n)
+	case uint32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float32:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		val := strings.TrimSpace(n)
+		if val == "" {
+			return 0
+		}
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0
+		}
+		return i
+	default:
+		return 0
+	}
+}
+
+func normalizeDefaultValue(v string) any {
+	def := strings.TrimSpace(v)
+	if len(def) > 1 && strings.HasPrefix(def, "'") && strings.HasSuffix(def, "'") {
+		return def[1 : len(def)-1]
+	}
+	return def
+}
+
+func parseDataTypeWithParameters(rawType string) (baseType string, length int, precision int, scale int) {
+	typeText := strings.ToLower(strings.TrimSpace(rawType))
+	if typeText == "" {
+		return "", 0, 0, 0
+	}
+	start := strings.Index(typeText, "(")
+	end := strings.LastIndex(typeText, ")")
+	if start == -1 || end <= start {
+		return typeText, 0, 0, 0
+	}
+	baseType = strings.TrimSpace(typeText[:start])
+	inside := strings.TrimSpace(typeText[start+1 : end])
+	if inside == "" {
+		return baseType, 0, 0, 0
+	}
+	parts := strings.Split(inside, ",")
+	if len(parts) == 1 {
+		length = asInt(strings.TrimSpace(parts[0]))
+		precision = length
+		return baseType, length, precision, 0
+	}
+	precision = asInt(strings.TrimSpace(parts[0]))
+	scale = asInt(strings.TrimSpace(parts[1]))
+	return baseType, 0, precision, scale
 }
 
 func refreshOAuth2Token(auth *OAuth2Credential, logger *log.Logger) error {
