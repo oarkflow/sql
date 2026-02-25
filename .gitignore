@@ -36,3 +36,5 @@ dist
 .qodo
 .history
 node_modules
+.gomodcache
+.gocache

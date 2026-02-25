@@ -4,24 +4,24 @@ go 1.26.0
 
 require (
 	github.com/dgraph-io/ristretto v0.2.0
-	github.com/gofiber/fiber/v3 v3.0.0
-	github.com/gofrs/flock v0.12.1
-	github.com/oarkflow/bcl v0.0.12
+	github.com/gofiber/fiber/v3 v3.1.0
+	github.com/gofrs/flock v0.13.0
+	github.com/oarkflow/bcl v0.0.14
 	github.com/oarkflow/convert v0.0.5
 	github.com/oarkflow/dipper v0.0.6
 	github.com/oarkflow/errors v0.0.6
 	github.com/oarkflow/expr v0.0.11
 	github.com/oarkflow/json v0.0.28
-	github.com/oarkflow/log v1.0.83
+	github.com/oarkflow/log v1.0.84
 	github.com/oarkflow/mail v0.0.1
 	github.com/oarkflow/smpp v0.0.0-20250417104228-617852c4b611
-	github.com/oarkflow/squealx v0.0.56
-	github.com/oarkflow/xid v1.2.8
+	github.com/oarkflow/squealx v0.0.68
+	github.com/oarkflow/xid v1.2.9
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/urfave/cli/v2 v2.27.7
 	go.mongodb.org/mongo-driver v1.17.4
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.39.0
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -32,20 +32,20 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/goccy/go-reflect v1.2.0 // indirect
-	github.com/gofiber/schema v1.6.0 // indirect
-	github.com/gofiber/utils/v2 v2.0.0 // indirect
+	github.com/gofiber/schema v1.7.0 // indirect
+	github.com/gofiber/utils/v2 v2.0.2 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.6 // indirect
+	github.com/jackc/pgx/v5 v5.8.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/microsoft/go-mssqldb v1.9.3 // indirect
+	github.com/microsoft/go-mssqldb v1.9.6 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
-	github.com/ncruces/go-strftime v0.1.9 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oarkflow/date v0.0.4 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/render v0.0.1 // indirect
@@ -54,6 +54,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/toorop/go-dkim v0.0.0-20250226130143-9025cce95817 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
@@ -62,23 +63,23 @@ require (
 	github.com/xhit/go-simple-mail/v2 v2.16.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
-	golang.org/x/time v0.13.0 // indirect
-	modernc.org/libc v1.66.9 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
+	modernc.org/libc v1.68.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/PuerkitoBio/goquery v1.10.3
+	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/oarkflow/transaction v0.0.0-20250327101433-368978da8f5a
@@ -86,5 +87,5 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 )

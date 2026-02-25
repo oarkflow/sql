@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/logger"
+	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/google/uuid"
 	"github.com/oarkflow/sql"
 	"github.com/oarkflow/sql/etl"
@@ -166,6 +168,9 @@ type oauthSession struct {
 }
 
 const oauthSessionTTL = 10 * time.Minute
+
+var readSourcePattern = regexp.MustCompile(`(?i)\bread_[a-z0-9_]*\s*\(`)
+var integrationDirectivePattern = regexp.MustCompile(`(?i)^\s*--\s*integration\s*:\s*([-A-Za-z0-9_]+)\s*;?\s*$`)
 
 type ExecuteConfigRequest struct {
 	Config string `json:"config"`
@@ -449,6 +454,20 @@ func normalizeIntegrationName(name string) string {
 	return strings.TrimSpace(name)
 }
 
+func normalizeServiceConfig(svc integrations.Service) (integrations.Service, error) {
+	raw, err := json.Marshal(svc)
+	if err != nil {
+		return integrations.Service{}, err
+	}
+	var normalized integrations.Service
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return integrations.Service{}, err
+	}
+	normalized.CreatedAt = svc.CreatedAt
+	normalized.UpdatedAt = svc.UpdatedAt
+	return normalized, nil
+}
+
 func (s *Server) serviceFromPayload(payload integrationPayload, existing *integrations.Service) (integrations.Service, *integrations.Credential, error) {
 	svc := integrations.Service{}
 	if existing != nil {
@@ -500,9 +519,14 @@ func (s *Server) serviceFromPayload(payload integrationPayload, existing *integr
 		svc.CredentialKey = ""
 	}
 
-	if err := integrations.UnmarshalService(&svc); err != nil {
+	normalized, err := normalizeServiceConfig(svc)
+	if err != nil {
 		return svc, nil, err
 	}
+	if err := normalized.Validate(); err != nil {
+		return svc, nil, err
+	}
+	svc = normalized
 
 	return svc, cred, nil
 }
@@ -756,7 +780,7 @@ func (s *Server) setupRoutes() {
 	s.app.Get("/etls/:id/metrics", s.getETLMetricsHandler)
 
 	// Serve static files
-	s.app.Static("/", s.config.StaticPath)
+	s.app.Get("/*", static.New(s.config.StaticPath))
 }
 
 func (s *Server) healthHandler(c fiber.Ctx) error {
@@ -767,19 +791,97 @@ func (s *Server) healthHandler(c fiber.Ctx) error {
 	})
 }
 
+func (s *Server) shouldExecuteRawDatabaseQuery(integrationName, query string) (bool, error) {
+	if strings.TrimSpace(integrationName) == "" || strings.TrimSpace(query) == "" {
+		return false, nil
+	}
+	// Keep SQL runtime behavior for virtual/adapter data source functions.
+	if readSourcePattern.MatchString(query) {
+		return false, nil
+	}
+	svc, err := s.integrationManager.GetService(strings.TrimSpace(integrationName))
+	if err != nil {
+		return false, fmt.Errorf("integration %q not found", integrationName)
+	}
+	if svc.Type == integrations.ServiceTypeDB {
+		return true, nil
+	}
+	return false, errors.New("raw SQL queries are supported only for database integrations")
+}
+
+func integrationResultToRecords(result any) ([]map[string]any, error) {
+	switch val := result.(type) {
+	case []map[string]any:
+		return val, nil
+	case map[string]any:
+		return []map[string]any{val}, nil
+	default:
+		return nil, fmt.Errorf("database integration returned unsupported result type %T", result)
+	}
+}
+
+func parseIntegrationDirective(query string) (string, string) {
+	lines := strings.Split(query, "\n")
+	for idx, line := range lines {
+		matches := integrationDirectivePattern.FindStringSubmatch(line)
+		if len(matches) != 2 {
+			continue
+		}
+		integration := strings.TrimSpace(matches[1])
+		lines = append(lines[:idx], lines[idx+1:]...)
+		return integration, strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return "", query
+}
+
+func resolveQueryIntegration(req QueryRequest) (integration string, query string, err error) {
+	integration = strings.TrimSpace(req.Integration)
+	directiveIntegration, cleanedQuery := parseIntegrationDirective(req.Query)
+	if directiveIntegration != "" {
+		if integration != "" && !strings.EqualFold(integration, directiveIntegration) {
+			return "", "", fmt.Errorf("integration conflict: request integration %q does not match query directive %q", integration, directiveIntegration)
+		}
+		integration = directiveIntegration
+		query = cleanedQuery
+	} else {
+		query = req.Query
+	}
+	return integration, query, nil
+}
+
 func (s *Server) executeQueryHandler(c fiber.Ctx) error {
 	var req QueryRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if strings.TrimSpace(req.Query) == "" {
+	integrationName, resolvedQuery, resolveErr := resolveQueryIntegration(req)
+	if resolveErr != nil {
+		return c.Status(400).JSON(fiber.Map{"error": resolveErr.Error()})
+	}
+
+	if strings.TrimSpace(resolvedQuery) == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Query cannot be empty"})
 	}
 
 	ctx := context.Background()
 	start := time.Now()
-	records, err := sql.Query(ctx, req.Query)
+	useRawDB, checkErr := s.shouldExecuteRawDatabaseQuery(integrationName, resolvedQuery)
+	if checkErr != nil {
+		return c.Status(400).JSON(fiber.Map{"error": checkErr.Error()})
+	}
+
+	var records []map[string]any
+	var err error
+	if useRawDB {
+		var dbResult any
+		dbResult, err = s.integrationManager.ExecuteDatabaseQuery(ctx, integrationName, resolvedQuery)
+		if err == nil {
+			records, err = integrationResultToRecords(dbResult)
+		}
+	} else {
+		records, err = sql.Query(ctx, resolvedQuery)
+	}
 	executionTime := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
@@ -787,7 +889,7 @@ func (s *Server) executeQueryHandler(c fiber.Ctx) error {
 			if _, histErr := s.store.RecordQueryHistory(ctx, storage.QueryHistoryRecord{
 				QueryID:       req.SavedQueryID,
 				Query:         req.Query,
-				Integration:   req.Integration,
+				Integration:   integrationName,
 				ExecutionTime: executionTime,
 				Success:       false,
 				Error:         err.Error(),
@@ -832,7 +934,7 @@ func (s *Server) executeQueryHandler(c fiber.Ctx) error {
 		if _, histErr := s.store.RecordQueryHistory(ctx, storage.QueryHistoryRecord{
 			QueryID:       req.SavedQueryID,
 			Query:         req.Query,
-			Integration:   req.Integration,
+			Integration:   integrationName,
 			RowCount:      response.RowCount,
 			ExecutionTime: executionTime,
 			Success:       true,
@@ -850,8 +952,36 @@ func (s *Server) validateQueryHandler(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	// Basic validation - try to parse the query
-	lexer := sql.NewLexer(req.Query)
+	integrationName, resolvedQuery, resolveErr := resolveQueryIntegration(req)
+	if resolveErr != nil {
+		return c.JSON(ValidationResponse{
+			Valid:       false,
+			Errors:      []string{resolveErr.Error()},
+			Suggestions: []string{"Use only one integration definition, either request field or -- integration: directive"},
+		})
+	}
+
+	if strings.TrimSpace(resolvedQuery) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Query cannot be empty"})
+	}
+
+	// Raw database integration queries are validated by the target DB on execution.
+	useRawDB, checkErr := s.shouldExecuteRawDatabaseQuery(integrationName, resolvedQuery)
+	if checkErr != nil {
+		return c.JSON(ValidationResponse{
+			Valid:       false,
+			Errors:      []string{checkErr.Error()},
+			Suggestions: []string{"Select an existing integration or remove integration for SQL runtime queries"},
+		})
+	}
+	if useRawDB {
+		return c.JSON(ValidationResponse{
+			Valid: true,
+		})
+	}
+
+	// SQL runtime validation - parse the query.
+	lexer := sql.NewLexer(resolvedQuery)
 	parser := sql.NewParser(lexer)
 	parser.ParseQueryStatement()
 

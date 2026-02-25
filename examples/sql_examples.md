@@ -1,5 +1,37 @@
 # SQL Expression Examples
 
+## Raw SQL With Database Integration Only
+Use this when the selected integration is a `database` service. In this mode, SQL is sent directly to the database and does not require `read_service(...)` or `read_file(...)`.
+
+```json
+POST /api/query
+{
+  "integration": "billing_db",
+  "query": "SELECT id, total_amount FROM invoices WHERE status = 'open' ORDER BY created_at DESC LIMIT 50"
+}
+```
+
+If `integration` is not a database service type, raw SQL is rejected. For non-database integrations, continue using runtime source functions like `read_service(...)` / `read_file(...)`.
+
+You can also define integration in the SQL itself:
+
+```sql
+-- integration: billing_db
+SELECT id, total_amount
+FROM invoices
+WHERE status = 'open'
+ORDER BY created_at DESC
+LIMIT 50
+```
+
+Or send it in JSON query text:
+
+```json
+{
+  "query": "-- integration: billing_db; \nSELECT id, total_amount FROM invoices WHERE status = 'open' ORDER BY created_at DESC LIMIT 50"
+}
+```
+
 ## Basic SELECT
 ```sql
 SELECT * FROM read_service('my_table');

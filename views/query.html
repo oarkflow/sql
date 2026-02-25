@@ -115,7 +115,7 @@
                             <!-- Fallback textarea in case Monaco fails to load -->
                             <textarea id="queryEditorFallback" rows="15"
                                 style="display: none; width: 100%; font-family: 'Courier New', monospace; font-size: 14px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;"
-                                placeholder="SELECT * FROM read_file('users.csv') LIMIT 10"></textarea>
+                                placeholder="SELECT * FROM your_table LIMIT 10"></textarea>
                         </div>
 
                         <!-- Query Tabs -->
@@ -330,7 +330,7 @@
                 });
 
                 queryEditor = monaco.editor.create(document.getElementById('queryEditor'), {
-                    value: 'SELECT * FROM read_file(\'users.csv\') LIMIT 10',
+                    value: 'SELECT * FROM your_table LIMIT 10',
                     language: 'sql',
                     theme: 'vs',
                     minimap: { enabled: false },
@@ -418,6 +418,13 @@
                                     range: range
                                 },
                                 {
+                                    label: 'Raw SELECT',
+                                    kind: monaco.languages.CompletionItemKind.Snippet,
+                                    insertText: 'SELECT ${1:*} FROM ${2:table_name} LIMIT ${3:100};',
+                                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                    range: range
+                                },
+                                {
                                     label: 'read_file',
                                     kind: monaco.languages.CompletionItemKind.Function,
                                     insertText: 'read_file(\'${1:filename}\')',
@@ -437,7 +444,7 @@
                 // Show fallback textarea
                 document.getElementById('queryEditor').style.display = 'none';
                 document.getElementById('queryEditorFallback').style.display = 'block';
-                document.getElementById('queryEditorFallback').value = 'SELECT * FROM read_file(\'users.csv\') LIMIT 10';
+                document.getElementById('queryEditorFallback').value = 'SELECT * FROM your_table LIMIT 10';
 
                 // Update functions to work with textarea
                 queryEditor = {
@@ -755,8 +762,9 @@
             const query = queryEditor.getValue();
             const integration = integrationSelect.value;
 
-            if (!integration) {
-                showStatus('Please select an integration', 'error');
+            const hasDirective = /^\s*--\s*integration\s*:\s*[-A-Za-z0-9_]+\s*;?\s*$/im.test(query || '');
+            if (!integration && !hasDirective) {
+                showStatus('Select an integration or add "-- integration: <name>" in the query', 'error');
                 return;
             }
 
@@ -927,6 +935,7 @@
             if (!queryEditor) return;
 
             const query = queryEditor.getValue();
+            const integration = integrationSelect.value;
 
             if (!query.trim()) {
                 showStatus('Query cannot be empty', 'error');
@@ -941,7 +950,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ query })
+                    body: JSON.stringify({ query, integration })
                 });
 
                 const result = await response.json();
