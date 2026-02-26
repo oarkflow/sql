@@ -966,7 +966,7 @@ func (s *Server) validateQueryHandler(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Query cannot be empty"})
 	}
 
-	// Raw database integration queries are validated by the target DB on execution.
+	// Raw database integration queries are prevalidated by integration access rules.
 	useRawDB, checkErr := s.shouldExecuteRawDatabaseQuery(integrationName, resolvedQuery)
 	if checkErr != nil {
 		return c.JSON(ValidationResponse{
@@ -976,6 +976,13 @@ func (s *Server) validateQueryHandler(c fiber.Ctx) error {
 		})
 	}
 	if useRawDB {
+		if err := s.integrationManager.ValidateDatabaseQuery(integrationName, resolvedQuery); err != nil {
+			return c.JSON(ValidationResponse{
+				Valid:       false,
+				Errors:      []string{err.Error()},
+				Suggestions: []string{"Update table/field whitelist and denylist, or adjust the query to use only allowed tables and fields"},
+			})
+		}
 		return c.JSON(ValidationResponse{
 			Valid: true,
 		})

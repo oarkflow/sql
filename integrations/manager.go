@@ -1221,14 +1221,22 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	if err != nil {
 		return nil, err
 	}
+	accessControl := newDBAccessControl(cfg)
+	readQuery := isReadQuery(query)
+	if err := accessControl.validateQuery(query, !readQuery); err != nil {
+		return nil, err
+	}
+	analysis := analyzeQueryAccess(query)
+	tableHint := singleTableHint(analysis.Tables)
 	start := time.Now()
-	if isReadQuery(query) {
+	if readQuery {
 		dest, err := is.queryDatabaseRows(ctx, db, query, args...)
 		duration := time.Since(start)
 		if err != nil {
 			is.logger.Error().Err(err).Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Msg("Database query failed")
 			return nil, err
 		}
+		dest = accessControl.filterRows(dest, tableHint)
 		is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int("rows", len(dest)).Msg("Database query executed")
 		return dest, nil
 	}
@@ -1254,6 +1262,25 @@ func (is *Manager) ExecuteDatabaseQuery(ctx context.Context, serviceName, query 
 	}
 	is.logger.Info().Str("service_name", serviceName).Str("driver", cfg.Driver).Dur("duration", duration).Int64("rows_affected", rowsAffected).Msg("Database command executed")
 	return resp, nil
+}
+
+func (is *Manager) ValidateDatabaseQuery(serviceName, query string) error {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return errors.New("empty query")
+	}
+	service, err := is.GetService(serviceName)
+	if err != nil {
+		return err
+	}
+	if service.Type != ServiceTypeDB {
+		return fmt.Errorf("service %s is not a database integration", serviceName)
+	}
+	cfg, err := convertPayload[DatabaseConfig](service.Config)
+	if err != nil {
+		return fmt.Errorf("invalid Database configuration: %w", err)
+	}
+	return newDBAccessControl(cfg).validateQuery(query, !isReadQuery(query))
 }
 
 func (is *Manager) getDatabaseServiceConnection(serviceName string) (*squealx.DB, DatabaseConfig, error) {
@@ -1368,26 +1395,26 @@ func (is *Manager) queryDatabaseRows(ctx context.Context, db *squealx.DB, query 
 }
 
 func (is *Manager) ListDatabaseTables(ctx context.Context, serviceName string) ([]string, error) {
-	_, cfg, err := is.getDatabaseServiceConnection(serviceName)
+	db, cfg, err := is.getDatabaseServiceConnection(serviceName)
 	if err != nil {
 		return nil, err
 	}
+	accessControl := newDBAccessControl(cfg)
 	query := databaseTableListQuery(cfg.Driver)
 	if query == "" {
 		return nil, fmt.Errorf("unsupported database driver for schema listing: %s", cfg.Driver)
 	}
-	result, err := is.ExecuteDatabaseQuery(ctx, serviceName, query)
+	records, err := is.queryDatabaseRows(ctx, db, query)
 	if err != nil {
 		return nil, err
-	}
-	records, ok := result.([]map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected table list response type: %T", result)
 	}
 	tables := make([]string, 0, len(records))
 	for _, rec := range records {
 		tbl := strings.TrimSpace(fmt.Sprint(rec["table_name"]))
 		if tbl == "" || tbl == "<nil>" {
+			continue
+		}
+		if !accessControl.tableAllowed(tbl) {
 			continue
 		}
 		tables = append(tables, tbl)
@@ -1400,21 +1427,21 @@ func (is *Manager) ListDatabaseTableColumns(ctx context.Context, serviceName, ta
 	if !dbIdentifierPattern.MatchString(tableName) {
 		return nil, fmt.Errorf("invalid table name: %s", tableName)
 	}
-	_, cfg, err := is.getDatabaseServiceConnection(serviceName)
+	db, cfg, err := is.getDatabaseServiceConnection(serviceName)
 	if err != nil {
 		return nil, err
+	}
+	accessControl := newDBAccessControl(cfg)
+	if !accessControl.tableAllowed(tableName) {
+		return nil, fmt.Errorf("access denied for table %q", tableName)
 	}
 	query := databaseColumnListQuery(cfg.Driver, cfg.Database, tableName)
 	if query == "" {
 		return nil, fmt.Errorf("unsupported database driver for schema listing: %s", cfg.Driver)
 	}
-	result, err := is.ExecuteDatabaseQuery(ctx, serviceName, query)
+	records, err := is.queryDatabaseRows(ctx, db, query)
 	if err != nil {
 		return nil, err
-	}
-	records, ok := result.([]map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected column list response type: %T", result)
 	}
 	fields := make([]data.Field, 0, len(records))
 	for _, rec := range records {
@@ -1455,6 +1482,9 @@ func (is *Manager) ListDatabaseTableColumns(ctx context.Context, serviceName, ta
 			if field.Scale == 0 {
 				field.Scale = scale
 			}
+		}
+		if !accessControl.fieldAllowed(tableName, field.Name) {
+			continue
 		}
 		fields = append(fields, field)
 	}

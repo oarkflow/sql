@@ -169,18 +169,22 @@ func (cfg SMPPConfig) Validate() error {
 
 // DatabaseConfig for relational databases.
 type DatabaseConfig struct {
-	Driver          string `json:"driver"`
-	Host            string `json:"host"`
-	Port            int    `json:"port"`
-	Database        string `json:"database"`
-	SSLMode         string `json:"ssl_mode"`
-	MaxOpenConns    int    `json:"max_open_conns"`
-	MaxIdleConns    int    `json:"max_idle_conns"`
-	ConnMaxLifetime string `json:"conn_max_lifetime"`
-	ConnectTimeout  string `json:"connect_timeout"`
-	ReadTimeout     string `json:"read_timeout"`
-	WriteTimeout    string `json:"write_timeout"`
-	PoolSize        int    `json:"pool_size"`
+	Driver          string   `json:"driver"`
+	Host            string   `json:"host"`
+	Port            int      `json:"port"`
+	Database        string   `json:"database"`
+	SSLMode         string   `json:"ssl_mode"`
+	MaxOpenConns    int      `json:"max_open_conns"`
+	MaxIdleConns    int      `json:"max_idle_conns"`
+	ConnMaxLifetime string   `json:"conn_max_lifetime"`
+	ConnectTimeout  string   `json:"connect_timeout"`
+	ReadTimeout     string   `json:"read_timeout"`
+	WriteTimeout    string   `json:"write_timeout"`
+	PoolSize        int      `json:"pool_size"`
+	TableWhitelist  []string `json:"table_whitelist"`
+	TableDenylist   []string `json:"table_denylist"`
+	FieldWhitelist  []string `json:"field_whitelist"`
+	FieldDenylist   []string `json:"field_denylist"`
 }
 
 func (cfg DatabaseConfig) Validate() error {
@@ -195,6 +199,48 @@ func (cfg DatabaseConfig) Validate() error {
 	}
 	if _, err := time.ParseDuration(cfg.ConnectTimeout); err != nil {
 		return fmt.Errorf("DatabaseConfig: invalid connect_timeout: %v", err)
+	}
+	for _, table := range append([]string{}, cfg.TableWhitelist...) {
+		table = normalizeQualifiedIdentifier(table)
+		if table == "" {
+			continue
+		}
+		if !dbIdentifierPattern.MatchString(table) {
+			return fmt.Errorf("DatabaseConfig: invalid table list entry: %s", table)
+		}
+	}
+	for _, table := range append([]string{}, cfg.TableDenylist...) {
+		table = normalizeQualifiedIdentifier(table)
+		if table == "" {
+			continue
+		}
+		if !dbIdentifierPattern.MatchString(table) {
+			return fmt.Errorf("DatabaseConfig: invalid table list entry: %s", table)
+		}
+	}
+	for _, field := range append([]string{}, cfg.FieldWhitelist...) {
+		table, col := parseFieldRule(field)
+		if col == "" {
+			continue
+		}
+		if col != "*" && !dbIdentifierPattern.MatchString(col) {
+			return fmt.Errorf("DatabaseConfig: invalid field list entry: %s", field)
+		}
+		if table != "" && !dbIdentifierPattern.MatchString(table) {
+			return fmt.Errorf("DatabaseConfig: invalid field list entry: %s", field)
+		}
+	}
+	for _, field := range append([]string{}, cfg.FieldDenylist...) {
+		table, col := parseFieldRule(field)
+		if col == "" {
+			continue
+		}
+		if col != "*" && !dbIdentifierPattern.MatchString(col) {
+			return fmt.Errorf("DatabaseConfig: invalid field list entry: %s", field)
+		}
+		if table != "" && !dbIdentifierPattern.MatchString(table) {
+			return fmt.Errorf("DatabaseConfig: invalid field list entry: %s", field)
+		}
 	}
 	return nil
 }
@@ -539,6 +585,10 @@ func RequiredConfigFormat(serviceType ServiceType) (map[string]any, []map[string
 			ReadTimeout:     "5s",
 			WriteTimeout:    "5s",
 			PoolSize:        20,
+			TableWhitelist:  []string{},
+			TableDenylist:   []string{},
+			FieldWhitelist:  []string{},
+			FieldDenylist:   []string{},
 		}
 		if m, _ := sampleFromStruct(DatabaseCredential{Username: "db_user", Password: "db_pass"}); m != nil {
 			creds = append(creds, map[string]any{"type": CredentialTypeDatabase, "data": m})
